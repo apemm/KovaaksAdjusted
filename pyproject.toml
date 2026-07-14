@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kovadapt"
+version = "0.2.0"
+description = "Adaptive difficulty engine for KovaaK's: ML-driven scenario regeneration, mouse telemetry analysis, and performance tuning"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Arjun Pemmasani" }]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6", "pyqtgraph>=0.13", "psutil>=5.9"]
+clips = ["dxcam>=0.0.5", "opencv-python>=4.8"]
+watch = ["watchdog>=3.0"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+all = ["kovadapt[gui,clips,watch]"]
+
+[project.scripts]
+kovadapt = "kovadapt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kovadapt*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

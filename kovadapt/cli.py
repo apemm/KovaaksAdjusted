@@ -1,0 +1,142 @@
+"""kovadapt command-line interface.
+
+    kovadapt gui                     launch the desktop app (dark theme)
+    kovadapt scenarios [filter]      list installed scenarios
+    kovadapt watch "<scenario>"      run the adaptation loop for a scenario
+    kovadapt generate "<scenario>"   one-shot: build/refresh the adaptive .sce
+    kovadapt status "<scenario>"     show learned profile + region heatmap
+    kovadapt replay "<scenario>"     rebuild profile from historical stats
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from .adapt.engine import AdaptationEngine
+from .config import ADAPTIVE_SUFFIX, Settings
+from .profile.player import PlayerProfile
+from .scenario.generator import generate_adaptive_variant
+from .stats.parser import iter_runs
+
+
+def _settings() -> Settings:
+    s = Settings.load()
+    if not s.kovaaks_root:
+        sys.exit("KovaaK's install not found. Set KOVAAKS_ROOT or edit ~/.kovadapt/settings.json")
+    return s
+
+
+def cmd_scenarios(args) -> None:
+    s = _settings()
+    names = sorted(p.stem for p in s.scenarios_dir.glob("*.sce"))
+    for n in names:
+        if not args.filter or args.filter.lower() in n.lower():
+            print(n)
+
+
+def cmd_watch(args) -> None:
+    from .watcher import SessionWatcher
+
+    s = _settings()
+    w = SessionWatcher(s, args.scenario)
+    if not w.base_sce_path().is_file():
+        sys.exit(f"scenario file not found: {w.base_sce_path()}")
+    try:
+        w.watch()
+    except KeyboardInterrupt:
+        print("\nstopped")
+
+
+def cmd_generate(args) -> None:
+    s = _settings()
+    adaptive = args.scenario + ADAPTIVE_SUFFIX
+    profile = PlayerProfile.load(adaptive, s.profile_path)
+    profile.scenario = adaptive
+    plan = AdaptationEngine(s).plan(profile, None)
+    out = generate_adaptive_variant(
+        s.scenarios_dir / f"{args.scenario}.sce", plan, s,
+        s.scenarios_dir / f"{adaptive}.sce",
+    )
+    profile.save(s.profile_path)
+    print(f"wrote {out}\nplan: {plan.describe()}")
+
+
+def cmd_status(args) -> None:
+    s = _settings()
+    profile = PlayerProfile.load(args.scenario + ADAPTIVE_SUFFIX, s.profile_path)
+    if profile.run_count == 0:
+        print("no runs recorded yet")
+        return
+    print(f"scenario:      {profile.scenario}")
+    print(f"runs:          {profile.run_count}")
+    print(f"accuracy EWMA: {profile.ewma_accuracy:.1%}")
+    print(f"avg TTK EWMA:  {profile.ewma_ttk:.3f}s")
+    print(f"pace EWMA:     {profile.ewma_kps:.2f} kills/s")
+    print(f"score EWMA:    {profile.ewma_score:.0f}")
+    print(f"target scale:  {profile.target_scale:.2f}")
+    print(f"movement:      {profile.movement:.2f}")
+    print("\nregion deficit heatmap (+ = weaker, more spawns there):")
+    for r in range(s.region_rows - 1, -1, -1):  # top row printed first
+        cells = []
+        for c in range(s.region_cols):
+            post = profile.regions.get(f"r{r}c{c}")
+            cells.append(f"{post.mean:+.2f}({post.n})" if post else "  --  ")
+        print("   " + "  ".join(f"{x:>10}" for x in cells))
+
+
+def cmd_replay(args) -> None:
+    """Rebuild the profile from existing stats history (base + adaptive runs)."""
+    s = _settings()
+    adaptive = args.scenario + ADAPTIVE_SUFFIX
+    profile = PlayerProfile(scenario=adaptive)
+    engine = AdaptationEngine(s)
+    n = 0
+    for name in (args.scenario, adaptive):
+        for run in iter_runs(s.stats_dir, scenario=name):
+            engine.observe(profile, run)
+            n += 1
+    profile.save(s.profile_path)
+    print(f"replayed {n} runs into {profile.scenario!r} "
+          f"(accuracy EWMA {profile.ewma_accuracy:.1%})")
+
+
+def cmd_gui(args) -> None:
+    try:
+        from .gui.app import main as gui_main
+    except ImportError as exc:
+        sys.exit(
+            f"GUI dependencies missing ({exc.name or exc}).\n"
+            "Install them with: pip install kovadapt[gui]"
+        )
+    sys.exit(gui_main())
+
+
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(prog="kovadapt", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sc = sub.add_parser("scenarios", help="list installed scenarios")
+    sc.add_argument("filter", nargs="?", default="")
+    sc.set_defaults(fn=cmd_scenarios)
+
+    g = sub.add_parser("gui", help="launch the desktop app")
+    g.set_defaults(fn=cmd_gui)
+
+    for name, fn, hlp in (
+        ("watch", cmd_watch, "run the live adaptation loop"),
+        ("generate", cmd_generate, "one-shot generate the adaptive variant"),
+        ("status", cmd_status, "show learned player profile"),
+        ("replay", cmd_replay, "rebuild profile from historical stats"),
+    ):
+        sp = sub.add_parser(name, help=hlp)
+        sp.add_argument("scenario", help="base scenario name (as shown in KovaaK's)")
+        sp.set_defaults(fn=fn)
+
+    args = p.parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

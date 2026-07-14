@@ -1,0 +1,20 @@
+Kill #,Timestamp,Bot,Weapon,TTK,Shots,Hits,Accuracy,Damage Done,Damage Possible,Efficiency,Cheated,OverShots
+1,20:24:39.372,target,BB Gun,0.000000s,1,1,1.000000,1.000000,1.000000,1.000000,0,0
+2,20:24:40.099,target,BB Gun,0.000000s,1,1,1.000000,1.000000,1.000000,1.000000,0,0
+3,20:24:40.762,target,BB Gun,0.210000s,2,1,0.500000,1.000000,2.000000,0.500000,0,0
+4,20:24:41.475,target,BB Gun,0.000000s,1,1,1.000000,1.000000,1.000000,1.000000,0,0
+5,20:24:42.217,target,BB Gun,0.490000s,3,1,0.333333,1.000000,3.000000,0.333333,0,0
+6,20:24:42.809,target,BB Gun,0.000000s,1,1,1.000000,1.000000,1.000000,1.000000,0,0
+
+Weapon,Shots,Hits,Damage Done,Damage Possible,,Sens Scale,Horiz Sens,Vert Sens,FOV,Hide Gun,Crosshair,Crosshair Scale,Crosshair Color,ADS Sens,ADS Zoom Scale,Avg Target Scale,Avg Time Dilation
+BB Gun,9,6,6.0,9.0,
+
+Kills:,6
+Deaths:,0
+Fight Time:,3.437
+Avg TTK:,0.116667
+Hit Count:,6
+Miss Count:,3
+Score:,60.0
+Scenario:,test scenario
+Avg Target Scale:,1.0
