@@ -14,7 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .adapt.archetype import detect_archetype
 from .adapt.engine import AdaptationEngine
+from .analysis.fatigue import SessionFatigueTracker
 from .analysis.report import RunReport, build_report, run_time_window
 from .config import ADAPTIVE_SUFFIX, Settings
 from .profile.player import PlayerProfile
@@ -43,6 +45,10 @@ class SessionWatcher:
         self.recorder = None       # MouseRecorder while watching (if enabled)
         self.clip_recorder = None  # ClipRecorder while watching (if enabled)
         self.last_report: RunReport | None = None
+        self.fatigue = SessionFatigueTracker(
+            settings.fatigue_min_runs, settings.fatigue_sensitivity
+        )
+        self._fatigue_level_logged = "fresh"
 
     # ----------------------------------------------------------- telemetry
     def _start_capture(self) -> None:
@@ -93,6 +99,12 @@ class SessionWatcher:
         """Build + persist the post-run report (trace, clips, JSON)."""
         trace = self._run_trace(run)
         rep, flicks, _ = build_report(run, trace)
+        if self.s.fatigue_detection_enabled:
+            state = self.fatigue.add_run(rep.n_flicks, rep.overshoot_rate, rep.mean_flick_ms)
+            rep.fatigue = state.as_dict()
+            if state.message and state.level != self._fatigue_level_logged:
+                self._fatigue_level_logged = state.level
+                self.log(f"  fatigue: {state.message}")
         if trace is not None and len(trace) > 10:
             rep.trace_file = str(self.traces.save(trace, run.scenario, run.started.isoformat()))
         if self.clip_recorder is not None and rep.notable:
@@ -135,8 +147,18 @@ class SessionWatcher:
         rep = self._analyze(run)
         profile = PlayerProfile.load(self.adaptive_name, self.s.profile_path)
         profile.scenario = self.adaptive_name
-        self.engine.observe(profile, run, region_deficits=rep.region_deficits or None)
-        plan = self.engine.plan(profile, run)
+        if not profile.archetype:
+            profile.archetype = detect_archetype(self.base, run)
+            self.log(f"  archetype: {profile.archetype}")
+        # Bias needs both sides sampled; skip low-telemetry runs entirely.
+        bias = rep.bias.get("bias_score") if rep.n_flicks >= 8 else None
+        self.engine.observe(
+            profile, run,
+            region_deficits=rep.region_deficits or None,
+            bias_score=bias,
+        )
+        fatigue = rep.fatigue.get("score", 0.0) if self.s.fatigue_easing else 0.0
+        plan = self.engine.plan(profile, run, fatigue=fatigue)
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
@@ -153,6 +175,8 @@ class SessionWatcher:
         """Create the initial adaptive variant (neutral plan) if missing."""
         profile = PlayerProfile.load(self.adaptive_name, self.s.profile_path)
         profile.scenario = self.adaptive_name
+        if not profile.archetype:
+            profile.archetype = detect_archetype(self.base)
         plan = self.engine.plan(profile, None)
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
@@ -167,6 +191,11 @@ class SessionWatcher:
 
     def watch(self, poll_interval: float = 1.0, settle: float = 1.5) -> None:
         """Block until request_stop(), processing new stats files as they appear."""
+        # Fatigue is session-scoped: start each watch with a fresh trend.
+        self.fatigue = SessionFatigueTracker(
+            self.s.fatigue_min_runs, self.s.fatigue_sensitivity
+        )
+        self._fatigue_level_logged = "fresh"
         # Ignore history that predates the watcher.
         self._seen = {p.name for p in self.s.stats_dir.glob("*.csv")}
         if not self.adaptive_sce_path().is_file():

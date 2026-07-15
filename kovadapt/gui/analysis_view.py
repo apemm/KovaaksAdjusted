@@ -37,6 +37,7 @@ class AnalysisView(QWidget):
         super().__init__(parent)
         self.report: RunReport | None = None
         self.trace: MouseTrace | None = None
+        self.flicks: list = []
 
         # header
         self.title = QLabel("No run analyzed yet")
@@ -104,6 +105,9 @@ class AnalysisView(QWidget):
         self.trace = trace
         if trace is None and rep.trace_file and Path(rep.trace_file).is_file():
             self.trace = MouseTrace.load(rep.trace_file)
+        # flicks aren't serialized in the report — recompute from the trace
+        self.flicks = (segment_flicks(self.trace)
+                       if self.trace is not None and len(self.trace) > 10 else [])
 
         self.title.setText(f"{rep.scenario} — {rep.started_iso.replace('T', ' ')[:19]}")
         self.summary.setText(rep.summary_text)
@@ -111,7 +115,7 @@ class AnalysisView(QWidget):
         self._draw_heat()
         self._fill_moments(rep)
         if self.trace is not None and len(self.trace) > 1:
-            self.replay.load(self.trace, label="full run")
+            self.replay.load(self.trace, label="full run", flicks=self.flicks)
 
     def load_report_file(self, path: Path | str) -> None:
         self.show_report(RunReport.load(path))
@@ -164,7 +168,8 @@ class AnalysisView(QWidget):
         self.clip_btn.setEnabled(str(row) in (self.report.clip_files or {}))
         if self.trace is not None and len(self.trace) > 1:
             self.replay.load(self.trace, m["t_start"], m["t_end"],
-                             label=m["kind"].replace("_", " "))
+                             label=m["kind"].replace("_", " "),
+                             flicks=self.flicks)
 
     def _play_clip(self) -> None:
         row = self.moments.currentRow()

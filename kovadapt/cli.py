@@ -6,6 +6,8 @@
     kovadapt generate "<scenario>"   one-shot: build/refresh the adaptive .sce
     kovadapt status "<scenario>"     show learned profile + region heatmap
     kovadapt replay "<scenario>"     rebuild profile from historical stats
+    kovadapt watchdog                headless: auto-tune the game on every launch
+    kovadapt checkup                 print the system optimization checkup
 """
 
 from __future__ import annotations
@@ -49,10 +51,14 @@ def cmd_watch(args) -> None:
 
 
 def cmd_generate(args) -> None:
+    from .adapt.archetype import detect_archetype
+
     s = _settings()
     adaptive = args.scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
+    if not profile.archetype:
+        profile.archetype = detect_archetype(args.scenario)
     plan = AdaptationEngine(s).plan(profile, None)
     out = generate_adaptive_variant(
         s.scenarios_dir / f"{args.scenario}.sce", plan, s,
@@ -76,6 +82,10 @@ def cmd_status(args) -> None:
     print(f"score EWMA:    {profile.ewma_score:.0f}")
     print(f"target scale:  {profile.target_scale:.2f}")
     print(f"movement:      {profile.movement:.2f}")
+    if profile.archetype:
+        print(f"archetype:     {profile.archetype}")
+    ready = profile.readiness(s.region_cols * s.region_rows)
+    print(f"calibration:   {ready['score']:.0%} — {ready['message']}")
     print("\nregion deficit heatmap (+ = weaker, more spawns there):")
     for r in range(s.region_rows - 1, -1, -1):  # top row printed first
         cells = []
@@ -101,6 +111,38 @@ def cmd_replay(args) -> None:
           f"(accuracy EWMA {profile.ewma_accuracy:.1%})")
 
 
+def cmd_watchdog(args) -> None:
+    """Headless watchdog loop (used by the start-with-Windows entry)."""
+    import time
+
+    from .optimize.watchdog import GameWatchdog
+
+    w = GameWatchdog(on_event=print)
+    w.start()
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        w.stop()
+
+
+def cmd_checkup(args) -> None:
+    from .optimize.checkup import SystemCheckup
+    from .optimize.hardware import detect_hardware
+
+    s = Settings.load()
+    hw = detect_hardware()
+    if hw.cpu_name or hw.gpu_name:
+        print(f"{hw.cpu_name} | {hw.gpu_name} | {hw.ram_gb:.0f} GB | "
+              f"{hw.monitor_hz} Hz | Windows {'11' if hw.is_windows_11 else '10'}")
+    mark = {"ok": "+", "warn": "!", "bad": "X", "info": "i", "unknown": "?"}
+    for r in SystemCheckup(s.kovaaks_root, hw).run_all():
+        print(f"[{mark.get(r.status, '?')}] {r.title}")
+        print(f"    {r.detail}")
+        if r.can_fix:
+            print(f"    fix available in the GUI: {r.fix_label}")
+
+
 def cmd_gui(args) -> None:
     try:
         from .gui.app import main as gui_main
@@ -123,6 +165,12 @@ def main(argv: list[str] | None = None) -> None:
 
     g = sub.add_parser("gui", help="launch the desktop app")
     g.set_defaults(fn=cmd_gui)
+
+    wd = sub.add_parser("watchdog", help="headless auto-tune on every game launch")
+    wd.set_defaults(fn=cmd_watchdog)
+
+    ck = sub.add_parser("checkup", help="print the system optimization checkup")
+    ck.set_defaults(fn=cmd_checkup)
 
     for name, fn, hlp in (
         ("watch", cmd_watch, "run the live adaptation loop"),

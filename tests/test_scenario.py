@@ -111,7 +111,6 @@ def test_focus_region_gets_more_density(mini_sce: Path, tmp_path: Path):
     plan = engine.plan(prof, None)
     out = generate_adaptive_variant(mini_sce, plan, s, tmp_path / "o.sce")
     pts = SceFile.read(out).spawn_points()
-    xs = sorted({p.x for p in pts} | {-800.0, 800.0})
     # count spawns in focus cell vs uniform expectation
     from kovadapt.scenario.generator import _region_of
     x_ext, z_ext = (-800.0, 800.0), (200.0, 1000.0)

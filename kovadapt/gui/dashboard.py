@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -53,12 +54,25 @@ class Dashboard(QWidget):
             ("runs", "Runs"), ("accuracy", "Accuracy EWMA"),
             ("scale", "Target scale"), ("movement", "Movement"),
             ("focus", "Focus region"), ("pace", "Pace (kills/s)"),
+            ("archetype", "Archetype"), ("fatigue", "Session fatigue"),
         ]):
             grid.addWidget(QLabel(cap), i // 3, (i % 3) * 2)
             lab = QLabel("—")
             lab.setStyleSheet(f"color: {ACCENT}; font-weight: 600;")
             grid.addWidget(lab, i // 3, (i % 3) * 2 + 1)
             self.stat_labels[key] = lab
+
+        # calibration readiness: how much baseline data adaptation still wants
+        self.readiness = QProgressBar()
+        self.readiness.setRange(0, 100)
+        self.readiness.setValue(0)
+        self.readiness.setTextVisible(True)
+        self.readiness.setFormat("calibration %p%")
+        self.readiness_msg = QLabel("play runs to calibrate the adaptive model")
+        self.readiness_msg.setProperty("dim", True)
+        self.readiness_msg.setWordWrap(True)
+        grid.addWidget(self.readiness, 3, 0, 1, 3)
+        grid.addWidget(self.readiness_msg, 3, 3, 1, 3)
 
         # accuracy history sparkline
         self.trend = pg.PlotWidget(title="Accuracy per run")
@@ -122,6 +136,11 @@ class Dashboard(QWidget):
 
     def _on_report(self, rep) -> None:
         self.refresh_profile(self.scenario.currentText().strip())
+        fat = getattr(rep, "fatigue", None) or {}
+        if fat.get("runs", 0) > 0:
+            self.stat_labels["fatigue"].setText(
+                f"{fat.get('level', 'fresh')} ({fat.get('score', 0.0):.0%})"
+            )
         self.report_ready.emit(rep)
 
     # ------------------------------------------------------------------
@@ -131,6 +150,9 @@ class Dashboard(QWidget):
     def refresh_profile(self, base_name: str) -> None:
         prof = PlayerProfile.load(base_name + ADAPTIVE_SUFFIX, self.s.profile_path)
         sl = self.stat_labels
+        ready = prof.readiness(self.s.region_cols * self.s.region_rows)
+        self.readiness.setValue(int(ready["score"] * 100))
+        self.readiness_msg.setText(ready["message"])
         if prof.run_count == 0:
             for lab in sl.values():
                 lab.setText("—")
@@ -142,5 +164,6 @@ class Dashboard(QWidget):
         sl["movement"].setText(f"{prof.movement:.2f}")
         sl["focus"].setText(prof.last_focus or "—")
         sl["pace"].setText(f"{prof.ewma_kps:.2f}")
+        sl["archetype"].setText(prof.archetype or "—")
         accs = [h.get("accuracy", 0.0) for h in prof.history[-60:]]
         self.trend_curve.setData(list(range(len(accs))), accs)

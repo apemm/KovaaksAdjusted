@@ -40,6 +40,7 @@ if RAW_INPUT_AVAILABLE:  # pragma: no cover - exercised only on Windows
     RID_INPUT = 0x10000003
     RIM_TYPEMOUSE = 0
     RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
+    RI_MOUSE_LEFT_BUTTON_UP = 0x0002
     HWND_MESSAGE = -3
 
     class RAWINPUTDEVICE(ctypes.Structure):
@@ -97,6 +98,7 @@ class _Buffers:
         self.chunks: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         self._new_chunk()
         self.clicks: list[float] = []
+        self.clicks_up: list[float] = []
 
     def _new_chunk(self) -> None:
         self.t = np.empty(_CHUNK, dtype=np.float64)
@@ -120,6 +122,7 @@ class _Buffers:
             dx=np.concatenate([p[1] for p in parts]),
             dy=np.concatenate([p[2] for p in parts]),
             clicks=np.asarray(self.clicks, dtype=np.float64),
+            clicks_up=np.asarray(self.clicks_up, dtype=np.float64),
         )
 
 
@@ -194,6 +197,8 @@ class MouseRecorder:
                             buf.add(now, m.lLastX, m.lLastY)
                         if m.ulButtons & RI_MOUSE_LEFT_BUTTON_DOWN:
                             buf.clicks.append(now)
+                        if m.ulButtons & RI_MOUSE_LEFT_BUTTON_UP:
+                            buf.clicks_up.append(now)
                 return 0
             if msg == WM_CLOSE:
                 user32.PostQuitMessage(0)

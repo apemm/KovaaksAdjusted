@@ -36,6 +36,7 @@ class TraceBuilder:
         self.dx: list[int] = []
         self.dy: list[int] = []
         self.clicks: list[float] = []
+        self.clicks_up: list[float] = []
         self.now = t0
 
     def rest(self, dur: float = 0.5) -> "TraceBuilder":
@@ -51,9 +52,10 @@ class TraceBuilder:
         self.now = float(ts[-1])
         return self
 
-    def click(self) -> "TraceBuilder":
+    def click(self, hold: float = 0.06) -> "TraceBuilder":
         self.now += 0.005
         self.clicks.append(self.now)
+        self.clicks_up.append(self.now + hold)
         return self
 
     def flick(self, dx: float, dy: float, dur: float = 0.15,
@@ -74,6 +76,7 @@ class TraceBuilder:
             dx=np.asarray(self.dx, dtype=np.int32),
             dy=np.asarray(self.dy, dtype=np.int32),
             clicks=np.asarray(self.clicks, dtype=np.float64),
+            clicks_up=np.asarray(self.clicks_up, dtype=np.float64),
         )
 
 
@@ -222,3 +225,79 @@ def test_credit_observed_regions_moves_posteriors():
     prof.credit_observed_regions({"r1c0": 2.0, "r1c2": -1.5}, weight=0.6)
     assert prof.regions["r1c0"].mean > 0 > prof.regions["r1c2"].mean
     assert prof.regions["r1c0"].n == 1
+
+
+# ------------------------------------------------------ v0.3: input health
+def test_input_health_metrics():
+    b = TraceBuilder()
+    for _ in range(10):
+        b.flick(300, 0, dur=0.2)     # 1 kHz packets while moving
+    trace = b.build()
+    ih = trace.input_health()
+    assert 900 <= ih["polling_hz_est"] <= 1100      # synthetic 1 kHz stream
+    assert ih["jitter_ms"] < 1.0                    # perfectly regular grid
+    assert ih["click_hold_ms"] == 60.0              # TraceBuilder default hold
+
+
+def test_input_health_degrades_gracefully():
+    assert MouseTrace().input_health()["polling_hz_est"] == 0.0
+    b = TraceBuilder()
+    b.flick(50, 0, dur=0.02)         # far under 100 packets
+    ih = b.build().input_health()
+    assert ih["polling_hz_est"] == 0.0
+    assert ih["click_hold_ms"] > 0   # click pairing still works
+
+
+def test_trace_npz_backward_compatible(tmp_path):
+    """Pre-v0.3 traces (no clicks_up key) must still load."""
+    b = TraceBuilder()
+    b.flick(100, 0)
+    tr = b.build()
+    legacy = tmp_path / "legacy.npz"
+    np.savez_compressed(legacy, t=tr.t, dx=tr.dx, dy=tr.dy, clicks=tr.clicks)
+    loaded = MouseTrace.load(legacy)
+    assert loaded.clicks_up.size == 0
+    assert loaded.input_health()["click_hold_ms"] == 0.0
+    # and the new format round-trips clicks_up
+    p2 = tr.save(tmp_path / "new.npz")
+    assert MouseTrace.load(p2).clicks_up.size == tr.clicks_up.size
+
+
+def test_window_slices_clicks_up():
+    b = TraceBuilder()
+    for _ in range(6):
+        b.flick(120, 0)
+    tr = b.build()
+    mid = float(tr.clicks[2])
+    w = tr.window(tr.t[0], mid + 0.01)
+    assert w.clicks_up.size <= tr.clicks_up.size
+    assert (w.clicks_up <= mid + 0.01 + 1e-9).all()
+
+
+# --------------------------------------------------------- v0.3: readiness
+def test_readiness_progression():
+    prof = PlayerProfile(scenario="r")
+    r0 = prof.readiness(9)
+    assert r0["score"] < 0.1 and "calibrating" in r0["message"]
+
+    prof.run_count = 10
+    prof.ewma_bias = 0.2
+    for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
+        post = prof.region(k)
+        post.update(0.1)
+        post.update(0.1)
+    r1 = prof.readiness(9)
+    assert r1["score"] == 1.0
+    assert "fully calibrated" in r1["message"]
+    assert r0["score"] < r1["score"]
+
+
+def test_readiness_partial_regions():
+    prof = PlayerProfile(scenario="r")
+    prof.run_count = 10
+    for k in ("r0c0", "r1c1"):
+        prof.region(k).update(0.1)
+        prof.region(k).update(0.1)
+    r = prof.readiness(9)
+    assert 0.5 < r["score"] < 1.0
+    assert "7 wall regions unexplored" in r["message"]

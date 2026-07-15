@@ -12,7 +12,7 @@ import numpy as np
 from ..stats.models import Run
 from ..telemetry.trace import MouseTrace
 from .movement import segment_flicks, directional_bias, region_deficits, movement_heatmap
-from .notable import NotableMoment, find_notable_moments
+from .notable import find_notable_moments
 
 
 def run_time_window(run: Run) -> tuple[float, float] | None:
@@ -60,6 +60,8 @@ class RunReport:
     summary_text: str = ""
     trace_file: str = ""
     clip_files: dict = field(default_factory=dict)   # notable idx -> mp4 path
+    fatigue: dict = field(default_factory=dict)      # session FatigueState snapshot
+    input_health: dict = field(default_factory=dict)  # polling/jitter/click-hold
 
     def save(self, path: Path | str) -> Path:
         path = Path(path)
@@ -92,6 +94,13 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
         lines.append(f"{rep.overshoot_rate:.0%} of flicks overshot — consider a slight sens decrease or larger targets; the engine will compensate.")
     if rep.mean_flick_ms > 0:
         lines.append(f"Mean flick {rep.mean_flick_ms:.0f}ms.")
+    ih = rep.input_health
+    if ih.get("polling_hz_est", 0) >= 125:
+        note = f"Mouse polling ~{ih['polling_hz_est']:.0f}Hz"
+        if ih.get("jitter_ms", 0.0) > 1.0:
+            note += (f", timing jitter {ih['jitter_ms']:.1f}ms — high; run the "
+                     "Optimizer checkup (background apps or USB contention)")
+        lines.append(note + ".")
     return " ".join(lines)
 
 
@@ -118,6 +127,7 @@ def build_report(run: Run, trace: MouseTrace | None) -> tuple[RunReport, list, n
         rep.region_deficits = region_deficits(flicks)
         rep.notable = [asdict(m) for m in find_notable_moments(flicks)]
         rep.total_travel_counts = float(np.hypot(rt.dx.astype(np.float64), rt.dy.astype(np.float64)).sum())
+        rep.input_health = rt.input_health()
         if flicks:
             rep.mean_flick_ms = float(np.mean([f.duration for f in flicks]) * 1000)
             rep.overshoot_rate = float(np.mean([f.overshoot > 0.1 for f in flicks]))

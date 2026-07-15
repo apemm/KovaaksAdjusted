@@ -11,6 +11,7 @@ FG_DIM = "#8b93a3"
 ACCENT = "#4f9dff"
 ACCENT_DIM = "#2e5f9e"
 GOOD = "#4fc17c"
+WARN = "#e0b45f"
 BAD = "#e06c5f"
 
 QSS = f"""
@@ -56,6 +57,11 @@ QLabel[headline="true"] {{ font-size: 16px; font-weight: 600; }}
 QScrollBar:vertical {{ background: {BG}; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 24px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QProgressBar {{
+    background: {BG_ALT}; border: 1px solid {BORDER}; border-radius: 4px;
+    text-align: center; color: {FG}; height: 16px;
+}}
+QProgressBar::chunk {{ background: {ACCENT_DIM}; border-radius: 3px; }}
 QStatusBar {{ background: {BG_ALT}; color: {FG_DIM}; }}
 QToolTip {{ background: {BG_RAISED}; color: {FG}; border: 1px solid {BORDER}; }}
 """

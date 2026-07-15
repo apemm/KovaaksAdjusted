@@ -1,19 +1,42 @@
-"""Trajectory replay: animated crosshair path from a MouseTrace window.
+"""Trajectory replay: animated crosshair path with flick-quality overlays.
 
-The full path is drawn dim; an animated bright segment sweeps through it in
-real time (or scaled), with a marker at the current crosshair position and
-click flashes. This is the free 'clip' every run gets even without video.
+Visual language (all derived from the recorded MouseTrace — no video):
+
+    dim grey line     full crosshair path of the window
+    green segments    clean flicks (low overshoot, <= 1 correction)
+    red segments      flawed flicks (overshoot > 10% or >= 2 corrections)
+    red ✕             shots (left clicks)
+    bright dot+trail  playhead sweeping in (scaled) real time
+
+Lightweight by construction: the overlays are exactly two PlotCurveItems
+regardless of flick count (NaN-separated segments), the path is decimated
+above ~50k points, and the QTimer only runs during playback. Playback time
+comes from QElapsedTimer, so speed is wall-clock accurate under load.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..telemetry.trace import MouseTrace
-from .theme import ACCENT, BAD, FG_DIM
+from .theme import ACCENT, BAD, FG_DIM, GOOD
+
+_MAX_POINTS = 50_000          # decimation cap for the drawn path
+_SLIDER_STEPS = 1000
+# Flick quality thresholds (match analysis conventions: overshoot_rate uses
+# 0.1, notable "clean" uses <= 1 correction).
+_FLAWED_OVERSHOOT = 0.10
+_FLAWED_CORRECTIONS = 2
 
 
 class TrajectoryReplay(QWidget):
@@ -22,15 +45,20 @@ class TrajectoryReplay(QWidget):
         self._t = np.empty(0)
         self._x = np.empty(0)
         self._y = np.empty(0)
-        self._clicks = np.empty(0)
         self._pos = 0.0          # playhead (s from segment start)
         self._speed = 0.5        # default half speed: flicks are fast
+        self._clock = QElapsedTimer()
+        self._clock_base = 0.0   # _pos when the clock (re)started
 
         self.plot = pg.PlotWidget()
         self.plot.setAspectLocked(True)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
         self._full = self.plot.plot([], [], pen=pg.mkPen(FG_DIM, width=1))
+        self._good = self.plot.plot([], [], pen=pg.mkPen(GOOD, width=2),
+                                    connect="finite")
+        self._bad = self.plot.plot([], [], pen=pg.mkPen(BAD, width=2),
+                                   connect="finite")
         self._live = self.plot.plot([], [], pen=pg.mkPen(ACCENT, width=2))
         self._head = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(ACCENT), pen=None)
         self._shots = pg.ScatterPlotItem(size=14, brush=None,
@@ -42,17 +70,30 @@ class TrajectoryReplay(QWidget):
         self.btn.clicked.connect(self.toggle)
         self.speed_btn = QPushButton("0.5x")
         self.speed_btn.clicked.connect(self._cycle_speed)
+        self.scrub = QSlider(Qt.Horizontal)
+        self.scrub.setRange(0, _SLIDER_STEPS)
+        self.scrub.sliderMoved.connect(self._scrubbed)
         self.info = QLabel("")
         self.info.setProperty("dim", True)
+        self.legend = QLabel(
+            f"<span style='color:{GOOD}'>—</span> clean flick&nbsp;&nbsp;"
+            f"<span style='color:{BAD}'>—</span> overshoot/correction&nbsp;&nbsp;"
+            f"<span style='color:{BAD}'>✕</span> shot")
+        self.legend.setTextFormat(Qt.RichText)
+        self.legend.setProperty("dim", True)
 
         bar = QHBoxLayout()
         bar.addWidget(self.btn)
         bar.addWidget(self.speed_btn)
+        bar.addWidget(self.scrub, 1)
         bar.addWidget(self.info)
-        bar.addStretch(1)
+        sub = QHBoxLayout()
+        sub.addWidget(self.legend)
+        sub.addStretch(1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(bar)
+        lay.addLayout(sub)
         lay.addWidget(self.plot, 1)
 
         self._timer = QTimer(self)
@@ -61,37 +102,70 @@ class TrajectoryReplay(QWidget):
 
     # ------------------------------------------------------------------
     def load(self, trace: MouseTrace, t0: float | None = None,
-             t1: float | None = None, label: str = "") -> None:
-        """Show [t0, t1] of the trace (defaults: whole trace)."""
+             t1: float | None = None, label: str = "",
+             flicks: list | None = None) -> None:
+        """Show [t0, t1] of the trace (defaults: whole trace). `flicks` are
+        analysis.movement.Flick objects for the SAME trace (absolute epoch
+        times); the ones inside the window become quality overlays."""
         self.stop()
         seg = trace if t0 is None else trace.window(t0, t1 if t1 is not None else trace.t[-1])
         t, x, y = seg.path()
         if t.size < 2:
             self._t = np.empty(0)
-            self._full.setData([], [])
-            self._live.setData([], [])
+            for item in (self._full, self._good, self._bad, self._live):
+                item.setData([], [])
             self._head.setData([], [])
             self._shots.setData([], [])
             self.info.setText("no movement in this window")
             return
-        self._t = t - t[0]
+        # decimate for drawing: replay is an indicator, not a data export
+        stride = max(1, t.size // _MAX_POINTS)
+        t, x, y = t[::stride], x[::stride], y[::stride]
+        base = t[0]
+        self._t = t - base
         self._x, self._y = x, y
-        self._clicks = seg.clicks - t[0]
         self._full.setData(x, y)
         self._live.setData([], [])
         self._head.setData([x[0]], [y[0]])
-        ci = np.searchsorted(t - t[0], self._clicks)
-        ci = np.clip(ci, 0, t.size - 1)
+        clicks = seg.clicks - base
+        ci = np.clip(np.searchsorted(self._t, clicks), 0, t.size - 1)
         self._shots.setData(x[ci], y[ci])
-        self.info.setText(label or f"{self._t[-1]:.2f}s, {seg.clicks.size} shots")
+        self._draw_flicks(base, flicks or [])
+        self._pos = 0.0
+        self.scrub.setValue(0)
+        self.info.setText(label or f"{self._t[-1]:.2f}s · {seg.clicks.size} shots")
         self.plot.autoRange()
+
+    def _draw_flicks(self, base: float, flicks: list) -> None:
+        """Two NaN-separated polylines: clean (green) and flawed (red)."""
+        good: list[list[float]] = [[], []]
+        bad: list[list[float]] = [[], []]
+        tmax = self._t[-1] if self._t.size else 0.0
+        for f in flicks:
+            o, c = f.t_onset - base, f.t_click - base
+            if c <= 0 or o >= tmax or c <= o:
+                continue
+            i0, i1 = np.searchsorted(self._t, [o, c])
+            i1 = min(int(i1) + 1, self._t.size)
+            if i1 - i0 < 2:
+                continue
+            flawed = (f.overshoot > _FLAWED_OVERSHOOT
+                      or f.corrections >= _FLAWED_CORRECTIONS)
+            dest = bad if flawed else good
+            dest[0].extend(self._x[i0:i1].tolist() + [np.nan])
+            dest[1].extend(self._y[i0:i1].tolist() + [np.nan])
+        self._good.setData(good[0], good[1])
+        self._bad.setData(bad[0], bad[1])
 
     # ------------------------------------------------------------------
     def toggle(self) -> None:
         if self._timer.isActive():
             self.stop()
         elif self._t.size:
-            self._pos = 0.0
+            if self._pos >= self._t[-1]:
+                self._pos = 0.0
+            self._clock_base = self._pos
+            self._clock.start()
             self.btn.setText("Stop")
             self._timer.start()
 
@@ -103,12 +177,31 @@ class TrajectoryReplay(QWidget):
         order = [0.25, 0.5, 1.0]
         self._speed = order[(order.index(self._speed) + 1) % len(order)]
         self.speed_btn.setText(f"{self._speed:g}x")
+        if self._timer.isActive():           # rebase so speed changes mid-play
+            self._clock_base = self._pos
+            self._clock.restart()
+
+    def _scrubbed(self, v: int) -> None:
+        if not self._t.size:
+            return
+        self.stop()
+        self._pos = self._t[-1] * v / _SLIDER_STEPS
+        self._render()
 
     def _tick(self) -> None:
-        self._pos += 0.016 * self._speed
+        if not self._t.size:
+            self.stop()
+            return
+        self._pos = self._clock_base + self._clock.elapsed() / 1000.0 * self._speed
         if self._pos >= self._t[-1]:
             self._pos = self._t[-1]
             self.stop()
+        self.scrub.blockSignals(True)
+        self.scrub.setValue(int(self._pos / self._t[-1] * _SLIDER_STEPS))
+        self.scrub.blockSignals(False)
+        self._render()
+
+    def _render(self) -> None:
         i = int(np.searchsorted(self._t, self._pos))
         i = max(min(i, self._t.size - 1), 1)
         self._live.setData(self._x[:i], self._y[:i])

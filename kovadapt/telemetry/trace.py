@@ -17,15 +17,18 @@ import numpy as np
 class MouseTrace:
     """Timestamped relative mouse motion.
 
-    t       epoch seconds, monotonic non-decreasing, one per motion packet
-    dx, dy  raw counts per packet (mouse coordinates: +x right, +y down)
-    clicks  epoch seconds of left-button presses
+    t          epoch seconds, monotonic non-decreasing, one per motion packet
+    dx, dy     raw counts per packet (mouse coordinates: +x right, +y down)
+    clicks     epoch seconds of left-button presses
+    clicks_up  epoch seconds of left-button releases (may be empty on traces
+               recorded before v0.3 — treat click-hold metrics as unavailable)
     """
 
     t: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     dx: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     dy: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     clicks: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    clicks_up: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
     def __len__(self) -> int:
         return self.t.size
@@ -38,24 +41,31 @@ class MouseTrace:
     def save(self, path: Path | str) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, t=self.t, dx=self.dx, dy=self.dy, clicks=self.clicks)
+        np.savez_compressed(path, t=self.t, dx=self.dx, dy=self.dy,
+                            clicks=self.clicks, clicks_up=self.clicks_up)
         return path
 
     @classmethod
     def load(cls, path: Path | str) -> "MouseTrace":
         z = np.load(path)
-        return cls(t=z["t"], dx=z["dx"], dy=z["dy"], clicks=z["clicks"])
+        return cls(
+            t=z["t"], dx=z["dx"], dy=z["dy"], clicks=z["clicks"],
+            clicks_up=z["clicks_up"] if "clicks_up" in z.files
+            else np.empty(0, dtype=np.float64),
+        )
 
     # -------------------------------------------------------------- slicing
     def window(self, t0: float, t1: float) -> "MouseTrace":
         """Sub-trace covering [t0, t1] (epoch seconds)."""
         i0, i1 = np.searchsorted(self.t, [t0, t1])
         c0, c1 = np.searchsorted(self.clicks, [t0, t1])
+        u0, u1 = np.searchsorted(self.clicks_up, [t0, t1])
         return MouseTrace(
             t=self.t[i0:i1].copy(),
             dx=self.dx[i0:i1].copy(),
             dy=self.dy[i0:i1].copy(),
             clicks=self.clicks[c0:c1].copy(),
+            clicks_up=self.clicks_up[u0:u1].copy(),
         )
 
     # ------------------------------------------------------------ resample
@@ -80,6 +90,42 @@ class MouseTrace:
         """Cumulative crosshair displacement in counts (y flipped so +y = up,
         i.e. screen/aim convention for plotting)."""
         return self.t, np.cumsum(self.dx, dtype=np.float64), -np.cumsum(self.dy, dtype=np.float64)
+
+    # --------------------------------------------------------- input health
+    def input_health(self) -> dict:
+        """Polling/sensor quality metrics from inter-packet timing.
+
+        Raw Input only delivers packets on motion, so only intervals during
+        continuous movement estimate the true polling cadence: we keep gaps
+        under 30 ms (anything longer is the hand at rest, not the sensor).
+
+          polling_hz_est   1 / median moving interval (0 when undetermined)
+          jitter_ms        IQR of those intervals — timing consistency; big
+                           values mean USB/timer contention (the stutter the
+                           optimizer exists to fix)
+          gap_ms_p99       99th percentile interval — worst-case hitches
+          click_hold_ms    median press->release time (0 without clicks_up)
+        """
+        out = {"polling_hz_est": 0.0, "jitter_ms": 0.0, "gap_ms_p99": 0.0,
+               "click_hold_ms": 0.0}
+        if self.t.size >= 100:
+            dt = np.diff(self.t)
+            moving = dt[(dt > 0) & (dt < 0.030)]
+            if moving.size >= 50:
+                med = float(np.median(moving))
+                q1, q3 = np.percentile(moving, [25, 75])
+                out["polling_hz_est"] = round(1.0 / med, 0) if med > 0 else 0.0
+                out["jitter_ms"] = round(float(q3 - q1) * 1000.0, 3)
+                out["gap_ms_p99"] = round(float(np.percentile(moving, 99)) * 1000.0, 3)
+        if self.clicks.size and self.clicks_up.size:
+            # pair each press with the first release after it
+            idx = np.searchsorted(self.clicks_up, self.clicks)
+            ok = idx < self.clicks_up.size
+            holds = self.clicks_up[idx[ok]] - self.clicks[ok]
+            holds = holds[(holds > 0) & (holds < 1.0)]
+            if holds.size:
+                out["click_hold_ms"] = round(float(np.median(holds)) * 1000.0, 1)
+        return out
 
 
 class TraceStore:

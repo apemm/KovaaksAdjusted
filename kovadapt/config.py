@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass, field, asdict
@@ -14,6 +15,35 @@ _STEAM_CANDIDATES = (
 )
 
 ADAPTIVE_SUFFIX = " [Adaptive]"
+
+# Scenario archetypes with distinct adaptation dynamics. "clicking" is the
+# baseline; overrides below shift the controllers for the other two.
+ARCHETYPES = ("clicking", "tracking", "switching")
+
+
+def default_archetype_overrides() -> dict[str, dict[str, float]]:
+    """Per-archetype Settings overrides (keys must be Settings field names).
+
+    tracking:  accuracy is per-tick hit rate (runs much higher than clicking),
+               so the sweet spot moves up; movement is the difficulty axis, so
+               it never drops to zero and sizing reacts more gently.
+    switching: flick volume is the point — slightly looser accuracy band and
+               more spawn mass on the weak region.
+    """
+    return {
+        "clicking": {},
+        "tracking": {
+            "target_accuracy_low": 0.70,
+            "target_accuracy_high": 0.88,
+            "size_learning_rate": 0.6,
+            "min_movement": 0.35,
+        },
+        "switching": {
+            "target_accuracy_low": 0.55,
+            "target_accuracy_high": 0.75,
+            "focus_weight": 0.6,
+        },
+    }
 
 
 def find_kovaaks_root() -> Path | None:
@@ -52,6 +82,24 @@ class Settings:
     max_movement: float = 1.0
     # EWMA half-life (runs) for profile statistics.
     ewma_half_life: float = 5.0
+    # --- Advanced engine internals (defaults preserve pre-v0.3 behavior) ---
+    size_speed_coupling: float = 0.35    # size floor grows with target speed
+    pace_coupling_gain: float = 0.4      # kills/s above norm -> OU push
+    min_shots_for_size: int = 10         # size controller needs this many shots
+    bandit_obs_noise: float = 0.25       # observation noise of region posteriors
+    bandit_prior_var: float = 1.0        # prior variance of fresh region arms
+    bandit_posterior_decay: float = 0.0  # per-run forgetting toward the prior
+    # --- Trace-informed dodge direction ---
+    dodge_bias_enabled: bool = True      # strafe longer toward the weak side
+    dodge_bias_gain: float = 0.8         # scales EWMA bias into strafe asymmetry
+    # --- Session fatigue detection ---
+    fatigue_detection_enabled: bool = True
+    fatigue_sensitivity: float = 1.0     # >1 = flags fatigue sooner
+    fatigue_min_runs: int = 5            # runs before a trend is trusted
+    fatigue_easing: bool = False         # ease difficulty when fatigued
+    # --- Per-archetype adaptation ---
+    archetype_enabled: bool = True
+    archetype_overrides: dict = field(default_factory=default_archetype_overrides)
     # --- Telemetry & analysis (v0.2) ---
     telemetry_enabled: bool = True       # Raw Input mouse capture during watch
     telemetry_blend: float = 0.6         # weight of observed flick deficits vs run-level bandit credit
@@ -80,6 +128,15 @@ class Settings:
     @property
     def profile_path(self) -> Path:
         return Path(self.profile_dir)
+
+    def for_archetype(self, archetype: str) -> "Settings":
+        """Effective settings for a scenario archetype (self when no overrides)."""
+        if not archetype or not self.archetype_enabled:
+            return self
+        ov = (self.archetype_overrides or {}).get(archetype) or {}
+        known = {f for f in self.__dataclass_fields__ if f != "root"}
+        ov = {k: v for k, v in ov.items() if k in known}
+        return dataclasses.replace(self, **ov) if ov else self
 
     def save(self, path: Path | None = None) -> Path:
         path = path or self.profile_path / "settings.json"

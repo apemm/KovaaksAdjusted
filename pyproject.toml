@@ -17,9 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["PySide6>=6.6", "pyqtgraph>=0.13", "psutil>=5.9"]
 clips = ["dxcam>=0.0.5", "opencv-python>=4.8"]
-watch = ["watchdog>=3.0"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
-all = ["kovadapt[gui,clips,watch]"]
+all = ["kovadapt[gui,clips]"]
 
 [project.scripts]
 kovadapt = "kovadapt.cli:main"

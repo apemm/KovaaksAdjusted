@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -8,12 +9,9 @@ import pytest
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Real KovaaK's install, if present (skipped on CI / other machines).
-import os
 _ROOT = os.environ.get(
     "KOVAAKS_ROOT",
-    "/sessions/jolly-affectionate-fermat/mnt/FPSAimTrainer"
-    if Path("/sessions").exists()
-    else r"C:\Program Files (x86)\Steam\steamapps\common\FPSAimTrainer\FPSAimTrainer",
+    r"C:\Program Files (x86)\Steam\steamapps\common\FPSAimTrainer\FPSAimTrainer",
 )
 
 

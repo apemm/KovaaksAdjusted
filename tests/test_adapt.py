@@ -1,5 +1,6 @@
 import numpy as np
 
+from kovadapt.adapt.archetype import detect_archetype
 from kovadapt.adapt.stochastic import OrnsteinUhlenbeck, sample_dodge_params, squash
 from kovadapt.adapt.bandit import ThompsonRegionBandit, region_keys
 from kovadapt.adapt.engine import AdaptationEngine
@@ -105,5 +106,120 @@ def test_profile_roundtrip(tmp_path, fixtures):
     run = parse_stats_csv(fixtures / "sample_stats.csv")
     prof.last_focus = "r0c0"
     prof.observe_run(run)
-    prof.credit_focus_region(run)
-    prof
+    prof.credit_focus_region(run)  # run_count > 0 now, so the posterior updates
+    prof.region("r2c1").update(0.3)
+    prof.target_scale = 1.23
+    prof.ou_state = -0.4
+
+    path = prof.save(tmp_path)
+    assert path.is_file()
+    loaded = PlayerProfile.load("rt test", tmp_path)
+
+    assert loaded.scenario == "rt test"
+    assert loaded.run_count == 1
+    assert loaded.ewma_accuracy == prof.ewma_accuracy
+    assert loaded.target_scale == prof.target_scale
+    assert loaded.ou_state == prof.ou_state
+    assert loaded.last_focus == "r0c0"
+    assert set(loaded.regions) == set(prof.regions)
+    for key, post in prof.regions.items():
+        assert loaded.regions[key].mean == post.mean
+        assert loaded.regions[key].var == post.var
+        assert loaded.regions[key].n == post.n
+    assert loaded.history == prof.history
+
+
+# --------------------------------------------------------------- v0.3 features
+def test_dodge_direction_bias():
+    rng = np.random.default_rng(0)
+    neutral = sample_dodge_params(0.5, np.random.default_rng(0))
+    left = sample_dodge_params(0.5, np.random.default_rng(0), direction_bias=0.8)
+    right = sample_dodge_params(0.5, np.random.default_rng(0), direction_bias=-0.8)
+    assert abs(neutral["LeftStrafeTimeMult"] - neutral["RightStrafeTimeMult"]) < 0.25
+    assert left["LeftStrafeTimeMult"] > left["RightStrafeTimeMult"]
+    assert right["RightStrafeTimeMult"] > right["LeftStrafeTimeMult"]
+    for p in (left, right):  # clamped to the sane KovaaK's range
+        assert 0.5 <= p["LeftStrafeTimeMult"] <= 2.0
+        assert 0.5 <= p["RightStrafeTimeMult"] <= 2.0
+    # extreme bias stays clamped
+    extreme = sample_dodge_params(0.5, rng, direction_bias=5.0)
+    assert 0.5 <= extreme["RightStrafeTimeMult"] <= 2.0
+
+
+def test_engine_wires_dodge_bias(fixtures):
+    s = _settings()
+    engine = AdaptationEngine(s, rng=np.random.default_rng(7))
+    prof = PlayerProfile(scenario="t")
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+    engine.observe(prof, run, bias_score=0.6)   # left much weaker
+    assert prof.ewma_bias == 0.6                # first run sets directly
+    plan = engine.plan(prof, run)
+    assert plan.dodge_bias > 0
+    assert plan.dodge_params["LeftStrafeTimeMult"] > plan.dodge_params["RightStrafeTimeMult"]
+
+
+def test_posterior_decay():
+    prof = PlayerProfile(scenario="t")
+    post = prof.region("r0c0")
+    for _ in range(10):
+        post.update(0.5)
+    mean_before, var_before = post.mean, post.var
+    prof.decay_regions(0.3, prior_var=1.0)
+    assert 0 < post.mean < mean_before          # shrinks toward 0
+    assert var_before < post.var < 1.0          # relaxes toward the prior
+
+
+def test_fatigue_easing_direction(fixtures):
+    s = _settings()
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+
+    def plan_with(fatigue):
+        engine = AdaptationEngine(s, rng=np.random.default_rng(11))
+        prof = PlayerProfile(scenario="t")
+        engine.observe(prof, run)
+        return engine.plan(prof, run, fatigue=fatigue), prof
+
+    fresh, prof_fresh = plan_with(0.0)
+    tired, prof_tired = plan_with(1.0)
+    assert tired.target_scale > fresh.target_scale     # bigger targets when tired
+    assert tired.movement < fresh.movement             # calmer targets when tired
+    # persisted state is un-eased: identical across the two runs
+    assert prof_tired.target_scale == prof_fresh.target_scale
+    assert prof_tired.movement == prof_fresh.movement
+
+
+def test_archetype_detection(fixtures):
+    assert detect_archetype("1wall 6targets small") == "clicking"
+    assert detect_archetype("Smoothbot Voltaic") == "tracking"
+    assert detect_archetype("popcorn voltaic switch") == "switching"
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+    # fixture: 9 shots / 6 kills — nowhere near tracking's shots-per-kill
+    assert detect_archetype("unnamed task", run) == "clicking"
+
+
+def test_settings_for_archetype():
+    s = Settings(kovaaks_root=".")
+    t = s.for_archetype("tracking")
+    assert t is not s
+    assert t.target_accuracy_low == 0.70 and t.target_accuracy_high == 0.88
+    assert t.region_cols == s.region_cols            # untouched fields inherited
+    assert s.target_accuracy_low == 0.60             # original unchanged
+    assert s.for_archetype("clicking") is s          # empty overrides -> same object
+    assert s.for_archetype("") is s
+    s.archetype_enabled = False
+    assert s.for_archetype("tracking") is s          # feature off -> baseline
+    # unknown override keys are ignored rather than crashing dataclasses.replace
+    s.archetype_enabled = True
+    s.archetype_overrides["tracking"]["not_a_field"] = 1.0
+    assert s.for_archetype("tracking").target_accuracy_low == 0.70
+
+
+def test_settings_roundtrip_new_fields(tmp_path):
+    s = Settings(kovaaks_root=".")
+    s.bandit_posterior_decay = 0.05
+    s.archetype_overrides["tracking"]["size_learning_rate"] = 0.42
+    p = s.save(tmp_path / "settings.json")
+    loaded = Settings.load(p)
+    assert loaded.bandit_posterior_decay == 0.05
+    assert loaded.archetype_overrides["tracking"]["size_learning_rate"] == 0.42
+    assert loaded.dodge_bias_enabled == s.dodge_bias_enabled

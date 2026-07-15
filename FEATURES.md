@@ -29,16 +29,22 @@
 - Chromium-based apps (Discord, Spotify, browsers) degrade timer resolution and cause frame-time spikes; overlays worse.
 - Stable FPS cap beats higher-but-unstable uncapped FPS; 1ms timer resolution matters on Windows 10 (Windows 11 handles it per-process).
 
+### v0.3 — optimizer window + deep adaptation (shipped)
+- **Optimizer window** (`kovadapt/optimize/` + `gui/optimizer_window.py`): hardware detection (CPU/GPU/RAM/refresh/Windows build via registry, ctypes, one CIM query); checkup with per-item Fix buttons + "fix all safe" (power plan via powercfg, HAGS registry state, per-exe fullscreen-optimization flags, SPI mouse-acceleration probe, Chromium-app scan, GameUserSettings.ini corruption scan with backup-then-delete fix, live game priority/affinity); watchdog thread auto-tuning every game launch (SMT-aware: frees CPU 0+1 with hyperthreading, CPU 0 without) with optional HKCU Run startup entry; hardware-matched launch options (+ documented myths) and settings advice (Reflex by GPU gen, HAGS by architecture, honest frame-gen guidance for RT-core GPUs). CLI: `checkup`, `watchdog`.
+- **Adaptability internals exposed** (Adaptability tab): EWMA half-life, size–speed coupling, pace gain, min-shots gate, bandit prior variance / observation noise / posterior decay, with tooltips and reset-to-defaults.
+- **Trace-informed dodge direction**: directional-bias EWMA on the profile skews Left/RightStrafeTimeMult (reciprocal pair, clamped 0.5–2.0) so targets strafe longer toward the weak side.
+- **Session fatigue detection** (`analysis/fatigue.py`): Theil-Sen trend over per-run overshoot + flick-duration composite; fresh/declining/fatigued with break suggestions; optional plan easing that never contaminates persisted difficulty.
+- **Per-archetype adaptation** (`adapt/archetype.py`): clicking/tracking/switching detected by name keywords then a shots-per-kill heuristic; per-archetype Settings overrides editable in the GUI.
+- **Comprehensive telemetry**: left-button releases recorded (click-hold times), input-health metrics per run (polling-rate estimate, timing jitter IQR, worst-gap p99) surfaced in run summaries — high jitter points at the optimizer checkup.
+- **Calibration readiness**: profile-level 0–100% indicator (baseline runs, region coverage, bias evidence) on the Dashboard and in `status`.
+- **Full-run replay**: animated crosshair playback with flick-quality overlays (green clean / red flawed / ✕ shots), scrubber, wall-clock-accurate speeds, point decimation to stay lightweight.
+- **Packaging**: PyInstaller one-dir spec + build script (`packaging/`), `kovadapt.exe` runs GUI/CLI/watchdog from one binary.
+
 ## Roadmap
 
-### v0.3 — optimizer window (full)
-- Hardware detection (GPU/CPU/monitor Hz) → recommended in-game settings profile.
-- One-click automatic checkup: power plan, HAGS state, fullscreen-optimization flags, config-file corruption scan, running Chromium apps, timer resolution.
-- Watchdog mode: auto-apply priority/affinity whenever the game launches.
-- Launch-options manager.
-
-### v0.4+
-- More adaptive task archetypes (tracking, target-switching; per-archetype knobs).
-- Trace-informed dodge direction (dodge toward the player's weak flick direction).
-- Session-level fatigue detection (flick quality decay over a session → suggest breaks).
-- Packaged installer (PyInstaller) so no Python required.
+### v0.4 — performance & polish
+- Profile-guided performance pass over analysis hot paths (vectorize `_smooth`, cache resamples); consider a Rust extension for the Raw Input pump + flick segmentation if profiling justifies leaving pure Python.
+- Auto-verified HAGS state via D3DKMTQueryAdapterInfo (registry intent vs live driver state).
+- Installer polish: signed builds, winget manifest, in-app update check.
+- Richer ML: per-flick Fitts-law residual model for skill tracking over weeks; bandit over dodge parameters, not just regions.
+- Fatigue-aware session planner (suggest scenario order from profile deficits).

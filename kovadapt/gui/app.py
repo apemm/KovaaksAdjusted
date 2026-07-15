@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
         self.dashboard = Dashboard(settings)
         self.analysis = AnalysisView()
         self.config = ConfigView(settings)
-        self.optimizer = OptimizerView()
+        self.optimizer = OptimizerView(settings)
         tabs.addTab(self.dashboard, "Dashboard")
         tabs.addTab(self.analysis, "Analysis")
         tabs.addTab(self.config, "Adaptability")
@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
 
         # new run report -> refresh analysis tab and flag it
         self.dashboard.report_ready.connect(self._on_report)
+        tabs.currentChanged.connect(self._clear_unread)
 
         sb = self.statusBar()
         sb.showMessage(
@@ -52,9 +53,11 @@ class MainWindow(QMainWindow):
         self.analysis.show_report(rep)
         idx = self._tabs.indexOf(self.analysis)
         self._tabs.setTabText(idx, "Analysis •")
-        self._tabs.currentChanged.connect(
-            lambda i: self._tabs.setTabText(idx, "Analysis") if i == idx else None
-        )
+
+    def _clear_unread(self, i: int) -> None:
+        idx = self._tabs.indexOf(self.analysis)
+        if i == idx:
+            self._tabs.setTabText(idx, "Analysis")
 
     def closeEvent(self, event) -> None:  # stop watcher thread cleanly
         w = self.dashboard.worker
