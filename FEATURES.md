@@ -42,9 +42,24 @@
 
 ## Roadmap
 
-### v0.4 — performance & polish
-- ~~Vectorize `_smooth`~~, ~~linearize heatmap recentering~~, ~~window run snapshots to run length~~ (landed in 0.3.0); remaining: share one resample grid across `build_report` (only pays off at 4–8 kHz polling), and consider a Rust extension for the Raw Input pump + flick segmentation if profiling justifies leaving pure Python.
+### v0.4 — bugfixing & performance (next)
+Focus: stability and speed, for the app and for the game it tunes.
+
+**Bugfixing**
+- Triage field reports from the first public release (issue templates with `kovadapt status` + checkup output).
+- Test coverage for the currently untested surfaces: `watcher` (fake stats folder + synthetic traces end to end), `cli` (arg parsing + output contracts), GUI smoke tests (offscreen QPA).
+
+**App performance**
+- Remaining analysis hot paths: share one resample grid across `build_report` (pays off at 4–8 kHz polling); profile the GUI replay/heatmap redraw on multi-hour sessions; memory ceiling for long `watch` sessions (trace chunks + report history).
+- Consider a Rust extension for the Raw Input pump + flick segmentation only if profiling shows pure Python is the bottleneck after the above.
+- (Landed in 0.3.0: vectorized `_smooth`, linearized heatmap recentering, run-windowed snapshots.)
+
+**KovaaK's performance boosts**
 - Auto-verified HAGS state via D3DKMTQueryAdapterInfo (registry intent vs live driver state).
+- New checkup probes/fixes: Game Bar & GameDVR background capture, Windows Game Mode state, core-parking attributes on the active power plan, current timer resolution while the game runs.
+- Watchdog: measure and report the effect of each applied tweak (input-health jitter before/after) so boosts are evidence, not folklore.
+
+### Later
 - Installer polish: signed builds, winget manifest, in-app update check.
 - Richer ML: per-flick Fitts-law residual model for skill tracking over weeks; bandit over dodge parameters, not just regions.
 - Fatigue-aware session planner (suggest scenario order from profile deficits).
