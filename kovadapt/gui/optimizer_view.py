@@ -51,3 +51,7 @@ class OptimizerView(QWidget):
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
+
+    def shutdown(self) -> None:
+        if self.window is not None:
+            self.window.shutdown()

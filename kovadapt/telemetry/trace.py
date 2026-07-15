@@ -96,14 +96,17 @@ class MouseTrace:
         """Polling/sensor quality metrics from inter-packet timing.
 
         Raw Input only delivers packets on motion, so only intervals during
-        continuous movement estimate the true polling cadence: we keep gaps
-        under 30 ms (anything longer is the hand at rest, not the sensor).
+        continuous movement estimate the true polling cadence: cadence and
+        jitter keep gaps under 30 ms, while the hitch percentile keeps gaps
+        under 200 ms — a stall in that range is a pipeline hiccup mid-motion,
+        anything longer is the hand at rest, not the sensor.
 
           polling_hz_est   1 / median moving interval (0 when undetermined)
           jitter_ms        IQR of those intervals — timing consistency; big
                            values mean USB/timer contention (the stutter the
                            optimizer exists to fix)
-          gap_ms_p99       99th percentile interval — worst-case hitches
+          gap_ms_p99       99th percentile interval under 200 ms — worst-case
+                           hitches during movement
           click_hold_ms    median press->release time (0 without clicks_up)
         """
         out = {"polling_hz_est": 0.0, "jitter_ms": 0.0, "gap_ms_p99": 0.0,
@@ -116,7 +119,9 @@ class MouseTrace:
                 q1, q3 = np.percentile(moving, [25, 75])
                 out["polling_hz_est"] = round(1.0 / med, 0) if med > 0 else 0.0
                 out["jitter_ms"] = round(float(q3 - q1) * 1000.0, 3)
-                out["gap_ms_p99"] = round(float(np.percentile(moving, 99)) * 1000.0, 3)
+            active = dt[(dt > 0) & (dt < 0.200)]
+            if active.size >= 50:
+                out["gap_ms_p99"] = round(float(np.percentile(active, 99)) * 1000.0, 3)
         if self.clicks.size and self.clicks_up.size:
             # pair each press with the first release after it
             idx = np.searchsorted(self.clicks_up, self.clicks)

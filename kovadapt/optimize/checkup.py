@@ -12,6 +12,7 @@ Windows-only at runtime; importable everywhere.
 from __future__ import annotations
 
 import ctypes
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ GAME_PROCESS = "FPSAimTrainer"
 # Ultimate Performance scheme (hidden on most consumer SKUs until duplicated).
 ULTIMATE_GUID = "e9a42b02-d5df-448d-aa66-ad3f9edeb1c9"
 HIGH_PERF_GUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+_GUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 
 # Chromium-engine apps that degrade timer resolution / spike frame times.
 CHROMIUM_PROCS = ("discord", "spotify", "chrome", "msedge", "brave", "opera",
@@ -132,9 +134,11 @@ class SystemCheckup:
         if not WINDOWS:
             return CheckResult(cid, title, "unknown", "not Windows")
         out = _run(["powercfg", "/getactivescheme"]).lower()
-        if ULTIMATE_GUID in out:
+        # Duplicated schemes get a fresh random GUID, so match by name too
+        # (GUID match kept as the locale-independent fallback).
+        if ULTIMATE_GUID in out or "ultimate performance" in out:
             return CheckResult(cid, title, "ok", "Ultimate Performance is active.")
-        if HIGH_PERF_GUID in out:
+        if HIGH_PERF_GUID in out or "high performance" in out:
             return CheckResult(
                 cid, title, "ok",
                 "High Performance is active (Ultimate adds marginal gains: no core "
@@ -149,16 +153,29 @@ class SystemCheckup:
         )
 
     def _f_power(self) -> str:
-        # Duplicate the hidden Ultimate scheme (no-op if it already exists),
-        # then activate it. Reversible from Windows Power Options at any time.
-        _run(["powercfg", "-duplicatescheme", ULTIMATE_GUID])
-        schemes = _run(["powercfg", "/list"]).lower()
-        guid = ULTIMATE_GUID if ULTIMATE_GUID in schemes else HIGH_PERF_GUID
-        _run(["powercfg", "/setactive", guid])
-        after = _run(["powercfg", "/getactivescheme"]).lower()
-        if guid in after:
-            name = "Ultimate" if guid == ULTIMATE_GUID else "High"
-            return f"{name} Performance plan activated."
+        # The Ultimate scheme is hidden on consumer SKUs: -duplicatescheme
+        # creates a VISIBLE copy under a NEW random GUID every call. Reuse an
+        # existing copy before creating one, and activate the GUID that
+        # actually exists. Reversible from Windows Power Options at any time.
+        def named_guid(listing: str, name: str) -> str | None:
+            for line in listing.lower().splitlines():
+                m = _GUID_RE.search(line)
+                if m and name in line:
+                    return m.group(0)
+            return None
+
+        listing = _run(["powercfg", "/list"])
+        guid = named_guid(listing, "ultimate performance")
+        name = "Ultimate"
+        if guid is None:
+            m = _GUID_RE.search(_run(["powercfg", "-duplicatescheme", ULTIMATE_GUID]))
+            guid = m.group(0).lower() if m else None
+        if guid is None:  # localized name + duplication failed: High Perf fallback
+            guid, name = named_guid(listing, "high performance"), "High"
+        if guid is not None:
+            _run(["powercfg", "/setactive", guid])
+            if guid in _run(["powercfg", "/getactivescheme"]).lower():
+                return f"{name} Performance plan activated."
         return "could not activate — change it in Windows Power Options"
 
     # -------------------------------------------------------------- hags

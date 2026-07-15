@@ -115,8 +115,17 @@ class _Buffers:
         self.dy[self.n] = dy
         self.n += 1
 
-    def to_trace(self) -> MouseTrace:
+    def to_trace(self, t0: float | None = None, t1: float | None = None) -> MouseTrace:
         parts = self.chunks + [(self.t[: self.n], self.dx[: self.n], self.dy[: self.n])]
+        if t0 is not None or t1 is not None:
+            # Chunks are time-ordered, so keep only the ones overlapping
+            # [t0, t1]: a run's snapshot then costs O(run length) instead of
+            # O(session length). Coarse cut — callers still window() exactly.
+            lo = -np.inf if t0 is None else t0
+            hi = np.inf if t1 is None else t1
+            parts = [p for p in parts if p[0].size and p[0][-1] >= lo and p[0][0] <= hi]
+        if not parts:
+            parts = [(np.empty(0), np.empty(0, np.int32), np.empty(0, np.int32))]
         return MouseTrace(
             t=np.concatenate([p[0] for p in parts]),
             dx=np.concatenate([p[1] for p in parts]),
@@ -164,9 +173,12 @@ class MouseRecorder:
         with self._lock:
             return self._buf.to_trace()
 
-    def snapshot(self) -> MouseTrace:
+    def snapshot(self, t0: float | None = None, t1: float | None = None) -> MouseTrace:
+        """Copy of the recording so far; pass a window to copy only the
+        chunks overlapping it (chunk-granular — window() the result for an
+        exact cut)."""
         with self._lock:
-            return self._buf.to_trace()
+            return self._buf.to_trace(t0, t1)
 
     @property
     def running(self) -> bool:

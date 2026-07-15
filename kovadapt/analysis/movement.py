@@ -46,16 +46,21 @@ class Flick:
 
 
 def _smooth(v: np.ndarray, rate: float, tau_ms: float = 8.0) -> np.ndarray:
-    """Causal exponential moving average (cheap, phase-lag ~tau)."""
+    """Causal exponential moving average (cheap, phase-lag ~tau).
+
+    Vectorized as a truncated exponential FIR plus the acc=v[0] initial-
+    condition term; the kernel is cut where its weight reaches 1e-9, so the
+    deviation from the exact recurrence is far below the onset/hysteresis
+    thresholds downstream.
+    """
     if v.size == 0:
         return v
     a = 1.0 - np.exp(-1.0 / (rate * tau_ms / 1000.0))
-    out = np.empty_like(v, dtype=np.float64)
-    acc = v[0]
-    for i, x in enumerate(v):
-        acc += a * (x - acc)
-        out[i] = acc
-    return out
+    n = v.size
+    klen = min(n, int(np.ceil(np.log(1e-9) / np.log(1.0 - a))))
+    k = a * (1.0 - a) ** np.arange(klen)
+    decay = (1.0 - a) ** (np.arange(n, dtype=np.float64) + 1.0)
+    return np.convolve(np.asarray(v, dtype=np.float64), k)[:n] + v[0] * decay
 
 
 def segment_flicks(
@@ -224,8 +229,8 @@ def movement_heatmap(
     ox = oy = 0.0
     for a in anchors:
         a = min(int(a), x.size - 1)
-        offset_x[last:] = ox
-        offset_y[last:] = oy
+        offset_x[last:a] = ox
+        offset_y[last:a] = oy
         ox, oy = x[a], y[a]
         last = a
     offset_x[last:] = ox

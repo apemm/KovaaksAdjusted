@@ -156,3 +156,64 @@ def test_watchdog_applies_once_per_pid(monkeypatch):
     wd.stop()
     assert applied == [100, 200]     # once per launch, re-armed after exit
     assert any("watchdog on" in e for e in events)
+
+
+def test_watchdog_reports_missing_psutil(monkeypatch):
+    """A core install (no psutil) must say why it can't tune, not poll
+    silently forever."""
+    import sys
+    import time
+
+    monkeypatch.setitem(sys.modules, "psutil", None)   # forces ImportError
+    events: list[str] = []
+    wd = GameWatchdog(on_event=events.append, poll_interval=0.02)
+    wd.start()
+    deadline = time.time() + 2.0
+    while wd.running and time.time() < deadline:
+        time.sleep(0.01)
+    assert not wd.running
+    assert any("psutil missing" in e for e in events)
+
+
+# ------------------------------------------------------- power plan checkup
+def test_power_probe_matches_duplicated_scheme_by_name(monkeypatch):
+    """Duplicated Ultimate schemes get a fresh random GUID; the probe must
+    recognize them by name, not only by the canonical GUIDs."""
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    active = ("Power Scheme GUID: 11111111-2222-3333-4444-555555555555  "
+              "(Ultimate Performance)")
+    monkeypatch.setattr(ck, "_run", lambda cmd, timeout=15.0: active)
+    res = ck.SystemCheckup("", HardwareInfo())._c_power()
+    assert res.status == "ok"
+    assert "Ultimate" in res.detail
+
+
+def test_power_fix_reuses_existing_ultimate_copy(monkeypatch):
+    """The fix must activate an existing Ultimate copy instead of minting a
+    new duplicate on every click."""
+    from kovadapt.optimize import checkup as ck
+
+    ult = "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000"
+    listing = (
+        "Existing Power Schemes (* Active)\n"
+        "-----------------------------------\n"
+        "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced) *\n"
+        f"Power Scheme GUID: {ult}  (Ultimate Performance)\n"
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=15.0):
+        calls.append(cmd)
+        if cmd[1] == "/list":
+            return listing
+        if cmd[1] == "/getactivescheme":
+            return f"Power Scheme GUID: {ult}  (Ultimate Performance)"
+        return ""
+
+    monkeypatch.setattr(ck, "_run", fake_run)
+    msg = ck.SystemCheckup("", HardwareInfo())._f_power()
+    assert "Ultimate" in msg
+    assert not any("-duplicatescheme" in c for call in calls for c in call)
+    assert ["powercfg", "/setactive", ult] in calls

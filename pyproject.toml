@@ -1,18 +1,30 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kovadapt"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Adaptive difficulty engine for KovaaK's: ML-driven scenario regeneration, mouse telemetry analysis, and performance tuning"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Arjun Pemmasani" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+]
 dependencies = [
     "numpy>=1.24",
 ]
+
+[project.urls]
+Repository = "https://github.com/apemm/KovaaksAdjusted"
+Issues = "https://github.com/apemm/KovaaksAdjusted/issues"
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6", "pyqtgraph>=0.13", "psutil>=5.9"]
@@ -25,6 +37,9 @@ kovadapt = "kovadapt.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["kovadapt*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "kovadapt.__version__" }
 
 [tool.ruff]
 line-length = 100

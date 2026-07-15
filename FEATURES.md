@@ -43,7 +43,7 @@
 ## Roadmap
 
 ### v0.4 — performance & polish
-- Profile-guided performance pass over analysis hot paths (vectorize `_smooth`, cache resamples); consider a Rust extension for the Raw Input pump + flick segmentation if profiling justifies leaving pure Python.
+- ~~Vectorize `_smooth`~~, ~~linearize heatmap recentering~~, ~~window run snapshots to run length~~ (landed in 0.3.0); remaining: share one resample grid across `build_report` (only pays off at 4–8 kHz polling), and consider a Rust extension for the Raw Input pump + flick segmentation if profiling justifies leaving pure Python.
 - Auto-verified HAGS state via D3DKMTQueryAdapterInfo (registry intent vs live driver state).
 - Installer polish: signed builds, winget manifest, in-app update check.
 - Richer ML: per-flick Fitts-law residual model for skill tracking over weeks; bandit over dodge parameters, not just regions.

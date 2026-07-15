@@ -16,16 +16,20 @@ KovaaK's has no modding API, so adaptation happens **between** runs: each finish
 ## Install
 
 ```
+git clone https://github.com/apemm/KovaaksAdjusted.git
+cd KovaaksAdjusted
 pip install -e .[gui]          # core + desktop app
 pip install -e .[gui,clips]    # + video clips of notable moments (dxcam)
 ```
 
 Requires Python 3.10+ on Windows (analysis and tests run anywhere; capture is Windows-only). For a no-Python install, build the standalone exe: `powershell -File packaging/build.ps1` → `dist/kovadapt/kovadapt.exe`.
 
+kovadapt looks for the game in the usual Steam locations (`C:\Program Files (x86)\Steam`, `C:\Program Files\Steam`, `D:\SteamLibrary`). If yours lives elsewhere, set the `KOVAAKS_ROOT` environment variable to the `FPSAimTrainer` folder, or put the path in the `kovaaks_root` field of `~/.kovadapt/settings.json` — a value there takes priority over the environment variable.
+
 ## Use
 
 ```
-kovadapt gui                        # desktop app: dashboard, analysis, config, optimizer
+kovadapt gui                        # desktop app: dashboard, analysis, adaptability, optimizer
 kovadapt scenarios [filter]         # list installed scenarios
 kovadapt watch "1wall 6targets small"   # headless adaptation loop
 kovadapt status "1wall 6targets small"  # learned profile + region heatmap + calibration
@@ -50,7 +54,17 @@ Minimal invasiveness is a design rule: probes are read-only, automated fixes are
 
 ## How it works
 
-Each finished run's stats CSV is parsed and joined with the raw mouse trace for that run's time window. Flicks are segmented click-anchored (movement onset → click), and characterized by amplitude, direction, peak speed, overshoot along the flick axis, and corrective submovements. Per-region deficits (overshoot + corrections + slowness, z-scored) feed conjugate-normal posteriors; Thompson sampling picks the next focus region; spawn points are resampled toward it; target profiles are rescaled; dodge parameters are jittered by the OU state and skewed toward your weak side. Session fatigue is a Theil-Sen trend over per-run flick quality. See `FEATURES.md` for the full feature map and roadmap.
+KovaaK's has no modding API, so kovadapt never touches a scenario you are playing. Instead, it treats every finished run as one observation in a longer experiment: when the game writes a run's stats CSV, kovadapt folds that run into a per-scenario model of your aim and rewrites `<Scenario> [Adaptive].sce` before the next load. The file the game reads is an ordinary scenario; the process that produced it is not.
+
+The model draws on two kinds of measurement. The stats CSV records outcomes — what was hit and how long each kill took — but outcomes conflate distinct failures: a miss may indicate a badly aimed flick or a well-aimed flick that arrived too slowly. Hence the second source. A background thread registers for Raw Input and records relative mouse deltas exactly as the game receives them, immune to Windows pointer ballistics. When a run ends, its window of the recording is cut into flicks by working backward from each click to the onset of movement (the point where speed rises through 8% of the segment's peak, clamped at the previous click), and each flick is characterized by amplitude, direction, peak speed, overshoot along the flick axis, and the corrective submovements needed to settle. These features separate the miss that came from overshooting from the miss that came from hesitating, which is precisely the distinction accuracy alone cannot make.
+
+Adaptation runs on three controllers. The wall is divided into a 3×3 grid, and each region carries a Gaussian posterior over how much weaker you are there than your own average; per-region deficits from telemetry — overshoot, corrections, and Fitts-normalized slowness, z-scored — update those posteriors after every run. Focus is chosen by Thompson sampling: draw one sample from each posterior and commit to the worst draw. Most draws exploit the model's current belief, but roughly a fifth land elsewhere, and this waste is deliberate: a weak side moves as you improve, so a purely greedy policy would keep drilling a weakness that no longer exists. Alongside the bandit, a size controller holds hit rate inside a 60–80% band — difficult enough to force adaptation, comfortable enough to permit it — and an Ornstein-Uhlenbeck process drifts target micro-movement between runs so that no two variants reward the same memorized rhythm; strafe timing is skewed toward whichever direction your flicks measurably favor less.
+
+Two constraints shape everything downstream. Edits always apply to the base scenario, never to the previous variant, so multipliers remain absolute and difficulty cannot compound silently across sessions. And the plan's seed is the only randomness that reaches the generator, so a given plan regenerates its `.sce` byte for byte — any variant you have ever played can be reproduced exactly.
+
+Finally, a session-level Theil-Sen fit over per-run flick quality watches for fatigue. When the trend declines, kovadapt suggests a break and can ease the emitted plan — larger, calmer targets — without ever writing that easing into the profile, so the next session resumes at your true difficulty rather than the tired one. The intent throughout is the same as a good coach's: not to make the drill harder, but to keep it aimed at whatever you are currently worst at.
+
+See `FEATURES.md` for the full feature map and roadmap.
 
 ## Development
 
@@ -60,3 +74,7 @@ pytest
 ```
 
 Test suites run on any OS — Windows-only capture (Raw Input, dxcam) is import-guarded.
+
+## License
+
+MIT — see `LICENSE`.

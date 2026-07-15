@@ -319,6 +319,12 @@ class OptimizerWindow(QWidget):
         self._log("launch options copied to clipboard")
 
     # ------------------------------------------------------------------
+    def shutdown(self) -> None:
+        """Wait for the scan thread before Qt teardown (called at app exit;
+        a QThread destroyed while running is a fatal abort in Qt 6)."""
+        if self._scan is not None and self._scan.isRunning():
+            self._scan.wait(20000)
+
     def closeEvent(self, event) -> None:
         # Closing the window hides it; the watchdog keeps running (that is
         # its point). It stops when the whole app exits (daemon thread).

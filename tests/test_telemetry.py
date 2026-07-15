@@ -301,3 +301,62 @@ def test_readiness_partial_regions():
     r = prof.readiness(9)
     assert 0.5 < r["score"] < 1.0
     assert "7 wall regions unexplored" in r["message"]
+
+
+# ------------------------------------------------ v0.3.x hardening regressions
+def test_smooth_matches_reference_recurrence():
+    """_smooth was vectorized (truncated exponential FIR); it must stay
+    numerically equivalent to the exact causal-EMA recurrence."""
+    from kovadapt.analysis.movement import _smooth
+
+    rng = np.random.default_rng(7)
+    for n in (1, 2, 40, 5000):
+        v = rng.normal(0.0, 1000.0, n)
+        a = 1.0 - np.exp(-1.0 / (500.0 * 8.0 / 1000.0))
+        ref = np.empty(n)
+        acc = v[0]
+        for i, x in enumerate(v):
+            acc += a * (x - acc)
+            ref[i] = acc
+        got = _smooth(v, 500.0)
+        assert np.max(np.abs(ref - got)) <= 1e-6 + 1e-8 * np.max(np.abs(ref))
+
+
+def test_gap_p99_sees_mid_movement_stalls():
+    """Stalls of 30-200 ms during movement must surface in gap_ms_p99
+    (the old <30 ms window structurally hid every hitch it documented)."""
+    b = TraceBuilder()
+    for _ in range(30):
+        b.move(30, 0, dur=0.02)
+        b.rest(0.05)                  # 50 ms stall mid-motion
+        b.move(30, 0, dur=0.02)
+    b.click()
+    ih = b.build().input_health()
+    assert 900 <= ih["polling_hz_est"] <= 1100   # cadence still from <30 ms gaps
+    assert ih["jitter_ms"] < 1.0
+    assert ih["gap_ms_p99"] > 30.0               # the stalls are now visible
+
+
+def test_buffers_windowed_snapshot_matches_full(monkeypatch):
+    """Chunk-granular to_trace(t0, t1) + exact window() must equal the
+    full-session concatenation + window()."""
+    import kovadapt.telemetry.raw_input as ri
+
+    monkeypatch.setattr(ri, "_CHUNK", 50)
+    buf = ri._Buffers()
+    t0 = 1000.0
+    for i in range(500):
+        buf.add(t0 + i * 0.001, 1, -1)
+    buf.clicks.extend([t0 + 0.1, t0 + 0.3])
+    buf.clicks_up.extend([t0 + 0.16, t0 + 0.36])
+
+    lo, hi = t0 + 0.101, t0 + 0.399
+    full = buf.to_trace().window(lo, hi)
+    fast = buf.to_trace(lo, hi)
+    assert fast.t.size < buf.to_trace().t.size   # actually pre-trimmed
+    fast = fast.window(lo, hi)
+    assert np.array_equal(full.t, fast.t)
+    assert np.array_equal(full.dx, fast.dx)
+    assert np.array_equal(full.dy, fast.dy)
+    assert np.array_equal(full.clicks, fast.clicks)
+    assert np.array_equal(full.clicks_up, fast.clicks_up)

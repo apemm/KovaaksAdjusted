@@ -154,7 +154,19 @@ def cmd_gui(args) -> None:
     sys.exit(gui_main())
 
 
+def _utf8_stdio() -> None:
+    # Piped/redirected output on Windows defaults to the legacy codepage, which
+    # mangles the dashes and glyphs in checkup/status output. Streams can be
+    # absent or non-reconfigurable in a frozen GUI launch, hence the guard.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> None:
+    _utf8_stdio()
     p = argparse.ArgumentParser(prog="kovadapt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)

@@ -105,10 +105,8 @@ class GameWatchdog:
 
     # ------------------------------------------------------------------
     def _find_pid(self) -> int | None:
-        try:
-            import psutil
-        except ImportError:
-            return None
+        import psutil  # ImportError surfaces in _run — never swallow it here
+
         for p in psutil.process_iter(["name"]):
             if GAME_PROCESS.lower() in (p.info["name"] or "").lower():
                 return p.pid
@@ -116,7 +114,14 @@ class GameWatchdog:
 
     def _run(self) -> None:
         while not self._stop.wait(self.poll_interval):
-            pid = self._find_pid()
+            try:
+                pid = self._find_pid()
+            except ImportError:
+                # Without psutil every poll would silently see "no game";
+                # say so once and stop instead.
+                self.on_event("watchdog stopped — psutil missing "
+                              "(pip install kovadapt[gui])")
+                return
             if pid is None:
                 self._tuned_pid = None       # game closed; re-arm
                 continue

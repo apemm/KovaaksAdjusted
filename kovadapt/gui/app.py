@@ -59,11 +59,12 @@ class MainWindow(QMainWindow):
         if i == idx:
             self._tabs.setTabText(idx, "Analysis")
 
-    def closeEvent(self, event) -> None:  # stop watcher thread cleanly
+    def closeEvent(self, event) -> None:  # stop worker threads cleanly
         w = self.dashboard.worker
         if w is not None:
             w.stop()
             w.wait(3000)
+        self.optimizer.shutdown()  # in-flight checkup scan (QThread)
         super().closeEvent(event)
 
 

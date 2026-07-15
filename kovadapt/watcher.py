@@ -87,9 +87,10 @@ class SessionWatcher:
         """Slice the live recording down to this run's time window."""
         if self.recorder is None:
             return None
-        trace = self.recorder.snapshot()
         win = run_time_window(run)
-        return trace.window(*win) if win else trace
+        if win:
+            return self.recorder.snapshot(*win).window(*win)
+        return self.recorder.snapshot()
 
     def _report_path(self, run) -> Path:
         p = self.traces.path_for(run.scenario, run.started.isoformat())
@@ -150,8 +151,12 @@ class SessionWatcher:
         if not profile.archetype:
             profile.archetype = detect_archetype(self.base, run)
             self.log(f"  archetype: {profile.archetype}")
-        # Bias needs both sides sampled; skip low-telemetry runs entirely.
-        bias = rep.bias.get("bias_score") if rep.n_flicks >= 8 else None
+        # Bias needs both sides sampled: directional_bias returns 0.0 for
+        # "no evidence" too, and a vertical-heavy run must not decay a
+        # learned skew toward balanced.
+        both_sides = (rep.bias.get("left", {}).get("n", 0) >= 3
+                      and rep.bias.get("right", {}).get("n", 0) >= 3)
+        bias = rep.bias.get("bias_score") if rep.n_flicks >= 8 and both_sides else None
         self.engine.observe(
             profile, run,
             region_deficits=rep.region_deficits or None,
