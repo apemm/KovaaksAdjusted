@@ -168,6 +168,11 @@ class Dashboard(QWidget):
         self.restyle(theme.current())
         self._refresh_install()
 
+    @property
+    def last_profile(self) -> PlayerProfile | None:
+        """Freshest loaded profile (updated before report_ready re-emits)."""
+        return self._last_profile
+
     # ------------------------------------------------------------- theming
     def restyle(self, pal=None) -> None:
         pal = pal or theme.current()

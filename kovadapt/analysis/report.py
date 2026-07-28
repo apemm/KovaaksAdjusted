@@ -69,6 +69,8 @@ class RunReport:
     total_travel_counts: float = 0.0
     mean_flick_ms: float = 0.0
     overshoot_rate: float = 0.0
+    mean_corrections: float = 0.0    # corrective submovements per flick
+    fitts_slope_ms: float = 0.0      # ms of flick time per bit of distance (0 = not enough flicks)
     summary_text: str = ""
     trace_file: str = ""
     clip_files: dict = field(default_factory=dict)   # notable idx -> mp4 path
@@ -158,6 +160,16 @@ def build_report(
         if flicks:
             rep.mean_flick_ms = float(np.mean([f.duration for f in flicks]) * 1000)
             rep.overshoot_rate = float(np.mean([f.overshoot > 0.1 for f in flicks]))
+            rep.mean_corrections = float(np.mean([f.corrections for f in flicks]))
+            # Within-run Fitts fit: movement time vs log2 distance. The slope
+            # (ms/bit) falling across sessions is motor improvement even when
+            # scores plateau (see analysis/insights.py: dx-fitts-progress).
+            amps = np.array([f.amplitude for f in flicks], dtype=np.float64)
+            durs = np.array([f.duration for f in flicks], dtype=np.float64) * 1000.0
+            ok = amps > 1.0
+            if int(ok.sum()) >= 8:
+                x = np.log2(1.0 + amps[ok])
+                rep.fitts_slope_ms = float(np.polyfit(x, durs[ok], 1)[0])
         heat, _, _ = movement_heatmap(rt, grid=grid)
     rep.summary_text = _summary_text(rep, bool(flicks))
     return rep, flicks, heat

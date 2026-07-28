@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
             view.restyle(pal)
 
     def _on_report(self, rep) -> None:
-        self.analysis.show_report(rep)
+        self.analysis.show_report(rep, profile=self.dashboard.last_profile)
         self.optimizer.note_report(rep)
         idx = self._tabs.indexOf(self.analysis)
         self._tabs.setTabText(idx, "Analysis •")

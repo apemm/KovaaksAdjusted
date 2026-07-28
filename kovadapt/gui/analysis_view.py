@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,13 +23,45 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..analysis.insights import Insight, generate_insights
 from ..analysis.movement import movement_heatmap, segment_flicks
 from ..analysis.report import RunReport
-from ..config import Settings
+from ..config import ADAPTIVE_SUFFIX, Settings
+from ..profile.player import PlayerProfile
 from ..telemetry.trace import MouseTrace
 from . import theme
 from .onboarding import HintBar
 from .replay import TrajectoryReplay
+
+
+class _InsightCard(QFrame):
+    """One coach insight: severity dot, title, sourced body + prescription,
+    and the reasoning/citations chain (the cite-everything rule made visible)."""
+
+    def __init__(self, ins: Insight, parent=None) -> None:
+        super().__init__(parent)
+        self.setProperty("card", True)
+        pal = theme.current()
+        color = {"warning": pal.warn, "attention": pal.bad}.get(ins.severity, pal.good)
+        head = QLabel(f"<span style='color:{color}'>●</span>  <b>{ins.title}</b>"
+                      f"  <span style='color:{pal.fg_dim}'>{ins.confidence}</span>")
+        head.setTextFormat(Qt.RichText)
+        body = QLabel(f"{ins.body}<br><b>Suggestion:</b> {ins.prescription}")
+        body.setTextFormat(Qt.RichText)
+        body.setWordWrap(True)
+        why = QLabel(f"why: {ins.reasoning}")
+        why.setWordWrap(True)
+        why.setProperty("dim", True)
+        cites = QLabel(f"{len(ins.sources)} source{'s' if len(ins.sources) != 1 else ''}")
+        cites.setProperty("dim", True)
+        cites.setToolTip("\n".join(ins.sources))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(3)
+        lay.addWidget(head)
+        lay.addWidget(body)
+        lay.addWidget(why)
+        lay.addWidget(cites)
 
 
 def _kind_color(kind: str) -> str:
@@ -101,13 +134,21 @@ class AnalysisView(QWidget):
         split.addWidget(right)
         split.setSizes([460, 460])
 
+        # coach insights (populated per report; hidden when there are none)
+        self.coach_box = QGroupBox("Coach — every insight shows its evidence and sources")
+        self.coach_lay = QVBoxLayout(self.coach_box)
+        self.coach_lay.setSpacing(6)
+        self.coach_box.hide()
+
         lay = QVBoxLayout(self)
         if settings is not None:
             lay.addWidget(HintBar(settings, (
                 "Every watched run lands here automatically — or use "
                 "<b>Open report…</b> for a saved one. Click a notable moment "
-                "to replay just that flick; green is clean, red overshot.")))
+                "to replay just that flick; green is clean, red overshot. "
+                "Hover a card's source count for its citations.")))
         lay.addLayout(head)
+        lay.addWidget(self.coach_box)
         lay.addWidget(split, 1)
 
     # ------------------------------------------------------------------
@@ -116,6 +157,8 @@ class AnalysisView(QWidget):
         self.bias_plot.setBackground(pal.bg_alt)
         self.heat_plot.setBackground(pal.bg_alt)
         self.replay.restyle()
+        if getattr(self, "_last_insights", None) is not None:
+            self._fill_insights(*self._last_insights)   # cards bake colors
         if self.report is not None:
             self._draw_bias(self.report)
             for i in range(self.moments.count()):
@@ -124,9 +167,11 @@ class AnalysisView(QWidget):
                 it.setForeground(pg.mkColor(_kind_color(kind)))
 
     # ------------------------------------------------------------------
-    def show_report(self, rep: RunReport, trace: MouseTrace | None = None) -> None:
+    def show_report(self, rep: RunReport, trace: MouseTrace | None = None,
+                    profile: PlayerProfile | None = None) -> None:
         self.report = rep
         self.trace = trace
+        self._fill_insights(rep, profile)
         if trace is None and rep.trace_file and Path(rep.trace_file).is_file():
             self.trace = MouseTrace.load(rep.trace_file)
         # flicks aren't serialized in the report — recompute from the trace
@@ -147,6 +192,26 @@ class AnalysisView(QWidget):
         self.show_report(RunReport.load(path))
 
     # ------------------------------------------------------------------
+    def _fill_insights(self, rep: RunReport, profile: PlayerProfile | None) -> None:
+        while self.coach_lay.count():
+            item = self.coach_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if profile is None and self._settings is not None:
+            # Saved-report path: reload the profile the run belongs to.
+            name = rep.scenario
+            if not name.endswith(ADAPTIVE_SUFFIX):
+                name += ADAPTIVE_SUFFIX
+            profile = PlayerProfile.load(name, self._settings.profile_path)
+        if profile is None or self._settings is None or profile.run_count == 0:
+            self.coach_box.hide()
+            return
+        insights = generate_insights(rep, profile, self._settings)
+        self._last_insights = (rep, profile)
+        for ins in insights:
+            self.coach_lay.addWidget(_InsightCard(ins))
+        self.coach_box.setVisible(bool(insights))
+
     def _draw_bias(self, rep: RunReport) -> None:
         self.bias_plot.clear()
         b = rep.bias or {}
