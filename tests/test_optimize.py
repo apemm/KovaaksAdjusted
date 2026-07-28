@@ -212,6 +212,8 @@ def test_power_probe_matches_duplicated_scheme_by_name(monkeypatch):
     from kovadapt.optimize import checkup as ck
 
     monkeypatch.setattr(ck, "WINDOWS", True)
+    # The GUID note lives in the REAL HKCU — never let tests read it.
+    monkeypatch.setattr(ck, "_stored_scheme_guid", lambda: None)
     active = ("Power Scheme GUID: 11111111-2222-3333-4444-555555555555  "
               "(Ultimate Performance)")
     monkeypatch.setattr(ck, "_run", lambda cmd, timeout=15.0: active)
@@ -224,6 +226,12 @@ def test_power_fix_reuses_existing_ultimate_copy(monkeypatch):
     """The fix must activate an existing Ultimate copy instead of minting a
     new duplicate on every click."""
     from kovadapt.optimize import checkup as ck
+
+    # The GUID note lives in the REAL HKCU — capture writes, never touch it
+    # (an early version of this test overwrote the developer's actual value).
+    stored: list[str] = []
+    monkeypatch.setattr(ck, "_stored_scheme_guid", lambda: None)
+    monkeypatch.setattr(ck, "_store_scheme_guid", stored.append)
 
     ult = "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000"
     listing = (
@@ -247,6 +255,7 @@ def test_power_fix_reuses_existing_ultimate_copy(monkeypatch):
     assert "Ultimate" in msg
     assert not any("-duplicatescheme" in c for call in calls for c in call)
     assert ["powercfg", "/setactive", ult] in calls
+    assert stored == [ult]      # the note is recorded, via the mock only
 
 
 # ------------------------------------------------------ core parking checkup

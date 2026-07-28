@@ -112,6 +112,13 @@ def check_install(settings: Settings) -> InstallStatus:
     st.root_found = bool(settings.kovaaks_root) and (root / "stats").is_dir()
     if st.root_found:
         apps = _steamapps_dir(root)
+        if apps is None:
+            # kovaaks_root may be a junction/symlink whose textual path has
+            # no "steamapps" component — the resolved path usually does.
+            try:
+                apps = _steamapps_dir(root.resolve())
+            except OSError:
+                apps = None
         st.manifest_found = (
             apps is not None and (apps / f"appmanifest_{STEAM_APP_ID}.acf").is_file()
         )
@@ -214,7 +221,11 @@ def play_adaptive(settings: Settings, base_scenario: str, runs: int = 5) -> tupl
         )
     except OSError as exc:
         return f"could not write playlist: {exc}", False
-    msg, ok = launch_scenario(adaptive)
-    if ok:
-        msg += " — if the game stays in the menu, open Playlists → kovadapt adaptive"
-    return msg, ok
+    # Deep links cannot open locally-generated scenarios (verified in-game),
+    # so the playlist is the primary path; the deep-link URL still boots the
+    # game and would start working if KovaaK's ever resolves local names.
+    err, ok = _open_steam_url(scenario_url(adaptive))
+    if not ok:
+        return err, False
+    return ("KovaaK's launching — in-game, open Playlists → kovadapt adaptive "
+            "(or browse local scenarios) to start the task", True)

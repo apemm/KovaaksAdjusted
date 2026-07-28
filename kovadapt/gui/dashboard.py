@@ -4,7 +4,7 @@ start/stop the adaptation loop, live profile stats, overlay controls, log."""
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -56,8 +56,8 @@ class Dashboard(QWidget):
         self.play_btn = QPushButton("▶  Play adaptive task")
         self.play_btn.setProperty("accent", True)
         self.play_btn.setToolTip(
-            "Start watching, queue the adaptive playlist, and jump the game "
-            "straight into the adaptive scenario (Steam deep link)")
+            "Start watching, queue the adaptive playlist, and launch KovaaK's "
+            "— in-game, open Playlists → kovadapt adaptive to play")
         self.play_btn.clicked.connect(self.play)
 
         self.scenario = QComboBox()
@@ -98,7 +98,13 @@ class Dashboard(QWidget):
         self.ov_opacity.setToolTip("Overlay opacity")
         self.ov_opacity.valueChanged.connect(
             lambda v: self.overlay.set_opacity(v / 100))
-        self.ov_opacity.sliderReleased.connect(self._save_settings)
+        # Debounced persist: keyboard/wheel changes never fire sliderReleased.
+        self._opacity_save = QTimer(self)
+        self._opacity_save.setSingleShot(True)
+        self._opacity_save.setInterval(800)
+        self._opacity_save.timeout.connect(self._save_settings)
+        self.ov_opacity.valueChanged.connect(
+            lambda _v: self._opacity_save.start())
         self.ov_auto = QCheckBox("Show when a session starts")
         self.ov_auto.setChecked(settings.overlay_autoshow)
         self.ov_auto.toggled.connect(self._set_autoshow)

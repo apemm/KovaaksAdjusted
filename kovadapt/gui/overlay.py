@@ -166,11 +166,17 @@ class OverlayWindow(QWidget):
         self.show()
 
     def _place(self) -> None:
+        from PySide6.QtGui import QGuiApplication
+
         # (-1, -1) is the only "never dragged" sentinel — single coordinates
         # are legitimately negative on monitors left of/above the primary.
         if (self.s.overlay_x, self.s.overlay_y) != (-1, -1):
             self.move(self.s.overlay_x, self.s.overlay_y)
-            return
+            if any(scr.geometry().intersects(self.frameGeometry())
+                   for scr in QGuiApplication.screens()):
+                return
+            # Saved position is on a monitor that no longer exists — fall
+            # through to the default corner instead of showing off-screen.
         screen = self.screen() or None
         if screen is None:
             return

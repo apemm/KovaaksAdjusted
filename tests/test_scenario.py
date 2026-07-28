@@ -390,8 +390,32 @@ def test_real_generate_variant_cata(kovaaks_root: Path, tmp_path: Path):
     gen_r = float(gen.get_in_section("Character Profile", "Quaker", "MainBBRadius"))
     assert abs(gen_r - base_r * plan.target_scale) < 1e-6
     if plan.target_max_speed > 0:
+        # Quaker has an AUTHORED MaxSpeed (1300): the variant must modulate
+        # it, never replace it with the absolute static-wall ramp.
+        base_speed = float(base.get_in_section("Character Profile", "Quaker", "MaxSpeed"))
+        assert base_speed > 0
         assert float(gen.get_in_section("Character Profile", "Quaker", "MaxSpeed")) == \
-            pytest.approx(plan.target_max_speed)
+            pytest.approx(round(base_speed * plan.target_speed_mult, 1))
     for key, val in plan.dodge_params.items():
         got = gen.get_in_section("Dodge Profile", "Short Strafes", key)
         assert got is not None and float(got) == pytest.approx(val, abs=1e-6)
+
+
+def test_generate_variant_authored_speed_is_scaled_not_replaced(tmp_path: Path):
+    """A bot with authored MaxSpeed > 0 keeps its speed class: the variant
+    multiplies by plan.target_speed_mult (0.65-1.35) instead of writing the
+    0-170 absolute ramp meant for static walls."""
+    fast = MINI_SCE.replace("MaxSpeed=0.0", "MaxSpeed=1300.0")
+    src = tmp_path / "fast.sce"
+    src.write_text(fast)
+    s = Settings(kovaaks_root=str(tmp_path))
+    plan = AdaptationEngine(s, rng=np.random.default_rng(3)).plan(
+        PlayerProfile(scenario="fast [Adaptive]"), None)
+    out = generate_adaptive_variant(src, plan, s, tmp_path / "fast gen.sce")
+    got = float(SceFile.read(out).get_in_section(
+        "Character Profile", "target_char", "MaxSpeed"))
+    if plan.target_max_speed > 0:
+        assert got == pytest.approx(round(1300.0 * plan.target_speed_mult, 1))
+        assert got > 170.0     # never collapsed to the absolute ramp's range
+    else:
+        assert got == pytest.approx(1300.0)   # untouched when speed edit is off

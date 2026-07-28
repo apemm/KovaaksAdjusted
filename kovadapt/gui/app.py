@@ -139,7 +139,13 @@ class MainWindow(QMainWindow):
             w.stop()
             # A QThread destroyed while running is a fatal abort in Qt 6;
             # stop latency is ~1s, so this wait practically always succeeds.
-            w.wait(10000)
+            if not w.wait(10000):
+                # Post-run processing can legitimately exceed it (clip
+                # encoding on a slow disk). Losing one run's adaptation
+                # beats aborting the whole process at exit — the profile
+                # save is atomic, so no file is left torn.
+                w.terminate()
+                w.wait(2000)
         self.dashboard.shutdown()  # overlay window
         self.optimizer.shutdown()  # optimizer window + in-flight scan QThread
         super().closeEvent(event)

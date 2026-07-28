@@ -20,7 +20,13 @@ from ..config import Settings
 from ..profile.player import PlayerProfile
 from ..stats.models import Run
 from .bandit import ThompsonRegionBandit
-from .stochastic import OrnsteinUhlenbeck, sample_dodge_params, movement_speed, squash
+from .stochastic import (
+    OrnsteinUhlenbeck,
+    movement_speed,
+    sample_dodge_params,
+    speed_multiplier,
+    squash,
+)
 
 
 @dataclass
@@ -33,7 +39,8 @@ class AdaptationPlan:
     focus_region: str
     spawn_weights: dict[str, float]
     dodge_params: dict[str, float] = field(default_factory=dict)
-    target_max_speed: float = 0.0
+    target_max_speed: float = 0.0   # absolute ramp, used when base MaxSpeed is 0
+    target_speed_mult: float = 1.0  # multiplier on an authored base MaxSpeed > 0
     seed: int = 0
     dodge_bias: float = 0.0    # strafe skew toward the weak side (+ = left)
     fatigue: float = 0.0       # easing applied to this plan (0 = none)
@@ -169,6 +176,7 @@ class AdaptationEngine:
             dodge_params=sample_dodge_params(out_movement, rng=self.rng,
                                              direction_bias=dodge_bias),
             target_max_speed=movement_speed(out_movement),
+            target_speed_mult=speed_multiplier(out_movement),
             seed=seed,
             dodge_bias=dodge_bias,
             fatigue=fatigue,

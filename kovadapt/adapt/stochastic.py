@@ -94,5 +94,14 @@ def sample_dodge_params(
 
 
 def movement_speed(movement: float, base_speed: float = 170.0) -> float:
-    """Character MaxSpeed for the target bots as a function of intensity."""
+    """Absolute MaxSpeed ramp for characters whose base speed is 0 (static
+    walls): movement intensity is the only thing that makes them move."""
     return round(float(np.interp(np.clip(movement, 0, 1), [0, 1], [0.0, base_speed])), 1)
+
+
+def speed_multiplier(movement: float) -> float:
+    """Scale factor for characters with an AUTHORED MaxSpeed (> 0): movement
+    modulates around the scenario author's speed instead of replacing it —
+    a 1300-speed strafe bot must never be overwritten with the 0-170
+    static-wall ramp. 0 eases to 65% of authored, 1 pushes to 135%."""
+    return round(float(np.interp(np.clip(movement, 0, 1), [0, 1], [0.65, 1.35])), 3)

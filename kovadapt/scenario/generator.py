@@ -177,7 +177,20 @@ def generate_adaptive_variant(
             if key in _SIZE_KEYS:
                 sce.lines[i] = _scale_line(sce.lines[i], plan.target_scale)
         if plan.target_max_speed > 0:
-            sce.set_in_section("Character Profile", char, "MaxSpeed", plan.target_max_speed)
+            try:
+                base_speed = float(
+                    sce.get_in_section("Character Profile", char, "MaxSpeed") or 0.0)
+            except ValueError:
+                base_speed = 0.0
+            if base_speed > 0:
+                # Authored speed (strafe/tracking bots): modulate around the
+                # author's value. Writing the absolute static-wall ramp here
+                # would slow a 1300-speed bot to a crawl.
+                sce.set_in_section("Character Profile", char, "MaxSpeed",
+                                   round(base_speed * plan.target_speed_mult, 1))
+            else:
+                sce.set_in_section("Character Profile", char, "MaxSpeed",
+                                   plan.target_max_speed)
 
     # --- micro-movement: patch every dodge profile the target bots use ----
     # ([Bot Profile] sections are keyed by the *bot* name, not the character.)
