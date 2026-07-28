@@ -199,7 +199,11 @@ class PlayerProfile:
         p.parent.mkdir(parents=True, exist_ok=True)
         d = {k: v for k, v in self.__dict__.items() if k != "regions"}
         d["regions"] = {k: r.__dict__ for k, r in self.regions.items()}
-        p.write_text(json.dumps(d, indent=2))
+        # Atomic replace: the GUI thread reloads this file on every report,
+        # and an unclean shutdown mid-write must never brick the profile.
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(d, indent=2))
+        tmp.replace(p)
         return p
 
     @classmethod

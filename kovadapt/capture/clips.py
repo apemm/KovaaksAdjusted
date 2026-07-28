@@ -10,10 +10,14 @@ dependencies (and on non-Windows platforms for analysis/tests).
 Design: a background thread grabs frames at `fps` into a fixed-size ring
 buffer covering `buffer_seconds` of wall-clock time. When the analysis
 pass flags notable moments, `save_clip(t0, t1, path)` slices the buffer by
-epoch timestamps and encodes the segment. Memory: 1080p BGRA at 30 fps for
-90 s is ~2.2 GB, so frames are stored downscaled (`scale`, default 0.5) and
-as BGR — ~420 MB at defaults. Capture overhead is one desktop duplication
-copy per frame; dxcam is the fastest Python option (Desktop Duplication API).
+epoch timestamps and encodes the segment. Memory: raw BGR frames would be
+~4 GB for the 90 s ring at 30 fps (0.5-scale 1080p; ~7.5 GB at 1440p), so
+frames are stored downscaled (`scale`, default 0.5) *and* JPEG-encoded at
+capture (~20x smaller: a few hundred MB at defaults) and decoded again in
+`save_clip`. Encoding a half-scale frame costs a few ms, which the 30 fps
+capture thread absorbs inside its frame period. Capture overhead is one
+desktop duplication copy per frame; dxcam is the fastest Python option
+(Desktop Duplication API).
 """
 
 from __future__ import annotations
@@ -35,6 +39,21 @@ except Exception:  # ImportError or dxcam's own platform errors
     cv2 = None
     CLIPS_AVAILABLE = False
 
+_JPEG_QUALITY = 85  # ring-buffer compression; visually lossless for aim review
+
+
+def _encode_frame(frame: np.ndarray) -> np.ndarray | None:
+    """JPEG-encode a BGR frame for the ring buffer (~20x smaller than raw).
+    Returns a 1-D uint8 array, or None if encoding failed. Callers must hold
+    the CLIPS_AVAILABLE / cv2 guard."""
+    ok, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
+    return enc if ok else None
+
+
+def _decode_frame(enc: np.ndarray) -> np.ndarray | None:
+    """Decode a ring-buffer JPEG back to a BGR frame (None on failure)."""
+    return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+
 
 class ClipRecorder:
     """Ring-buffer desktop recorder.
@@ -46,7 +65,8 @@ class ClipRecorder:
         rec.stop()
 
     Thread-safe: capture thread is the only writer; `save_clip` snapshots
-    the deque under the lock, then encodes without holding it.
+    the deque under the lock, then decodes and encodes the mp4 without
+    holding it.
     """
 
     def __init__(
@@ -61,6 +81,8 @@ class ClipRecorder:
         self.scale = scale
         self.monitor = monitor
         maxlen = int(fps * buffer_seconds) + 8
+        # (timestamp, JPEG bytes as 1-D uint8) — never raw BGR frames; a raw
+        # ring at these defaults would hold multiple GB (see module docstring).
         self._frames: deque[tuple[float, np.ndarray]] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -112,8 +134,10 @@ class ClipRecorder:
                         frame, None, fx=self.scale, fy=self.scale,
                         interpolation=cv2.INTER_AREA,
                     )
-                with self._lock:
-                    self._frames.append((t0, frame))
+                enc = _encode_frame(frame)
+                if enc is not None:
+                    with self._lock:
+                        self._frames.append((t0, enc))
             dt = time.time() - t0
             if dt < period:
                 time.sleep(period - dt)
@@ -130,7 +154,10 @@ class ClipRecorder:
             return None
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        h, w = frames[0][1].shape[:2]
+        first = _decode_frame(frames[0][1])
+        if first is None:
+            return None
+        h, w = first.shape[:2]
         # actual achieved rate, so playback speed matches wall clock
         span = frames[-1][0] - frames[0][0]
         rate = max((len(frames) - 1) / span, 1.0) if span > 0 else float(self.fps)
@@ -138,8 +165,13 @@ class ClipRecorder:
             str(path), cv2.VideoWriter_fourcc(*"mp4v"), rate, (w, h)
         )
         try:
-            for _, f in frames:
-                vw.write(f)
+            # Decode one frame at a time so the whole clip is never resident
+            # raw; the ring itself only ever holds JPEG bytes.
+            vw.write(first)
+            for _, enc in frames[1:]:
+                f = _decode_frame(enc)
+                if f is not None:
+                    vw.write(f)
         finally:
             vw.release()
         return path

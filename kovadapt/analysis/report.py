@@ -10,22 +10,34 @@ from pathlib import Path
 import numpy as np
 
 from ..stats.models import Run
-from ..telemetry.trace import MouseTrace
+from ..telemetry.trace import MouseTrace, ResampleCache
 from .movement import segment_flicks, directional_bias, region_deficits, movement_heatmap
 from .notable import find_notable_moments
 
 
 def run_time_window(run: Run) -> tuple[float, float] | None:
     """Epoch (start, end) of the run, reconstructed from the stats file's
-    wall-clock kill timestamps anchored to the run's date."""
+    wall-clock kill timestamps.
+
+    run.started (the filename timestamp) is the challenge END, so times are
+    anchored to that date; a wall-clock time later in the day than the end
+    time happened before midnight and belongs to the previous day
+    (midnight-spanning runs)."""
     start_str = run.summary.get("Challenge Start:")
     if not run.kills:
         return None
     day = datetime(run.started.year, run.started.month, run.started.day)
+    end_epoch = run.started.timestamp()
 
     def to_epoch(hhmmss: str) -> float:
         h, m, s = hhmmss.split(":")
-        return (day + timedelta(hours=int(h), minutes=int(m), seconds=float(s))).timestamp()
+        t = (day + timedelta(hours=int(h), minutes=int(m), seconds=float(s))).timestamp()
+        # The filename timestamp truncates milliseconds, so a same-day time
+        # can nominally exceed end_epoch by <1s; anything further ahead of
+        # the run's end must be pre-midnight -> previous day.
+        if t > end_epoch + 5.0:
+            t -= 86400.0
+        return t
 
     if start_str:
         t0 = to_epoch(start_str)
@@ -104,9 +116,20 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
     return " ".join(lines)
 
 
-def build_report(run: Run, trace: MouseTrace | None) -> tuple[RunReport, list, np.ndarray | None]:
+def build_report(
+    run: Run,
+    trace: MouseTrace | None,
+    *,
+    region_cols: int = 3,
+    region_rows: int = 3,
+) -> tuple[RunReport, list, np.ndarray | None]:
     """-> (report, flicks, heatmap). Flicks/heatmap returned separately for
-    the GUI (not serialized into JSON)."""
+    the GUI (not serialized into JSON).
+
+    region_cols/region_rows must match Settings.region_cols/region_rows so
+    the report's region_deficits keys line up with the bandit's region grid
+    (the r{row}c{col} cross-module contract); defaults preserve the 3x3
+    behavior for callers without Settings."""
     rep = RunReport(
         scenario=run.scenario,
         started_iso=run.started.isoformat(),
@@ -121,16 +144,20 @@ def build_report(run: Run, trace: MouseTrace | None) -> tuple[RunReport, list, n
     if trace is not None and len(trace) > 10:
         win = run_time_window(run)
         rt = trace.window(*win) if win else trace
-        flicks = segment_flicks(rt)
+        # One shared resample for every analysis pass: segment_flicks bins the
+        # packets once (500 Hz); movement_heatmap's 250 Hz grid is then derived
+        # from that cache instead of re-binning the whole packet stream.
+        grid = ResampleCache(rt)
+        flicks = segment_flicks(rt, grid=grid)
         rep.n_flicks = len(flicks)
         rep.bias = directional_bias(flicks)
-        rep.region_deficits = region_deficits(flicks)
+        rep.region_deficits = region_deficits(flicks, cols=region_cols, rows=region_rows)
         rep.notable = [asdict(m) for m in find_notable_moments(flicks)]
         rep.total_travel_counts = float(np.hypot(rt.dx.astype(np.float64), rt.dy.astype(np.float64)).sum())
         rep.input_health = rt.input_health()
         if flicks:
             rep.mean_flick_ms = float(np.mean([f.duration for f in flicks]) * 1000)
             rep.overshoot_rate = float(np.mean([f.overshoot > 0.1 for f in flicks]))
-        heat, _, _ = movement_heatmap(rt)
+        heat, _, _ = movement_heatmap(rt, grid=grid)
     rep.summary_text = _summary_text(rep, bool(flicks))
     return rep, flicks, heat

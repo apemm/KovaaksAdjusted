@@ -54,7 +54,6 @@ class AdaptationEngine:
     def __init__(self, settings: Settings, rng: np.random.Generator | None = None) -> None:
         self.s = settings
         self.rng = rng or np.random.default_rng()
-        self.ou = OrnsteinUhlenbeck(theta=settings.ou_theta, sigma=settings.ou_sigma)
 
     def _effective(self, profile: PlayerProfile) -> Settings:
         """Settings with the profile's archetype overrides applied."""
@@ -124,7 +123,10 @@ class AdaptationEngine:
             # Player running hotter than their norm => likely autopiloting.
             rel = last_run.kills_per_second() / profile.ewma_kps - 1.0
             pace_push = float(np.clip(rel, -0.5, 0.5))
-        profile.ou_state = self.ou.step(
+        # Built per-plan from the *effective* settings so archetype overrides
+        # of ou_theta/ou_sigma apply (contract: tunables via _effective()).
+        ou = OrnsteinUhlenbeck(theta=s.ou_theta, sigma=s.ou_sigma)
+        profile.ou_state = ou.step(
             profile.ou_state + s.pace_coupling_gain * pace_push, rng=self.rng
         )
         movement = squash(profile.ou_state, s.min_movement, s.max_movement)

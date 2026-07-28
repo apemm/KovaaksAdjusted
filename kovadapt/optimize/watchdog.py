@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from typing import Callable
 
 WINDOWS = sys.platform == "win32"
@@ -82,6 +83,10 @@ class GameWatchdog:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tuned_pid: int | None = None
+        # Epoch time.time() of each applied tuning (one per game launch) —
+        # the "tweak landed here" markers for before/after jitter evidence.
+        # Same clock as traces/reports, so they cross-correlate directly.
+        self.tune_times: list[float] = []
 
     @property
     def running(self) -> bool:
@@ -130,7 +135,9 @@ class GameWatchdog:
             msg, ok = apply_game_tuning()
             if ok:
                 self._tuned_pid = pid        # once per launch
-                self.on_event(f"game detected — {msg}")
+                ts = time.time()
+                self.tune_times.append(ts)
+                self.on_event(f"game detected — {msg} (tuned at epoch {ts:.3f})")
             else:
                 self._tuned_pid = pid        # don't spam retries on AccessDenied
                 self.on_event(f"game detected but not tuned: {msg}")

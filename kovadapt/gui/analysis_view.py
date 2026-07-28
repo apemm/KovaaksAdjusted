@@ -24,20 +24,26 @@ from PySide6.QtWidgets import (
 
 from ..analysis.movement import movement_heatmap, segment_flicks
 from ..analysis.report import RunReport
+from ..config import Settings
 from ..telemetry.trace import MouseTrace
+from . import theme
+from .onboarding import HintBar
 from .replay import TrajectoryReplay
-from .theme import ACCENT, BAD, GOOD
 
-_KIND_COLOR = {"overshoot": BAD, "hesitation": BAD, "slow_flick": "#d9a44f",
-               "clean_flick": GOOD}
+
+def _kind_color(kind: str) -> str:
+    pal = theme.current()
+    return {"overshoot": pal.bad, "hesitation": pal.bad,
+            "slow_flick": pal.warn, "clean_flick": pal.good}.get(kind, pal.accent)
 
 
 class AnalysisView(QWidget):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, settings: Settings | None = None, parent=None) -> None:
         super().__init__(parent)
         self.report: RunReport | None = None
         self.trace: MouseTrace | None = None
         self.flicks: list = []
+        self._settings = settings
 
         # header
         self.title = QLabel("No run analyzed yet")
@@ -96,8 +102,26 @@ class AnalysisView(QWidget):
         split.setSizes([460, 460])
 
         lay = QVBoxLayout(self)
+        if settings is not None:
+            lay.addWidget(HintBar(settings, (
+                "Every watched run lands here automatically — or use "
+                "<b>Open report…</b> for a saved one. Click a notable moment "
+                "to replay just that flick; green is clean, red overshot.")))
         lay.addLayout(head)
         lay.addWidget(split, 1)
+
+    # ------------------------------------------------------------------
+    def restyle(self, *_pal) -> None:
+        pal = theme.current()
+        self.bias_plot.setBackground(pal.bg_alt)
+        self.heat_plot.setBackground(pal.bg_alt)
+        self.replay.restyle()
+        if self.report is not None:
+            self._draw_bias(self.report)
+            for i in range(self.moments.count()):
+                it = self.moments.item(i)
+                kind = self.report.notable[i]["kind"] if i < len(self.report.notable) else ""
+                it.setForeground(pg.mkColor(_kind_color(kind)))
 
     # ------------------------------------------------------------------
     def show_report(self, rep: RunReport, trace: MouseTrace | None = None) -> None:
@@ -116,6 +140,8 @@ class AnalysisView(QWidget):
         self._fill_moments(rep)
         if self.trace is not None and len(self.trace) > 1:
             self.replay.load(self.trace, label="full run", flicks=self.flicks)
+        else:
+            self.replay.clear()
 
     def load_report_file(self, path: Path | str) -> None:
         self.show_report(RunReport.load(path))
@@ -130,7 +156,8 @@ class AnalysisView(QWidget):
             + 0.15 * (b.get(d) or {}).get("corrections", 0.0)
             for d in dirs
         ]
-        colors = [BAD if v == max(vals) and v > 0 else ACCENT for v in vals]
+        pal = theme.current()
+        colors = [pal.bad if v == max(vals) and v > 0 else pal.accent for v in vals]
         bars = pg.BarGraphItem(x=list(range(3)), height=vals, width=0.6,
                                brushes=colors, pens=[None] * 3)
         self.bias_plot.addItem(bars)
@@ -153,7 +180,7 @@ class AnalysisView(QWidget):
         self.moments.clear()
         for i, m in enumerate(rep.notable):
             it = QListWidgetItem(m["text"])
-            it.setForeground(pg.mkColor(_KIND_COLOR.get(m["kind"], ACCENT)))
+            it.setForeground(pg.mkColor(_kind_color(m["kind"])))
             it.setData(Qt.UserRole, i)
             self.moments.addItem(it)
         self.moments.blockSignals(False)

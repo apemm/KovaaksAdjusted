@@ -103,10 +103,24 @@ class Settings:
     # --- Telemetry & analysis (v0.2) ---
     telemetry_enabled: bool = True       # Raw Input mouse capture during watch
     telemetry_blend: float = 0.6         # weight of observed flick deficits vs run-level bandit credit
+    # Rolling retention (minutes) of the live mouse recording; runs are sliced
+    # out within seconds of ending, so only the recent window is ever needed.
+    # Bounds a multi-hour watch session to ~230 MB at 8 kHz (vs ~460 MB/hour
+    # unbounded). 0 = keep the whole session in memory.
+    telemetry_retention_min: float = 30.0
     clips_enabled: bool = False          # dxcam ring-buffer clips of notable moments (needs [clips] extra)
     clip_fps: int = 30
     clip_buffer_seconds: float = 90.0
     clip_scale: float = 0.5              # downscale factor for buffered frames
+    # --- App shell (v0.4): theme, overlay, onboarding ---
+    theme: str = "auto"                  # auto | dark | light ("auto" follows Windows)
+    overlay_opacity: float = 0.9         # in-game overlay window opacity (0.3-1.0)
+    overlay_clickthrough: bool = True    # overlay ignores the mouse (position with Unlock)
+    overlay_autoshow: bool = False       # pop the overlay whenever watching starts
+    overlay_x: int = -1                  # -1 = default corner (top-right of primary screen)
+    overlay_y: int = -1
+    show_hints: bool = True              # contextual hint bars across the app
+    onboarding_done: bool = False        # startup guide shown once until dismissed
     profile_dir: str = str(Path.home() / ".kovadapt")
 
     root: Path = field(init=False, repr=False)
@@ -126,6 +140,10 @@ class Settings:
         return self.root / "Saved" / "SaveGames" / "Scenarios"
 
     @property
+    def playlists_dir(self) -> Path:
+        return self.root / "Saved" / "SaveGames" / "Playlists"
+
+    @property
     def profile_path(self) -> Path:
         return Path(self.profile_dir)
 
@@ -139,7 +157,10 @@ class Settings:
         return dataclasses.replace(self, **ov) if ov else self
 
     def save(self, path: Path | None = None) -> Path:
-        path = path or self.profile_path / "settings.json"
+        # Default to the canonical bootstrap file load() reads. profile_dir is
+        # itself a settings.json field, so saving next to a customized
+        # profile_dir would write a file no startup ever loads again.
+        path = path or Path.home() / ".kovadapt" / "settings.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         d = asdict(self)
         d.pop("root", None)

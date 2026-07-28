@@ -36,18 +36,36 @@ class SpawnPoint:
 
 
 class SceFile:
-    def __init__(self, lines: list[str]) -> None:
+    def __init__(self, lines: list[str], *, bom: bool = False,
+                 newline: str = "\n") -> None:
         self.lines = lines
+        self.bom = bom          # file started with a UTF-8 BOM
+        self.newline = newline  # "\r\n" (game-native) or "\n"
         self._map_data_start = self._find_map_data()
 
     # ------------------------------------------------------------------ io
     @classmethod
     def read(cls, path: Path | str) -> "SceFile":
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-        return cls(text.split("\n"))
+        """Read a .sce, tolerating a UTF-8 BOM and either newline convention.
+
+        Workshop files often carry a BOM and every game-written file is CRLF;
+        both are remembered and re-emitted verbatim by write() so an untouched
+        file round-trips byte-identical. (A file mixing CRLF and bare LF keeps
+        its \\r characters inside the lines, which also round-trips.)
+        """
+        text = Path(path).read_bytes().decode("utf-8", errors="replace")
+        bom = text.startswith("\ufeff")
+        if bom:
+            text = text[1:]
+        newline = "\n"
+        if "\r\n" in text and text.count("\r\n") == text.count("\n"):
+            newline = "\r\n"
+            text = text.replace("\r\n", "\n")
+        return cls(text.split("\n"), bom=bom, newline=newline)
 
     def write(self, path: Path | str) -> None:
-        Path(path).write_text("\n".join(self.lines), encoding="utf-8", newline="\n")
+        text = ("\ufeff" if self.bom else "") + self.newline.join(self.lines)
+        Path(path).write_bytes(text.encode("utf-8"))
 
     def _find_map_data(self) -> int:
         for i, ln in enumerate(self.lines):
@@ -141,7 +159,12 @@ class SceFile:
                         xyz = (float(m.group(2)), float(m.group(3)), float(m.group(4)))
                     j += 1
                 if is_spawn and xyz is not None:
-                    pts.append(SpawnPoint(start, j, *xyz, lines=self.lines[start:j]))
+                    # Trailing blank lines (e.g. the file's final newline)
+                    # belong to the file, not the entity block.
+                    end = j
+                    while end > start + 1 and not self.lines[end - 1].strip():
+                        end -= 1
+                    pts.append(SpawnPoint(start, end, *xyz, lines=self.lines[start:end]))
                 i = j
             else:
                 i += 1

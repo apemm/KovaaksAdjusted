@@ -40,26 +40,23 @@
 - **Full-run replay**: animated crosshair playback with flick-quality overlays (green clean / red flawed / ✕ shots), scrubber, wall-clock-accurate speeds, point decimation to stay lightweight.
 - **Packaging**: PyInstaller one-dir spec + build script (`packaging/`), `kovadapt.exe` runs GUI/CLI/watchdog from one binary.
 
+### v0.4 — the hub update (shipped)
+Stability and speed from the old roadmap, plus the app becoming the place you start KovaaK's from instead of a companion you alt-tab to.
+
+- **Launch integration** (`kovadapt/launcher.py`): the Dashboard's **Play adaptive task** starts the watcher, writes an adaptive playlist, and jumps the game straight into the adaptive scenario via KovaaK's official deep links (`steam://run/824270//?action=jump-to-scenario&name=…&mode=challenge` — the exact template the 3.9.x binary emits; boots the game cold or retargets a running instance in place). Everything launches through Steam, which enforces ownership itself; the install check verifies the game folder and the owning library's appmanifest, tModLoader-style. Playlists are written in the game's own JSON schema (`Saved/SaveGames/Playlists`, key casing preserved, UTF-8 no BOM). CLI: `play`.
+- **In-game overlay** (`gui/overlay.py`): frameless, always-on-top, translucent session card — last run vs baseline EWMA, session run count, current difficulty, fatigue, input health, accuracy sparkline. Click-through via Qt's WindowTransparentForInput (no hooks, no injection), unlock-to-drag with persisted position, opacity slider. Needs Borderless/Windowed.
+- **Theme system** (`gui/theme.py`): dark and light palettes rendered through one QSS generator; "auto" follows the Windows scheme live (`QStyleHints.colorSchemeChanged`). Views restyle in place — plots re-penned, status dots re-colored — no restart.
+- **Onboarding** (`gui/onboarding.py`): four-page startup guide on first run, dismissible TIP bars on every tab (one × tucks them all away), Help menu with the guide, a hints toggle, and an open-data-folder shortcut.
+- **Test coverage for the previously untested surfaces**: watcher end-to-end against a fake stats tree (bootstrap, mirrored report paths, stop semantics, surviving corrupt runs), CLI output contracts, GUI offscreen smoke tests, launcher URL/playlist pinning. Suite: 71 → 136 tests, still <3 s.
+- **Analysis performance**: `build_report` shares one resample grid (`ResampleCache`; the 250 Hz heatmap grid is derived bitwise-exactly from the 500 Hz binning) — ~16 % faster per-run analysis at 4 kHz polling, ~2× that at 8 kHz. Long-session memory ceiling: `telemetry_retention_min` rolls the live recording (default 30 min ≈ 230 MB at 8 kHz; 0 restores the old unbounded behavior).
+- **KovaaK's boosts**: new checkup probes for Game Bar/GameDVR background capture (safe one-click fix), Windows Game Mode, live timer resolution (`NtQueryTimerResolution`), and the active plan's core-parking floor (`powercfg /qh` — hidden on Win11, and the default Balanced plan really does park half the cores). HAGS is now verified against the **live driver state** via `D3DKMTQueryAdapterInfo` (WDDM 2.7 caps), not just registry intent. The watchdog timestamps every applied tune, and the optimizer window turns per-run input-health jitter into before/after evidence — boosts as measurements, not folklore.
+- **Watcher robustness**: a stats CSV vanishing mid-poll no longer kills the loop, and the write-settle wait respects stop requests.
+
 ## Roadmap
 
-### v0.4 — bugfixing & performance (next)
-Focus: stability and speed, for the app and for the game it tunes.
-
-**Bugfixing**
-- Triage field reports from the first public release (issue templates with `kovadapt status` + checkup output).
-- Test coverage for the currently untested surfaces: `watcher` (fake stats folder + synthetic traces end to end), `cli` (arg parsing + output contracts), GUI smoke tests (offscreen QPA).
-
-**App performance**
-- Remaining analysis hot paths: share one resample grid across `build_report` (pays off at 4–8 kHz polling); profile the GUI replay/heatmap redraw on multi-hour sessions; memory ceiling for long `watch` sessions (trace chunks + report history).
-- Consider a Rust extension for the Raw Input pump + flick segmentation only if profiling shows pure Python is the bottleneck after the above.
-- (Landed in 0.3.0: vectorized `_smooth`, linearized heatmap recentering, run-windowed snapshots.)
-
-**KovaaK's performance boosts**
-- Auto-verified HAGS state via D3DKMTQueryAdapterInfo (registry intent vs live driver state).
-- New checkup probes/fixes: Game Bar & GameDVR background capture, Windows Game Mode state, core-parking attributes on the active power plan, current timer resolution while the game runs.
-- Watchdog: measure and report the effect of each applied tweak (input-health jitter before/after) so boosts are evidence, not folklore.
-
 ### Later
+- Triage field reports from the public release (issue templates with `kovadapt status` + checkup output).
 - Installer polish: signed builds, winget manifest, in-app update check.
 - Richer ML: per-flick Fitts-law residual model for skill tracking over weeks; bandit over dodge parameters, not just regions.
 - Fatigue-aware session planner (suggest scenario order from profile deficits).
+- Rust extension for the Raw Input pump + flick segmentation, only if profiling ever shows pure Python as the bottleneck.

@@ -10,8 +10,12 @@ Free, ML-driven adaptive training for [KovaaK's](https://store.steampowered.com/
 - **Calibration indicator** — the dashboard shows how much baseline data the model still wants before its decisions are fully evidence-backed.
 - **Post-run analysis & replay** — directional bias, aim-travel heatmap, notable moments (worst overshoots/hesitations, one clean reference flick), and an animated full-run replay with flick-quality overlays: green = clean, red = overshoot/correction, ✕ = shot.
 - **Optimizer window** — the free Process Lasso replacement: hardware detection, a one-click system checkup with per-item fixes, a watchdog that applies High priority and frees the input-processing core on every game launch, and launch options + settings matched to your GPU/monitor.
+- **Play from the app** — one button starts the adaptation loop, queues an adaptive playlist, and jumps KovaaK's straight into the adaptive scenario through Steam's deep-link protocol (the game's own mechanism since 3.0.0). Ownership stays where it belongs: everything launches through Steam, which won't start a game your account doesn't own.
+- **In-game overlay** — a toggleable, click-through, translucent card over the game: last run vs your baseline, session count, difficulty, fatigue, input health, accuracy sparkline. Drag it anywhere, tune its opacity; needs Borderless/Windowed mode.
+- **Themes** — dark and light, or auto-synced to the Windows theme, switchable live.
+- **Startup guide & hints** — a short first-run guide plus contextual TIP bars on every tab; one click tucks them all away, the Help menu brings them back.
 
-KovaaK's has no modding API, so adaptation happens **between** runs: each finished run updates your profile and rewrites `<Scenario> [Adaptive].sce`. Load the adaptive variant in-game; every run reshapes the next.
+KovaaK's has no modding API, so adaptation happens **between** runs: each finished run updates your profile and rewrites `<Scenario> [Adaptive].sce`. Every run reshapes the next — and the app drops you straight into the current variant.
 
 ## Install
 
@@ -31,6 +35,7 @@ kovadapt looks for the game in the usual Steam locations (`C:\Program Files (x86
 ```
 kovadapt gui                        # desktop app: dashboard, analysis, adaptability, optimizer
 kovadapt scenarios [filter]         # list installed scenarios
+kovadapt play "1wall 6targets small"    # jump the game into the adaptive variant
 kovadapt watch "1wall 6targets small"   # headless adaptation loop
 kovadapt status "1wall 6targets small"  # learned profile + region heatmap + calibration
 kovadapt replay "1wall 6targets small"  # bootstrap profile from stats history
@@ -38,7 +43,7 @@ kovadapt checkup                    # print the system optimization checkup
 kovadapt watchdog                   # headless auto-tune on every game launch
 ```
 
-Start `kovadapt gui`, pick a scenario, hit **Start adapting**, and play `<Scenario> [Adaptive]` in KovaaK's. After each run the Analysis tab fills in with your movement report and replay.
+Start `kovadapt gui`, pick a scenario, hit **Play adaptive task** — the app starts watching, queues the adaptive playlist, and opens KovaaK's directly in `<Scenario> [Adaptive]` (Steam must be running). After each run the Analysis tab fills in with your movement report and replay, and the overlay (if toggled on) tracks the session over the game. **Start adapting** does the same without launching the game, for when it's already open on the base scenario.
 
 Settings live at `~/.kovadapt/settings.json`; profiles, traces, reports, and clips under the same directory.
 

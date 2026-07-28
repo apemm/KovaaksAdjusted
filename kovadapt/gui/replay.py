@@ -29,9 +29,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..telemetry.trace import MouseTrace
-from .theme import ACCENT, BAD, FG_DIM, GOOD
+from . import theme
 
 _MAX_POINTS = 50_000          # decimation cap for the drawn path
+_TRAIL_SECONDS = 1.2          # live comet-trail length (full path stays dim below)
 _SLIDER_STEPS = 1000
 # Flick quality thresholds (match analysis conventions: overshoot_rate uses
 # 0.1, notable "clean" uses <= 1 correction).
@@ -54,15 +55,12 @@ class TrajectoryReplay(QWidget):
         self.plot.setAspectLocked(True)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
-        self._full = self.plot.plot([], [], pen=pg.mkPen(FG_DIM, width=1))
-        self._good = self.plot.plot([], [], pen=pg.mkPen(GOOD, width=2),
-                                    connect="finite")
-        self._bad = self.plot.plot([], [], pen=pg.mkPen(BAD, width=2),
-                                   connect="finite")
-        self._live = self.plot.plot([], [], pen=pg.mkPen(ACCENT, width=2))
-        self._head = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(ACCENT), pen=None)
-        self._shots = pg.ScatterPlotItem(size=14, brush=None,
-                                         pen=pg.mkPen(BAD, width=2), symbol="x")
+        self._full = self.plot.plot([], [])
+        self._good = self.plot.plot([], [], connect="finite")
+        self._bad = self.plot.plot([], [], connect="finite")
+        self._live = self.plot.plot([], [])
+        self._head = pg.ScatterPlotItem(size=10, pen=None)
+        self._shots = pg.ScatterPlotItem(size=14, brush=None, symbol="x")
         self.plot.addItem(self._head)
         self.plot.addItem(self._shots)
 
@@ -75,10 +73,7 @@ class TrajectoryReplay(QWidget):
         self.scrub.sliderMoved.connect(self._scrubbed)
         self.info = QLabel("")
         self.info.setProperty("dim", True)
-        self.legend = QLabel(
-            f"<span style='color:{GOOD}'>—</span> clean flick&nbsp;&nbsp;"
-            f"<span style='color:{BAD}'>—</span> overshoot/correction&nbsp;&nbsp;"
-            f"<span style='color:{BAD}'>✕</span> shot")
+        self.legend = QLabel("")
         self.legend.setTextFormat(Qt.RichText)
         self.legend.setProperty("dim", True)
 
@@ -99,6 +94,23 @@ class TrajectoryReplay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)  # ~60 fps
         self._timer.timeout.connect(self._tick)
+        self.restyle()
+
+    # ------------------------------------------------------------------
+    def restyle(self, *_pal) -> None:
+        """Re-pen every curve from the active palette (called on theme switch)."""
+        pal = theme.current()
+        self.plot.setBackground(pal.bg_alt)
+        self._full.setPen(pg.mkPen(pal.fg_dim, width=1))
+        self._good.setPen(pg.mkPen(pal.good, width=2))
+        self._bad.setPen(pg.mkPen(pal.bad, width=2))
+        self._live.setPen(pg.mkPen(pal.accent, width=2))
+        self._head.setBrush(pg.mkBrush(pal.accent))
+        self._shots.setPen(pg.mkPen(pal.bad, width=2))
+        self.legend.setText(
+            f"<span style='color:{pal.good}'>—</span> clean flick&nbsp;&nbsp;"
+            f"<span style='color:{pal.bad}'>—</span> overshoot/correction&nbsp;&nbsp;"
+            f"<span style='color:{pal.bad}'>✕</span> shot")
 
     # ------------------------------------------------------------------
     def load(self, trace: MouseTrace, t0: float | None = None,
@@ -158,6 +170,19 @@ class TrajectoryReplay(QWidget):
         self._bad.setData(bad[0], bad[1])
 
     # ------------------------------------------------------------------
+    def clear(self, message: str = "no trace for this run") -> None:
+        """Empty the plot (used when a report arrives without telemetry, so
+        the previous run's path can't masquerade as the current one)."""
+        self.stop()
+        self._t = np.empty(0)
+        for item in (self._full, self._good, self._bad, self._live):
+            item.setData([], [])
+        self._head.setData([], [])
+        self._shots.setData([], [])
+        self.scrub.setValue(0)
+        self.info.setText(message)
+
+    # ------------------------------------------------------------------
     def toggle(self) -> None:
         if self._timer.isActive():
             self.stop()
@@ -204,5 +229,9 @@ class TrajectoryReplay(QWidget):
     def _render(self) -> None:
         i = int(np.searchsorted(self._t, self._pos))
         i = max(min(i, self._t.size - 1), 1)
-        self._live.setData(self._x[:i], self._y[:i])
+        # Comet trail, not the whole prefix: repainting an ever-growing
+        # antialiased path each 16 ms tick stalls multi-minute replays
+        # (the dim full path is already drawn once underneath).
+        j = int(np.searchsorted(self._t, self._t[i - 1] - _TRAIL_SECONDS))
+        self._live.setData(self._x[j:i], self._y[j:i])
         self._head.setData([self._x[i - 1]], [self._y[i - 1]])

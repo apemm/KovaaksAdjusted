@@ -15,6 +15,7 @@ Cross-platform note: importable everywhere (analysis/tests run on any OS);
 
 from __future__ import annotations
 
+import bisect
 import sys
 import threading
 import time
@@ -31,8 +32,10 @@ if RAW_INPUT_AVAILABLE:  # pragma: no cover - exercised only on Windows
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
+    # Private DLL handles (not the shared ctypes.windll cache) so the exact
+    # prototypes declared below can't perturb other modules' ctypes use.
+    user32 = ctypes.WinDLL("user32")
+    kernel32 = ctypes.WinDLL("kernel32")
 
     WM_INPUT = 0x00FF
     WM_CLOSE = 0x0010
@@ -72,8 +75,10 @@ if RAW_INPUT_AVAILABLE:  # pragma: no cover - exercised only on Windows
     class RAWINPUT(ctypes.Structure):
         _fields_ = [("header", RAWINPUTHEADER), ("mouse", RAWMOUSE)]
 
+    LRESULT = wintypes.LPARAM  # pointer-sized signed int, same layout as LRESULT
+
     WNDPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_long, wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM
+        LRESULT, wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM
     )
 
     class WNDCLASS(ctypes.Structure):
@@ -90,11 +95,68 @@ if RAW_INPUT_AVAILABLE:  # pragma: no cover - exercised only on Windows
             ("lpszClassName", wintypes.LPCWSTR),
         ]
 
+    # Exact prototypes for every Win32 call this module makes. Without them,
+    # ctypes falls back to c_int for arguments and results, truncating
+    # pointer-sized values (module handle, HWND_MESSAGE, the WndProc's
+    # lparam forwarded to DefWindowProcW). Whether the truncated values
+    # still work depends on where ASLR loaded things that boot — the failure
+    # mode is an ASLR-lottery OverflowError or a silently dead capture
+    # window, so pin every signature.
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    user32.RegisterClassW.restype = wintypes.ATOM
+    user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASS)]
+    user32.UnregisterClassW.restype = wintypes.BOOL
+    user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM,
+    ]
+    user32.PostQuitMessage.restype = None
+    user32.PostQuitMessage.argtypes = [ctypes.c_int]
+    user32.DefWindowProcW.restype = LRESULT
+    user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM,
+    ]
+    user32.RegisterRawInputDevices.restype = wintypes.BOOL
+    user32.RegisterRawInputDevices.argtypes = [
+        ctypes.POINTER(RAWINPUTDEVICE), ctypes.c_uint, ctypes.c_uint,
+    ]
+    user32.GetRawInputData.restype = ctypes.c_uint
+    user32.GetRawInputData.argtypes = [
+        wintypes.LPARAM, ctypes.c_uint, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint), ctypes.c_uint,
+    ]
+    user32.GetMessageW.restype = ctypes.c_int
+    user32.GetMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND, ctypes.c_uint, ctypes.c_uint,
+    ]
+    user32.TranslateMessage.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = LRESULT
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+
 
 class _Buffers:
-    """Chunked append-only packet storage (lock-free single-writer)."""
+    """Chunked append-only packet storage (lock-free single-writer).
 
-    def __init__(self) -> None:
+    `retention_s` (None = keep everything) bounds memory over long sessions:
+    each time a chunk fills, whole chunks whose newest packet is older than
+    `now - retention_s` are dropped, so at least `retention_s` of history is
+    always retained (chunk-granular, like the windowed `to_trace` cut).
+    Unbounded, a session accrues 16 B/packet — ~460 MB/hour at 8 kHz polling.
+    """
+
+    def __init__(self, retention_s: float | None = None) -> None:
+        self.retention_s = retention_s
         self.chunks: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         self._new_chunk()
         self.clicks: list[float] = []
@@ -110,10 +172,23 @@ class _Buffers:
         if self.n == _CHUNK:
             self.chunks.append((self.t, self.dx, self.dy))
             self._new_chunk()
+            if self.retention_s is not None:
+                self._prune(t - self.retention_s)
         self.t[self.n] = t
         self.dx[self.n] = dx
         self.dy[self.n] = dy
         self.n += 1
+
+    def _prune(self, cutoff: float) -> None:
+        """Drop data entirely older than `cutoff`. Called only on chunk
+        rollover (~every 65k packets), so the amortized per-packet cost in
+        the WndProc hot path is negligible."""
+        while self.chunks and self.chunks[0][0][-1] < cutoff:
+            del self.chunks[0]
+        if self.clicks and self.clicks[0] < cutoff:
+            del self.clicks[: bisect.bisect_left(self.clicks, cutoff)]
+        if self.clicks_up and self.clicks_up[0] < cutoff:
+            del self.clicks_up[: bisect.bisect_left(self.clicks_up, cutoff)]
 
     def to_trace(self, t0: float | None = None, t1: float | None = None) -> MouseTrace:
         parts = self.chunks + [(self.t[: self.n], self.dx[: self.n], self.dy[: self.n])]
@@ -145,10 +220,16 @@ class MouseRecorder:
 
     While running, `rec.snapshot()` returns a copy of everything so far
     (used to slice out a run without stopping capture).
+
+    `retention_s` bounds the live buffer to a rolling window (None = keep the
+    whole session, the pre-v0.4 behavior). Safe for the watcher, which slices
+    each run out of the recording within seconds of the run ending; direct
+    users that rely on `stop()` returning the full session should leave it
+    unset.
     """
 
-    def __init__(self) -> None:
-        self._buf = _Buffers()
+    def __init__(self, retention_s: float | None = None) -> None:
+        self._buf = _Buffers(retention_s)
         self._thread: threading.Thread | None = None
         self._hwnd = None
         self._ready = threading.Event()
@@ -217,21 +298,44 @@ class MouseRecorder:
                 return 0
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
+        # The WNDPROC thunk (`proc`) lives on this stack frame and is freed
+        # when _run() returns, but window-class registration is process-wide
+        # and would otherwise outlive it. The finally block below tears the
+        # window and the class down before this frame dies, so the registered
+        # class can never point at a freed thunk — without that, a second
+        # start() in the same process (GUI Stop -> Start) binds a new window
+        # to the stale class and dispatches WM_CREATE into freed memory: a
+        # native crash with no Python traceback.
         proc = WNDPROC(wndproc)
+        hinst = kernel32.GetModuleHandleW(None)
         wc = WNDCLASS()
         wc.lpfnWndProc = proc
         wc.lpszClassName = "KovadaptRawInput"
-        wc.hInstance = kernel32.GetModuleHandleW(None)
-        user32.RegisterClassW(ctypes.byref(wc))
-        self._hwnd = user32.CreateWindowExW(
-            0, wc.lpszClassName, None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, wc.hInstance, None
-        )
+        wc.hInstance = hinst
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            # Stale registration left by a pump that died without cleanup —
+            # its thunk pointer is already freed. Drop it and register our
+            # own; never create a window against the old pointer.
+            user32.UnregisterClassW(wc.lpszClassName, hinst)
+            if not user32.RegisterClassW(ctypes.byref(wc)):
+                return  # start() times out and raises
+        try:
+            self._hwnd = user32.CreateWindowExW(
+                0, wc.lpszClassName, None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, hinst, None
+            )
 
-        rid = RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, self._hwnd)  # generic mouse
-        user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
-        self._ready.set()
+            rid = RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, self._hwnd)  # generic mouse
+            user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
+            self._ready.set()
 
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            # Same-thread teardown: DestroyWindow must run on the creating
+            # thread, and UnregisterClassW requires no live windows.
+            if self._hwnd:
+                user32.DestroyWindow(self._hwnd)
+                self._hwnd = None
+            user32.UnregisterClassW(wc.lpszClassName, hinst)

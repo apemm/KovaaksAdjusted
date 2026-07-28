@@ -22,6 +22,7 @@ a = Analysis(
         "kovadapt.gui.app",
         "kovadapt.gui.optimizer_window",
         "kovadapt.optimize.watchdog",
+        "kovadapt.launcher",
         "pyqtgraph",
         "psutil",
     ],

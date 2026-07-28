@@ -6,11 +6,23 @@ import pytest
 from kovadapt.adapt.engine import AdaptationEngine
 from kovadapt.config import Settings
 from kovadapt.profile.player import PlayerProfile
-from kovadapt.scenario.sce import SceFile
-from kovadapt.scenario.generator import generate_adaptive_variant
+from kovadapt.scenario.sce import SceFile, SpawnPoint
+from kovadapt.scenario.generator import (
+    _region_grid,
+    _region_of,
+    _spawn_team,
+    _target_profiles,
+    generate_adaptive_variant,
+)
 
+# Mirrors the real 1wall layout: the wall spans x (horizontal) and y
+# (vertical) at depth z=960; the player stands on the opposite side at
+# (0, 0, -960). PlayerTeam=1 (odd) -> the player's spawn carries the teamB
+# flag, targets carry teamA. The bot links to its character via the real
+# [Bot Profile] CharacterProfile= chain (bot name != character name).
 MINI_SCE = """Name=mini test
 AddedBots=target.bot;target.bot
+PlayerTeam=1
 Timelimit=60.0
 
 [Character Profile]
@@ -19,7 +31,7 @@ MaxHealth=100.0
 MainBBRadius=1.0
 
 [Character Profile]
-Name=target
+Name=target_char
 MaxHealth=1.0
 MaxSpeed=0.0
 MainBBRadius=0.5
@@ -28,6 +40,7 @@ ProjBBRadius=0.5
 
 [Bot Profile]
 Name=target
+CharacterProfile=target_char
 DodgeProfileNames=Mimic
 AimingProfileNames=Default
 
@@ -42,11 +55,21 @@ reflex map version 8
 global
 \tentity
 \t\ttype WorldSpawn
+\tentity
+\t\ttype PlayerSpawn
+\t\tVector3 position 0.000000 0.000000 -960.000000
+\t\tBool8 teamB 0
 """ + "".join(
-    f"\tentity\n\t\ttype PlayerSpawn\n\t\tVector3 position {x}.000000 288.000000 {z}.000000\n"
+    f"\tentity\n\t\ttype PlayerSpawn\n"
+    f"\t\tVector3 position {x}.000000 {y}.000000 960.000000\n"
     f"\t\tVector3 angles 180.000000 0.000000 0.000000\n"
-    for x in (-800, -400, 0, 400, 800) for z in (200, 600, 1000)
+    f"\t\tBool8 teamA 0\n"
+    for x in (-800, -400, 0, 400, 800) for y in (200, 600, 1000)
 )
+
+PLAYER_XYZ = (0.0, 0.0, -960.0)
+WALL_XY = {(float(x), float(y)) for x in (-800, -400, 0, 400, 800)
+           for y in (200, 600, 1000)}
 
 
 @pytest.fixture
@@ -56,12 +79,16 @@ def mini_sce(tmp_path: Path) -> Path:
     return p
 
 
+def _wall_pts(pts: list[SpawnPoint]) -> list[SpawnPoint]:
+    return [p for p in pts if (p.x, p.y, p.z) != PLAYER_XYZ]
+
+
 def test_sce_header_and_sections(mini_sce: Path):
     sce = SceFile.read(mini_sce)
     assert sce.get_header("Name") == "mini test"
-    assert sce.get_in_section("Character Profile", "target", "MainBBRadius") == "0.5"
-    sce.set_in_section("Character Profile", "target", "MainBBRadius", 0.75)
-    assert sce.get_in_section("Character Profile", "target", "MainBBRadius") == "0.75"
+    assert sce.get_in_section("Character Profile", "target_char", "MainBBRadius") == "0.5"
+    sce.set_in_section("Character Profile", "target_char", "MainBBRadius", 0.75)
+    assert sce.get_in_section("Character Profile", "target_char", "MainBBRadius") == "0.75"
     # Player profile untouched
     assert sce.get_in_section("Character Profile", "Player", "MainBBRadius") == "1.0"
 
@@ -69,15 +96,125 @@ def test_sce_header_and_sections(mini_sce: Path):
 def test_sce_spawn_parse(mini_sce: Path):
     sce = SceFile.read(mini_sce)
     pts = sce.spawn_points()
-    assert len(pts) == 15
-    assert {p.z for p in pts} == {200.0, 600.0, 1000.0}
+    assert len(pts) == 16
+    wall = _wall_pts(pts)
+    assert {p.y for p in wall} == {200.0, 600.0, 1000.0}
+    assert {p.z for p in wall} == {960.0}
+    assert sum(1 for p in pts if (p.x, p.y, p.z) == PLAYER_XYZ) == 1
+
+
+def test_sce_spawn_blocks_exclude_trailing_blank_lines(mini_sce: Path):
+    # The file ends with a newline; that blank line belongs to the file,
+    # not to the last PlayerSpawn block.
+    sce = SceFile.read(mini_sce)
+    last = sce.spawn_points()[-1]
+    assert all(ln.strip() for ln in last.lines)
+    assert sce.lines[-1] == ""  # trailing newline still in the file itself
 
 
 def test_sce_roundtrip_identity(mini_sce: Path, tmp_path: Path):
     sce = SceFile.read(mini_sce)
     out = tmp_path / "copy.sce"
     sce.write(out)
-    assert out.read_text(encoding="utf-8") == mini_sce.read_text(encoding="utf-8")
+    assert out.read_bytes() == mini_sce.read_bytes()
+
+
+def test_sce_bom_roundtrip(tmp_path: Path):
+    # Workshop scenarios often carry a UTF-8 BOM; parsing must see through it
+    # and writing must re-emit it byte-identically.
+    src = tmp_path / "bom.sce"
+    src.write_text(MINI_SCE, encoding="utf-8-sig")
+    sce = SceFile.read(src)
+    assert sce.get_header("Name") == "mini test"  # BOM does not hide line 0
+    out = tmp_path / "bom_copy.sce"
+    sce.write(out)
+    assert out.read_bytes() == src.read_bytes()
+
+
+def test_sce_crlf_roundtrip(tmp_path: Path):
+    # Every game-written .sce is CRLF; an untouched read->write must not
+    # rewrite the newline convention.
+    src = tmp_path / "crlf.sce"
+    src.write_bytes(MINI_SCE.replace("\n", "\r\n").encode("utf-8"))
+    sce = SceFile.read(src)
+    assert sce.get_header("Name") == "mini test"
+    assert len(sce.spawn_points()) == 16
+    out = tmp_path / "crlf_copy.sce"
+    sce.write(out)
+    assert out.read_bytes() == src.read_bytes()
+
+
+def test_target_profiles_follow_bot_chain(mini_sce: Path):
+    # AddedBots "target.bot" -> [Bot Profile] Name=target ->
+    # CharacterProfile=target_char -> [Character Profile] Name=target_char
+    bots, chars = _target_profiles(SceFile.read(mini_sce))
+    assert bots == ["target"]
+    assert chars == ["target_char"]
+
+
+def test_target_profiles_fallback_without_chain(tmp_path: Path):
+    # Files whose Bot Profile has no CharacterProfile key (or no Bot Profile
+    # at all) fall back to the bot name as the character name.
+    text = (
+        "Name=simple\nAddedBots=target.bot\n\n"
+        "[Character Profile]\nName=target\nMainBBRadius=0.5\n\n"
+        "[Bot Profile]\nName=target\nDodgeProfileNames=Mimic\n"
+    )
+    p = tmp_path / "simple.sce"
+    p.write_text(text, encoding="utf-8")
+    bots, chars = _target_profiles(SceFile.read(p))
+    assert bots == ["target"]
+    assert chars == ["target"]
+
+
+def test_region_grid_wall_axes(mini_sce: Path):
+    # Wall spans x (horizontal) and y (vertical): columns must bin x,
+    # rows must bin y — up = higher row, right = higher col, matching
+    # analysis/movement.py:region_deficits.
+    wall = _wall_pts(SceFile.read(mini_sce).spawn_points())
+    col, row = _region_grid(wall)
+    assert col[0] == 0  # x
+    assert row[0] == 1  # y
+    top_mid = next(p for p in wall if (p.x, p.y) == (0.0, 1000.0))
+    right_mid = next(p for p in wall if (p.x, p.y) == (800.0, 600.0))
+    bottom_left = next(p for p in wall if (p.x, p.y) == (-800.0, 200.0))
+    assert _region_of(top_mid, col, row, 3, 3) == "r2c1"
+    assert _region_of(right_mid, col, row, 3, 3) == "r1c2"
+    assert _region_of(bottom_left, col, row, 3, 3) == "r0c0"
+
+
+def test_region_grid_matches_movement_deficit_keys(mini_sce: Path):
+    # Cross-module contract: a flick aimed up must credit the same region
+    # key that the generator assigns to the top of the wall.
+    from kovadapt.analysis.movement import Flick, region_deficits
+
+    def flick(angle: float) -> Flick:
+        return Flick(t_click=0.0, t_onset=0.0, duration=0.1, amplitude=100.0,
+                     angle=angle, peak_speed=1.0, time_to_peak=0.05,
+                     overshoot=0.1, corrections=0)
+
+    up, right = np.pi / 2, 0.0
+    deficits = region_deficits([flick(up)] * 3 + [flick(right)] * 3, cols=3, rows=3)
+    wall = _wall_pts(SceFile.read(mini_sce).spawn_points())
+    col, row = _region_grid(wall)
+    top_mid = next(p for p in wall if (p.x, p.y) == (0.0, 1000.0))
+    right_mid = next(p for p in wall if (p.x, p.y) == (800.0, 600.0))
+    assert set(deficits) == {
+        _region_of(top_mid, col, row, 3, 3),     # up -> r2c1
+        _region_of(right_mid, col, row, 3, 3),   # right -> r1c2
+    }
+
+
+def test_region_grid_flat_layout_falls_back_to_depth_rows():
+    # Ground arena (x/z spread, no vertical spread): rows bin depth so the
+    # grid stays two-dimensional.
+    pts = [SpawnPoint(0, 0, float(x), 288.0, float(z), lines=[])
+           for x in (-800, -400, 0, 400, 800) for z in (200, 600, 1000)]
+    col, row = _region_grid(pts)
+    assert col[0] == 0  # x
+    assert row[0] == 2  # z (depth) fallback
+    far_mid = next(p for p in pts if (p.x, p.z) == (0.0, 1000.0))
+    assert _region_of(far_mid, col, row, 3, 3) == "r2c1"
 
 
 def test_generate_variant(mini_sce: Path, tmp_path: Path):
@@ -89,19 +226,87 @@ def test_generate_variant(mini_sce: Path, tmp_path: Path):
 
     sce = SceFile.read(out)
     assert sce.get_header("Name") == "mini test [Adaptive]"
-    # target resized, player untouched
-    r = float(sce.get_in_section("Character Profile", "target", "MainBBRadius"))
+    # target resized via the Bot Profile -> CharacterProfile chain
+    r = float(sce.get_in_section("Character Profile", "target_char", "MainBBRadius"))
     assert abs(r - 0.5 * plan.target_scale) < 1e-6
     assert sce.get_in_section("Character Profile", "Player", "MainBBRadius") == "1.0"
-    # dodge params patched
+    # dodge params patched (Bot Profile located by the *bot* name)
     got = float(sce.get_in_section("Dodge Profile", "Mimic", "JumpFrequency"))
     assert abs(got - plan.dodge_params["JumpFrequency"]) < 1e-6
-    # spawn count preserved (within rounding), all positions from original set
+    # wall spawn count preserved (within rounding), all positions original
     pts = sce.spawn_points()
-    assert 12 <= len(pts) <= 18
-    orig_xz = {(x, z) for x in (-800.0, -400.0, 0.0, 400.0, 800.0)
-               for z in (200.0, 600.0, 1000.0)}
-    assert all((p.x, p.z) in orig_xz for p in pts)
+    wall = _wall_pts(pts)
+    assert 12 <= len(wall) <= 18
+    assert all((p.x, p.y) in WALL_XY and p.z == 960.0 for p in wall)
+
+
+def test_generate_variant_player_spawn_passes_through(mini_sce: Path, tmp_path: Path):
+    # The player-side spawn (teamB here) must never be duplicated into the
+    # target pool: exactly one copy, byte-identical to the base block.
+    s = Settings(kovaaks_root=str(tmp_path))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(11))
+    prof = PlayerProfile(scenario="mini test [Adaptive]")
+    plan = engine.plan(prof, None)
+    out = generate_adaptive_variant(mini_sce, plan, s, tmp_path / "out.sce")
+
+    base_player = [p for p in SceFile.read(mini_sce).spawn_points()
+                   if _spawn_team(p) == "teamB"]
+    assert len(base_player) == 1
+    gen_pts = SceFile.read(out).spawn_points()
+    gen_player = [p for p in gen_pts if _spawn_team(p) == "teamB"]
+    assert len(gen_player) == 1
+    assert gen_player[0].lines == base_player[0].lines
+    assert (gen_player[0].x, gen_player[0].y, gen_player[0].z) == PLAYER_XYZ
+    # and no target spawn was relocated onto the player's position
+    assert all((p.x, p.y, p.z) != PLAYER_XYZ for p in _wall_pts(gen_pts)
+               if _spawn_team(p) == "teamA")
+
+
+def test_generate_variant_map_data_stays_clean(mini_sce: Path, tmp_path: Path):
+    # Resampling must not splice blank lines into [Map Data] or drop the
+    # file's final newline.
+    s = Settings(kovaaks_root=str(tmp_path))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(5))
+    prof = PlayerProfile(scenario="mini test [Adaptive]")
+    out = generate_adaptive_variant(mini_sce, engine.plan(prof, None), s,
+                                    tmp_path / "out.sce")
+    text = out.read_text(encoding="utf-8")
+    assert text.endswith("\n") and not text.endswith("\n\n")
+    map_data = text[text.index("[Map Data]"):]
+    assert "\n\n" not in map_data
+
+
+def test_generate_variant_preserves_bom_and_single_name(mini_sce: Path, tmp_path: Path):
+    # A BOM'd base must yield a variant with the BOM intact and exactly one
+    # Name= header (no duplicate inserted above a hidden original).
+    src = tmp_path / "bom base.sce"
+    src.write_text(MINI_SCE, encoding="utf-8-sig")
+    s = Settings(kovaaks_root=str(tmp_path))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(2))
+    prof = PlayerProfile(scenario="bom base [Adaptive]")
+    out = generate_adaptive_variant(src, engine.plan(prof, None), s,
+                                    tmp_path / "bom out.sce")
+    raw = out.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig")
+    assert "\ufeff" not in text  # no stray BOM mid-file
+    header = text[: text.index("[")]
+    assert sum(1 for ln in header.split("\n") if ln.startswith("Name=")) == 1
+    assert SceFile.read(out).get_header("Name") == "mini test [Adaptive]"
+
+
+def test_generate_variant_preserves_crlf(mini_sce: Path, tmp_path: Path):
+    # A CRLF base (the game-native convention) must yield a CRLF variant.
+    src = tmp_path / "crlf base.sce"
+    src.write_bytes(MINI_SCE.replace("\n", "\r\n").encode("utf-8"))
+    s = Settings(kovaaks_root=str(tmp_path))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(4))
+    prof = PlayerProfile(scenario="crlf base [Adaptive]")
+    out = generate_adaptive_variant(src, engine.plan(prof, None), s,
+                                    tmp_path / "crlf out.sce")
+    raw = out.read_bytes()
+    assert raw.count(b"\n") > 0
+    assert raw.count(b"\r\n") == raw.count(b"\n")  # no bare LF anywhere
 
 
 def test_focus_region_gets_more_density(mini_sce: Path, tmp_path: Path):
@@ -110,24 +315,83 @@ def test_focus_region_gets_more_density(mini_sce: Path, tmp_path: Path):
     prof = PlayerProfile(scenario="x")
     plan = engine.plan(prof, None)
     out = generate_adaptive_variant(mini_sce, plan, s, tmp_path / "o.sce")
-    pts = SceFile.read(out).spawn_points()
-    # count spawns in focus cell vs uniform expectation
-    from kovadapt.scenario.generator import _region_of
-    x_ext, z_ext = (-800.0, 800.0), (200.0, 1000.0)
+    # grid axes/extents come from the base wall cloud (what the generator used)
+    base_wall = _wall_pts(SceFile.read(mini_sce).spawn_points())
+    col, row = _region_grid(base_wall)
+    pts = _wall_pts(SceFile.read(out).spawn_points())
     n_focus = sum(
         1 for p in pts
-        if _region_of(p, x_ext, z_ext, s.region_cols, s.region_rows) == plan.focus_region
+        if _region_of(p, col, row, s.region_cols, s.region_rows) == plan.focus_region
     )
     assert n_focus >= len(pts) * 0.4  # well above uniform 1/9
 
 
+# ------------------------------------------------------------ real install
 def test_real_sce_roundtrip(kovaaks_root: Path, tmp_path: Path):
-    """Read->write a real scenario byte-identically (modulo trailing newline)."""
+    """Read->write every installed scenario byte-identically (BOM, CRLF,
+    trailing newline and all)."""
+    scen_dir = kovaaks_root / "Saved" / "SaveGames" / "Scenarios"
+    files = sorted(scen_dir.glob("*.sce")) if scen_dir.is_dir() else []
+    if not files:
+        pytest.skip("no scenarios installed")
+    out = tmp_path / "rt.sce"
+    for src in files:
+        sce = SceFile.read(src)
+        sce.write(out)
+        assert out.read_bytes() == src.read_bytes(), src.name
+    wall = scen_dir / "1wall 6targets small.sce"
+    if wall.is_file():
+        assert len(SceFile.read(wall).spawn_points()) > 100
+
+
+def test_real_generate_variant_1wall(kovaaks_root: Path, tmp_path: Path):
+    """The real 1wall base: the single player spawn passes through verbatim,
+    wall density is preserved, and every region can receive spawns."""
     src = kovaaks_root / "Saved" / "SaveGames" / "Scenarios" / "1wall 6targets small.sce"
     if not src.is_file():
         pytest.skip("scenario not installed")
-    sce = SceFile.read(src)
-    out = tmp_path / "rt.sce"
-    sce.write(out)
-    assert out.read_text(encoding="utf-8") == src.read_text(encoding="utf-8", errors="replace")
-    assert len(sce.spawn_points()) > 100
+    s = Settings(kovaaks_root=str(kovaaks_root))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(9))
+    prof = PlayerProfile(scenario="1wall 6targets small [Adaptive]")
+    plan = engine.plan(prof, None)
+    out = generate_adaptive_variant(src, plan, s, tmp_path / "gen.sce")
+
+    base_pts = SceFile.read(src).spawn_points()
+    base_player = [p for p in base_pts if _spawn_team(p) == "teamB"]
+    assert len(base_player) == 1
+    gen_pts = SceFile.read(out).spawn_points()
+    gen_player = [p for p in gen_pts if _spawn_team(p) == "teamB"]
+    assert len(gen_player) == 1
+    assert gen_player[0].lines == base_player[0].lines
+    n_targets = len(base_pts) - 1
+    gen_targets = [p for p in gen_pts if _spawn_team(p) == "teamA"]
+    assert abs(len(gen_targets) - n_targets) <= s.region_cols * s.region_rows
+    # rows bin the wall's vertical axis: all 9 regions hold candidates
+    col, row = _region_grid([p for p in base_pts if _spawn_team(p) == "teamA"])
+    regions = {_region_of(p, col, row, 3, 3) for p in gen_targets}
+    assert regions == {f"r{r}c{c}" for r in range(3) for c in range(3)}
+
+
+def test_real_generate_variant_cata(kovaaks_root: Path, tmp_path: Path):
+    """Cata links AddedBots -> Bot Profile -> CharacterProfile: size, speed
+    and dodge edits must actually land."""
+    src = kovaaks_root / "Saved" / "SaveGames" / "Scenarios" / "Cata IC Fast Strafes.sce"
+    if not src.is_file():
+        pytest.skip("scenario not installed")
+    s = Settings(kovaaks_root=str(kovaaks_root))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(9))
+    prof = PlayerProfile(scenario="Cata IC Fast Strafes [Adaptive]")
+    plan = engine.plan(prof, None)
+    out = generate_adaptive_variant(src, plan, s, tmp_path / "gen.sce")
+
+    base = SceFile.read(src)
+    gen = SceFile.read(out)
+    base_r = float(base.get_in_section("Character Profile", "Quaker", "MainBBRadius"))
+    gen_r = float(gen.get_in_section("Character Profile", "Quaker", "MainBBRadius"))
+    assert abs(gen_r - base_r * plan.target_scale) < 1e-6
+    if plan.target_max_speed > 0:
+        assert float(gen.get_in_section("Character Profile", "Quaker", "MaxSpeed")) == \
+            pytest.approx(plan.target_max_speed)
+    for key, val in plan.dodge_params.items():
+        got = gen.get_in_section("Dodge Profile", "Short Strafes", key)
+        assert got is not None and float(got) == pytest.approx(val, abs=1e-6)

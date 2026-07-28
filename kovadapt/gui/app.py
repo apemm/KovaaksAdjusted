@@ -1,36 +1,53 @@
-"""kovadapt GUI: dark, simple, four tabs.
+"""kovadapt GUI: the KovaaK's hub.
 
-    Dashboard    pick scenario, start/stop the adaptation loop, live log
+    Dashboard    play adaptive tasks, launch the game, live session + overlay
     Analysis     post-run report: bias, heatmap, notable moments, replays/clips
     Adaptability full configuration surface
     Optimizer    free Process Lasso basics + tuning checklist
 
-Run with `kovadapt gui` (requires: pip install kovadapt[gui]).
+Themes follow the Windows light/dark setting ("auto") or can be pinned; the
+first launch opens a short startup guide, and dismissible TIP bars carry the
+instructions after that. Run with `kovadapt gui` (pip install kovadapt[gui]).
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QTabWidget,
+    QWidget,
+)
 
 from ..config import Settings
 from .analysis_view import AnalysisView
 from .config_view import ConfigView
 from .dashboard import Dashboard
+from .onboarding import WelcomeDialog, set_hints_visible
 from .optimizer_view import OptimizerView
-from .theme import apply_theme
+from .theme import ThemeManager
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, themes: ThemeManager) -> None:
         super().__init__()
+        self.s = settings
+        self.themes = themes
         self.setWindowTitle("kovadapt — adaptive KovaaK's")
-        self.resize(1100, 720)
+        self.resize(1140, 760)
 
         tabs = QTabWidget()
         self.dashboard = Dashboard(settings)
-        self.analysis = AnalysisView()
+        self.analysis = AnalysisView(settings)
         self.config = ConfigView(settings)
         self.optimizer = OptimizerView(settings)
         tabs.addTab(self.dashboard, "Dashboard")
@@ -39,18 +56,75 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.optimizer, "Optimizer")
         self.setCentralWidget(tabs)
         self._tabs = tabs
+        tabs.setCornerWidget(self._corner(), Qt.TopRightCorner)
 
         # new run report -> refresh analysis tab and flag it
         self.dashboard.report_ready.connect(self._on_report)
         tabs.currentChanged.connect(self._clear_unread)
+        themes.changed.connect(self._restyle)
 
         sb = self.statusBar()
         sb.showMessage(
             f"KovaaK's: {settings.kovaaks_root or 'NOT FOUND — set KOVAAKS_ROOT'}"
         )
 
+    # ----------------------------------------------------------- corner bar
+    def _corner(self) -> QWidget:
+        self.theme_pick = QComboBox()
+        self.theme_pick.addItems(["Auto theme", "Dark", "Light"])
+        self.theme_pick.setToolTip("Auto follows the Windows light/dark setting")
+        self.theme_pick.setCurrentIndex(
+            {"auto": 0, "dark": 1, "light": 2}.get(self.themes.mode, 0))
+        self.theme_pick.currentIndexChanged.connect(
+            lambda i: self.themes.set_mode(("auto", "dark", "light")[i]))
+
+        help_btn = QPushButton("?")
+        help_btn.setFixedWidth(30)
+        help_btn.setToolTip("Guide, hints, and your data")
+        menu = QMenu(help_btn)
+        menu.addAction("Startup guide…", self._show_guide)
+        self._hints_action = menu.addAction("Show hints")
+        self._hints_action.setCheckable(True)
+        self._hints_action.setChecked(self.s.show_hints)
+        self._hints_action.toggled.connect(
+            lambda on: set_hints_visible(self.s, on))
+        # A TIP bar's × also hides hints; resync so the first menu click
+        # after that actually re-enables them instead of re-hiding.
+        menu.aboutToShow.connect(self._sync_hints_action)
+        menu.addSeparator()
+        menu.addAction("Open data folder", self._open_data_dir)
+        help_btn.setMenu(menu)
+
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 2, 6, 4)
+        lay.setSpacing(6)
+        lay.addWidget(self.theme_pick)
+        lay.addWidget(help_btn)
+        return w
+
+    def _sync_hints_action(self) -> None:
+        self._hints_action.blockSignals(True)
+        self._hints_action.setChecked(self.s.show_hints)
+        self._hints_action.blockSignals(False)
+
+    def _show_guide(self) -> None:
+        WelcomeDialog(self.s, self).exec()
+        self._sync_hints_action()
+
+    def _open_data_dir(self) -> None:
+        p = Path(self.s.profile_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
+    # ------------------------------------------------------------------
+    def _restyle(self, pal) -> None:
+        for view in (self.dashboard, self.analysis, self.optimizer):
+            view.restyle(pal)
+
     def _on_report(self, rep) -> None:
         self.analysis.show_report(rep)
+        self.optimizer.note_report(rep)
         idx = self._tabs.indexOf(self.analysis)
         self._tabs.setTabText(idx, "Analysis •")
 
@@ -63,16 +137,23 @@ class MainWindow(QMainWindow):
         w = self.dashboard.worker
         if w is not None:
             w.stop()
-            w.wait(3000)
-        self.optimizer.shutdown()  # in-flight checkup scan (QThread)
+            # A QThread destroyed while running is a fatal abort in Qt 6;
+            # stop latency is ~1s, so this wait practically always succeeds.
+            w.wait(10000)
+        self.dashboard.shutdown()  # overlay window
+        self.optimizer.shutdown()  # optimizer window + in-flight scan QThread
         super().closeEvent(event)
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    apply_theme(app)
-    win = MainWindow(Settings.load())
+    app.setStyle("Fusion")
+    settings = Settings.load()
+    themes = ThemeManager(app, settings)
+    win = MainWindow(settings, themes)
     win.show()
+    if not settings.onboarding_done:
+        QTimer.singleShot(150, lambda: WelcomeDialog(settings, win).exec())
     return app.exec()
 
 

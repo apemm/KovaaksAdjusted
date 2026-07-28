@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..telemetry.trace import MouseTrace
+from ..telemetry.trace import MouseTrace, ResampleCache
 
 
 @dataclass(slots=True)
@@ -69,8 +69,12 @@ def segment_flicks(
     lookback: float = 0.8,
     onset_frac: float = 0.08,
     min_amplitude: float = 15.0,
+    *,
+    grid: ResampleCache | None = None,
 ) -> list[Flick]:
-    tg, vx, vy = trace.resample(rate)
+    # `grid` (a ResampleCache over `trace`) lets build_report share one
+    # resample across analysis passes; bare-trace calls behave identically.
+    tg, vx, vy = (grid if grid is not None else trace).resample(rate)
     if tg.size == 0 or trace.clicks.size == 0:
         return []
     vy = -vy  # aim convention: +y up
@@ -211,11 +215,15 @@ def region_deficits(flicks: list[Flick], cols: int = 3, rows: int = 3) -> dict[s
 
 
 def movement_heatmap(
-    trace: MouseTrace, bins: int = 64, rate: float = 250.0
+    trace: MouseTrace,
+    bins: int = 64,
+    rate: float = 250.0,
+    *,
+    grid: ResampleCache | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """2D occupancy histogram of crosshair displacement (recentered every
     click, so it shows where your aim travels relative to each engagement)."""
-    tg, vx, vy = trace.resample(rate)
+    tg, vx, vy = (grid if grid is not None else trace).resample(rate)
     if tg.size == 0:
         z = np.zeros((bins, bins))
         e = np.linspace(-1, 1, bins + 1)

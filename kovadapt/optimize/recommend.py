@@ -97,14 +97,18 @@ def recommended_settings(hw: HardwareInfo) -> list[Recommendation]:
     # KovaaK's at high fps is CPU-bound (game thread + input processing), so
     # smoothness comes from taking work OFF the CPU, not adding GPU tricks.
     if hw.has_rt_cores:
-        recs.append(Recommendation(
-            "HAGS ON — move frame scheduling from CPU to GPU",
-            "Hardware-accelerated GPU scheduling hands the scheduling queue to "
-            "the GPU's dedicated engine, freeing CPU time exactly where KovaaK's "
-            "bottlenecks. On RTX 30+ this is the one real CPU→GPU shift with no "
-            "latency cost. (Settings > Display > Graphics > Default settings; "
-            "needs a reboot.)",
-            "windows", 1))
+        if hw.hags_recommended is True:
+            # RTX 30+ only: on 20-series HAGS tends to cost more in stutter
+            # than it gains, and the windows section below says so instead —
+            # each GPU gets exactly one HAGS recommendation, never both.
+            recs.append(Recommendation(
+                "HAGS ON — move frame scheduling from CPU to GPU",
+                "Hardware-accelerated GPU scheduling hands the scheduling queue to "
+                "the GPU's dedicated engine, freeing CPU time exactly where KovaaK's "
+                "bottlenecks. On RTX 30+ this is the one real CPU→GPU shift with no "
+                "latency cost. (Settings > Display > Graphics > Default settings; "
+                "needs a reboot.)",
+                "windows", 1))
         if hw.smooth_motion_capable:
             recs.append(Recommendation(
                 "Frame generation (NVIDIA Smooth Motion): OFF for training",
@@ -125,7 +129,9 @@ def recommended_settings(hw: HardwareInfo) -> list[Recommendation]:
 
     # --- windows ----------------------------------------------------------
     hags = hw.hags_recommended
-    if hags is True:
+    if hags is True and not hw.has_rt_cores:
+        # AMD RX 6000+ — the NVIDIA RTX 30+ case already got the priority-1
+        # "HAGS ON" recommendation above; don't repeat it.
         recs.append(Recommendation(
             "Keep hardware-accelerated GPU scheduling ON",
             f"Recommended on {hw.gpu_name or 'your GPU'}; slightly better "

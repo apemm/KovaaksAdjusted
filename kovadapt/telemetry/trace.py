@@ -133,6 +133,60 @@ class MouseTrace:
         return out
 
 
+class ResampleCache:
+    """Memoized `MouseTrace.resample` grids shared across analysis passes.
+
+    Duck-types the `resample` method, so analysis code accepts either a bare
+    trace or a cache. Each analysis step used to re-bin every packet
+    independently; at 4-8 kHz polling over multi-minute runs those per-packet
+    passes dominate `build_report`, so the cache computes each grid once —
+    and when a grid at exactly twice the requested rate is already cached,
+    the coarser grid is *derived* from it by merging adjacent bin pairs
+    instead of re-binning the packets.
+
+    The derivation is bitwise identical to `trace.resample(rate)`:
+
+    - Doubling is exact in binary floating point (`fl(2x) == 2*fl(x)`), so
+      each packet's bin index at rate r is its index at 2r floor-divided by
+      2, and the grid times satisfy `tg_r[j] == tg_2r[2j]`.
+    - Bin velocities are integer count sums times the rate — exactly
+      representable in float64 — so `(v_2r[2j] + v_2r[2j+1]) / 2 == v_r[j]`
+      exactly (test-pinned in tests/test_telemetry.py).
+
+    Cached arrays are shared: callers must not mutate what `resample`
+    returns (the analysis code never does — it derives new arrays).
+    """
+
+    def __init__(self, trace: MouseTrace) -> None:
+        self.trace = trace
+        self._grids: dict[float, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    def resample(self, rate: float = 500.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        got = self._grids.get(rate)
+        if got is None:
+            got = self._derive_half(rate)
+            if got is None:
+                got = self.trace.resample(rate)
+            self._grids[rate] = got
+        return got
+
+    def _derive_half(self, rate: float) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        parent = self._grids.get(rate * 2.0)
+        if parent is None:
+            return None
+        tg2, vx2, vy2 = parent
+        if tg2.size == 0:
+            return parent  # <2-packet trace: resample() is empty at any rate
+        n = (tg2.size + 1) // 2  # ceil(n_2r / 2) == n_r (see docstring)
+
+        def merge(v: np.ndarray) -> np.ndarray:
+            if v.size < 2 * n:  # odd parent length: last bin pairs with zero
+                v = np.concatenate([v, np.zeros(2 * n - v.size)])
+            return (v[0::2] + v[1::2]) / 2.0
+
+        return tg2[::2].copy(), merge(vx2), merge(vy2)
+
+
 class TraceStore:
     """Per-run trace files under <profile_dir>/traces/<scenario slug>/."""
 

@@ -56,7 +56,10 @@ class SessionWatcher:
             from .telemetry.raw_input import RAW_INPUT_AVAILABLE, MouseRecorder
 
             if RAW_INPUT_AVAILABLE:
-                self.recorder = MouseRecorder()
+                keep_min = self.s.telemetry_retention_min
+                self.recorder = MouseRecorder(
+                    retention_s=keep_min * 60.0 if keep_min > 0 else None
+                )
                 self.recorder.start()
                 self.log("mouse telemetry: recording (Raw Input)")
             else:
@@ -90,7 +93,10 @@ class SessionWatcher:
         win = run_time_window(run)
         if win:
             return self.recorder.snapshot(*win).window(*win)
-        return self.recorder.snapshot()
+        # No reconstructable window (e.g. a zero-kill run): analyzing the
+        # whole live recording as if it were this run would poison the
+        # profile with session-wide telemetry.
+        return None
 
     def _report_path(self, run) -> Path:
         p = self.traces.path_for(run.scenario, run.started.isoformat())
@@ -99,7 +105,8 @@ class SessionWatcher:
     def _analyze(self, run) -> RunReport:
         """Build + persist the post-run report (trace, clips, JSON)."""
         trace = self._run_trace(run)
-        rep, flicks, _ = build_report(run, trace)
+        rep, flicks, _ = build_report(run, trace, region_cols=self.s.region_cols,
+                                      region_rows=self.s.region_rows)
         if self.s.fatigue_detection_enabled:
             state = self.fatigue.add_run(rep.n_flicks, rep.overshoot_rate, rep.mean_flick_ms)
             rep.fatigue = state.as_dict()
@@ -119,8 +126,6 @@ class SessionWatcher:
                     rep.clip_files[str(i)] = str(out)
         rep.save(self._report_path(run))
         self.last_report = rep
-        if self.on_report is not None:
-            self.on_report(rep)
         return rep
 
     # ------------------------------------------------------------------
@@ -135,11 +140,17 @@ class SessionWatcher:
         return meta is not None and meta[0] in (self.base, self.adaptive_name)
 
     def _pending_files(self) -> list[Path]:
+        def mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:      # vanished between glob and stat
+                return 0.0
+
         out = [
             p for p in self.s.stats_dir.glob("*.csv")
             if p.name not in self._seen and self._relevant(p.name)
         ]
-        return sorted(out, key=lambda p: p.stat().st_mtime)
+        return sorted(out, key=mtime)
 
     # ------------------------------------------------------------------
     def process_run(self, csv_path: Path) -> Path:
@@ -174,6 +185,10 @@ class SessionWatcher:
         )
         if rep.summary_text:
             self.log(f"  analysis: {rep.summary_text}")
+        # Emit only after the profile is saved: GUI handlers reload the
+        # profile from disk, so an earlier emit shows last run's state.
+        if self.on_report is not None:
+            self.on_report(rep)
         return out
 
     def bootstrap(self) -> Path:
@@ -206,14 +221,24 @@ class SessionWatcher:
         if not self.adaptive_sce_path().is_file():
             self.bootstrap()
         self._start_capture()
-        self.stop_requested = False
+        # Never reset stop_requested here: a request_stop() that lands while
+        # watch() is still starting up (GUI Stop right after Start) must win.
         self.log(f"watching {self.s.stats_dir} for '{self.base}' runs (ctrl-c to stop)")
         try:
             while not self.stop_requested:
                 for p in self._pending_files():
-                    # Let KovaaK's finish writing.
-                    while time.time() - p.stat().st_mtime < settle:
-                        time.sleep(settle)
+                    try:
+                        # Let KovaaK's finish writing; stay stoppable while
+                        # waiting (a file whose mtime keeps advancing must
+                        # not pin the loop past request_stop()).
+                        while (not self.stop_requested
+                               and time.time() - p.stat().st_mtime < settle):
+                            time.sleep(min(settle, 0.5))
+                    except OSError:       # vanished between glob and settle
+                        self._seen.add(p.name)
+                        continue
+                    if self.stop_requested:
+                        break
                     try:
                         self.process_run(p)
                     except Exception as exc:  # keep the loop alive

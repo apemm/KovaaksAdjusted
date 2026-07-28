@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
 import pytest
 
@@ -15,7 +17,7 @@ from kovadapt.analysis.notable import find_notable_moments
 from kovadapt.analysis.report import RunReport, build_report, run_time_window
 from kovadapt.profile.player import PlayerProfile
 from kovadapt.stats.parser import parse_stats_csv
-from kovadapt.telemetry.trace import MouseTrace, TraceStore
+from kovadapt.telemetry.trace import MouseTrace, ResampleCache, TraceStore
 
 RATE = 1000.0  # synthetic packet rate (Hz)
 
@@ -219,6 +221,85 @@ def test_report_with_synthetic_trace_in_run_window(fixtures, tmp_path):
     assert rep2.n_flicks == rep.n_flicks and rep2.notable == rep.notable
 
 
+def test_build_report_threads_region_grid_dims(fixtures):
+    """region_deficits keys must line up with the bandit's Settings-sized
+    grid (r{row}c{col} contract); default stays 3x3 for legacy callers."""
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+    win = run_time_window(run)
+    b = TraceBuilder(t0=win[0] + 0.2)
+    for _ in range(4):
+        b.flick(200, 0)
+        b.flick(-200, 0, overshoot=0.25)
+    trace = b.build()
+
+    rep_default, flicks, _ = build_report(run, trace)
+    assert rep_default.region_deficits == region_deficits(flicks)  # 3x3 default
+
+    rep51, _, _ = build_report(run, trace, region_cols=5, region_rows=1)
+    assert rep51.region_deficits == region_deficits(flicks, cols=5, rows=1)
+    assert rep51.region_deficits and rep51.region_deficits != rep_default.region_deficits
+    for key in rep51.region_deficits:  # every key valid inside the 5x1 grid
+        r, c = key[1:].split("c")
+        assert int(r) == 0 and 0 <= int(c) <= 4
+
+
+# --------------------------------------------------------- run_time_window
+def _stats_csv_text(kills: list[tuple[str, str]], start: str | None = None) -> str:
+    rows = "\n".join(
+        f"{i},{ts},target,BB Gun,{ttk}s,1,1,1.000000,1.0,1.0,1.0,0,0"
+        for i, (ts, ttk) in enumerate(kills, start=1)
+    )
+    text = (
+        "Kill #,Timestamp,Bot,Weapon,TTK,Shots,Hits,Accuracy,"
+        "Damage Done,Damage Possible,Efficiency,Cheated,OverShots\n"
+        f"{rows}\n\n"
+        f"Kills:,{len(kills)}\n"
+    )
+    if start is not None:
+        text += f"Challenge Start:,{start}\n"
+    return text
+
+
+def test_run_time_window_same_day_anchoring(tmp_path):
+    p = tmp_path / "day test - Challenge - 2026.05.27-20.25.38 Stats.csv"
+    p.write_text(_stats_csv_text(
+        [("20:24:39.372", "0.100000"), ("20:24:42.809", "0.200000")],
+        start="20:24:38.500",
+    ), encoding="utf-8")
+    t0, t1 = run_time_window(parse_stats_csv(p))
+    assert t0 == datetime(2026, 5, 27, 20, 24, 38, 500000).timestamp()
+    assert t1 == datetime(2026, 5, 27, 20, 24, 42, 809000).timestamp() + 2.0
+
+
+def test_run_time_window_spanning_midnight(tmp_path):
+    # Filename timestamp is the challenge END: a run started 23:59:30 and
+    # ended 00:00:30 must anchor pre-midnight clocks to the PREVIOUS day.
+    p = tmp_path / "mid test - Challenge - 2026.05.28-00.00.30 Stats.csv"
+    p.write_text(_stats_csv_text(
+        [("23:59:35.000", "0.100000"),
+         ("23:59:50.000", "0.200000"),
+         ("00:00:28.000", "0.150000")],
+        start="23:59:30.000",
+    ), encoding="utf-8")
+    t0, t1 = run_time_window(parse_stats_csv(p))
+    assert t0 == datetime(2026, 5, 27, 23, 59, 30).timestamp()
+    assert t1 == datetime(2026, 5, 28, 0, 0, 28).timestamp() + 2.0
+    assert 0 < t1 - t0 < 120  # a ~60s run, not a day-inverted window
+
+
+def test_run_time_window_spanning_midnight_without_challenge_start(tmp_path):
+    # Older stats files reconstruct t0 from the first kill; the same
+    # previous-day anchoring must apply to that fallback path.
+    p = tmp_path / "mid test - Challenge - 2026.05.28-00.00.15 Stats.csv"
+    p.write_text(_stats_csv_text(
+        [("23:59:45.000", "0.500000"), ("00:00:10.000", "0.200000")],
+    ), encoding="utf-8")
+    t0, t1 = run_time_window(parse_stats_csv(p))
+    assert t0 == datetime(2026, 5, 27, 23, 59, 45).timestamp() - 0.5 - 1.0
+    assert t1 == datetime(2026, 5, 28, 0, 0, 10).timestamp() + 2.0
+    assert 0 < t1 - t0 < 120
+
+
 # ------------------------------------------------- telemetry -> bandit bridge
 def test_credit_observed_regions_moves_posteriors():
     prof = PlayerProfile(scenario="X")
@@ -335,6 +416,69 @@ def test_gap_p99_sees_mid_movement_stalls():
     assert 900 <= ih["polling_hz_est"] <= 1100   # cadence still from <30 ms gaps
     assert ih["jitter_ms"] < 1.0
     assert ih["gap_ms_p99"] > 30.0               # the stalls are now visible
+
+
+# ------------------------------------------------ v0.4: shared resample grid
+def test_resample_cache_bitwise_identical_to_direct():
+    """build_report shares one ResampleCache across analysis passes; the
+    250 Hz grid is derived from the cached 500 Hz grid by bin merging and
+    must stay BITWISE identical to trace.resample(250) — same dtypes, same
+    bits. Checked on a TraceBuilder trace and on irregular random timing."""
+    rng = np.random.default_rng(11)
+    irregular = MouseTrace(
+        t=1000.0 + np.sort(rng.uniform(0.0, 30.0, 20000)),
+        dx=rng.integers(-127, 128, 20000).astype(np.int32),
+        dy=rng.integers(-127, 128, 20000).astype(np.int32),
+        clicks=np.sort(rng.uniform(1000.0, 1030.0, 10)),
+    )
+    for tr in (_biased_trace(), irregular):
+        cache = ResampleCache(tr)
+        for rate in (500.0, 250.0):     # 500 warms the cache; 250 is derived
+            got, ref = cache.resample(rate), tr.resample(rate)
+            for a, b in zip(got, ref):
+                assert a.dtype == b.dtype
+                assert np.array_equal(a, b)
+        assert cache.resample(500.0) is cache.resample(500.0)  # memoized
+
+
+def test_grid_sharing_matches_standalone_analysis():
+    """segment_flicks/movement_heatmap with a shared grid must equal the
+    bare-trace call exactly (the GUI still calls them without a grid)."""
+    tr = _biased_trace(6)
+    cache = ResampleCache(tr)
+    assert segment_flicks(tr, grid=cache) == segment_flicks(tr)
+    for a, b in zip(movement_heatmap(tr, grid=cache), movement_heatmap(tr)):
+        assert np.array_equal(a, b)
+
+
+# ------------------------------------------- v0.4: recorder memory ceiling
+def test_buffers_retention_bounds_growth(monkeypatch):
+    """With retention_s set, old chunks and clicks are dropped on chunk
+    rollover, but at least the retention window is always fully covered."""
+    import kovadapt.telemetry.raw_input as ri
+
+    monkeypatch.setattr(ri, "_CHUNK", 100)
+    buf = ri._Buffers(retention_s=1.0)
+    t0 = 1000.0
+    for i in range(1000):                 # 10 s of packets at 100 Hz
+        ts = t0 + i * 0.01
+        buf.add(ts, 1, 1)
+        if i % 10 == 0:
+            buf.clicks.append(ts)
+            buf.clicks_up.append(ts + 0.005)
+    tr = buf.to_trace()
+    newest = t0 + 999 * 0.01
+    assert tr.t[-1] == newest
+    assert len(tr) < 1000                            # old chunks dropped
+    assert len(tr) <= 3 * ri._CHUNK                  # bounded
+    assert newest - tr.t[0] >= 1.0                   # window fully covered
+    assert tr.clicks.size < 100 and tr.clicks_up.size < 100
+    assert tr.clicks[0] >= tr.t[0] - 0.01            # clicks pruned in step
+
+    unbounded = ri._Buffers()                        # default: keep everything
+    for i in range(1000):
+        unbounded.add(t0 + i * 0.01, 1, 1)
+    assert len(unbounded.to_trace()) == 1000
 
 
 def test_buffers_windowed_snapshot_matches_full(monkeypatch):

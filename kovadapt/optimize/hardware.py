@@ -204,6 +204,107 @@ def _windows_build() -> int:
         return 0
 
 
+# ------------------------------------------------- live WDDM driver state
+# D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS) reports what the graphics
+# kernel is running with RIGHT NOW, unlike the HwSchMode registry value which
+# is only the after-reboot intent. The structs mirror d3dkmthk.h exactly.
+
+_KMTQAITYPE_WDDM_2_7_CAPS = 70
+
+# D3DDDI_WDDM_2_7_CAPS: a UINT bitfield; bit 0 HwSchSupported, bit 1 HwSchEnabled
+# (bit 2 HwSchEnabledByDefault, rest reserved).
+_HWSCH_SUPPORTED = 0x1
+_HWSCH_ENABLED = 0x2
+
+
+class _LUID(ctypes.Structure):
+    _fields_ = [("LowPart", ctypes.c_uint32), ("HighPart", ctypes.c_int32)]
+
+
+class _D3DKMT_ADAPTERINFO(ctypes.Structure):
+    _fields_ = [
+        ("hAdapter", ctypes.c_uint32),           # D3DKMT_HANDLE
+        ("AdapterLuid", _LUID),
+        ("NumOfSources", ctypes.c_uint32),
+        ("bPrecisePresentRegionsPreferred", ctypes.c_int32),
+    ]
+
+
+class _D3DKMT_ENUMADAPTERS2(ctypes.Structure):
+    _fields_ = [
+        ("NumAdapters", ctypes.c_uint32),
+        ("pAdapters", ctypes.POINTER(_D3DKMT_ADAPTERINFO)),
+    ]
+
+
+class _D3DKMT_QUERYADAPTERINFO(ctypes.Structure):
+    _fields_ = [
+        ("hAdapter", ctypes.c_uint32),
+        ("Type", ctypes.c_int32),                # KMTQUERYADAPTERINFOTYPE
+        ("pPrivateDriverData", ctypes.c_void_p),
+        ("PrivateDriverDataSize", ctypes.c_uint32),
+    ]
+
+
+class _D3DKMT_CLOSEADAPTER(ctypes.Structure):
+    _fields_ = [("hAdapter", ctypes.c_uint32)]
+
+
+def decode_wddm27_caps(value: int) -> tuple[bool, bool]:
+    """(HwSchSupported, HwSchEnabled) from the D3DDDI_WDDM_2_7_CAPS bitfield."""
+    return bool(value & _HWSCH_SUPPORTED), bool(value & _HWSCH_ENABLED)
+
+
+def hags_live_state() -> tuple[bool | None, bool | None]:
+    """(supported, enabled) for hardware GPU scheduling per the live driver.
+
+    Enumerates the kernel-mode adapters (D3DKMTEnumAdapters2 returns already
+    open handles) and returns the caps of the first adapter that supports
+    hardware scheduling — that is the real GPU; software adapters like the
+    Basic Render Driver report unsupported. (None, None) off-Windows or when
+    any step fails. Read-only; every handle is closed before returning.
+    """
+    if not WINDOWS:
+        return None, None
+    handles: list[int] = []
+    try:
+        gdi32 = ctypes.WinDLL("gdi32")
+        enum = _D3DKMT_ENUMADAPTERS2()
+        if gdi32.D3DKMTEnumAdapters2(ctypes.byref(enum)) != 0 or not enum.NumAdapters:
+            return None, None
+        arr = (_D3DKMT_ADAPTERINFO * enum.NumAdapters)()
+        enum.pAdapters = ctypes.cast(arr, ctypes.POINTER(_D3DKMT_ADAPTERINFO))
+        status = gdi32.D3DKMTEnumAdapters2(ctypes.byref(enum))
+        handles = [arr[i].hAdapter for i in range(enum.NumAdapters) if arr[i].hAdapter]
+        if status != 0:
+            return None, None
+        fallback: tuple[bool, bool] | None = None
+        for h in handles:
+            caps = ctypes.c_uint32(0)
+            q = _D3DKMT_QUERYADAPTERINFO(
+                hAdapter=h,
+                Type=_KMTQAITYPE_WDDM_2_7_CAPS,
+                pPrivateDriverData=ctypes.cast(ctypes.byref(caps), ctypes.c_void_p),
+                PrivateDriverDataSize=ctypes.sizeof(caps),
+            )
+            if gdi32.D3DKMTQueryAdapterInfo(ctypes.byref(q)) != 0:
+                continue                       # pre-WDDM-2.7 driver on this adapter
+            supported, enabled = decode_wddm27_caps(caps.value)
+            if supported:
+                return supported, enabled
+            if fallback is None:
+                fallback = (supported, enabled)
+        return fallback if fallback is not None else (None, None)
+    except Exception:
+        return None, None
+    finally:
+        try:
+            for h in handles:
+                gdi32.D3DKMTCloseAdapter(ctypes.byref(_D3DKMT_CLOSEADAPTER(hAdapter=h)))
+        except Exception:
+            pass
+
+
 def detect_hardware() -> HardwareInfo:
     """Probe everything; safe to call from any thread. ~1s (one PowerShell)."""
     if not WINDOWS:

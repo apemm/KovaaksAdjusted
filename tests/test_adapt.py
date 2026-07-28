@@ -214,6 +214,27 @@ def test_settings_for_archetype():
     assert s.for_archetype("tracking").target_accuracy_low == 0.70
 
 
+def test_ou_params_follow_archetype_overrides():
+    """Contract: engine tunables resolve via _effective(), including
+    ou_theta/ou_sigma — archetype overrides of them must not silently vanish."""
+    s = _settings()
+    s.archetype_overrides["tracking"]["ou_theta"] = 25.0   # near-instant mean reversion
+    s.archetype_overrides["tracking"]["ou_sigma"] = 1e-12  # ~deterministic step
+
+    def state_after_plan(archetype: str) -> float:
+        engine = AdaptationEngine(s, rng=np.random.default_rng(3))
+        prof = PlayerProfile(scenario="t")
+        prof.archetype = archetype
+        prof.ou_state = 5.0
+        engine.plan(prof, None)          # bootstrap path must stay valid
+        return prof.ou_state
+
+    # Override applied: e^-25 collapses the state to ~0 in one step.
+    assert abs(state_after_plan("tracking")) < 1e-3
+    # Base path unchanged: theta 0.35 keeps most of the state (5 * e^-0.35 ~ 3.5).
+    assert state_after_plan("clicking") > 2.0
+
+
 def test_settings_roundtrip_new_fields(tmp_path):
     s = Settings(kovaaks_root=".")
     s.bandit_posterior_decay = 0.05
@@ -223,3 +244,21 @@ def test_settings_roundtrip_new_fields(tmp_path):
     assert loaded.bandit_posterior_decay == 0.05
     assert loaded.archetype_overrides["tracking"]["size_learning_rate"] == 0.42
     assert loaded.dodge_bias_enabled == s.dodge_bias_enabled
+
+
+def test_settings_save_defaults_to_canonical_load_path(tmp_path, monkeypatch):
+    """save() must default to the bootstrap file load() reads, even when
+    profile_dir is customized — otherwise saved settings are never loaded."""
+    from pathlib import Path
+
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    custom = tmp_path / "elsewhere"
+    s = Settings(kovaaks_root=".", profile_dir=str(custom))
+    s.target_accuracy_high = 0.91
+    p = s.save()
+    assert p == fake_home / ".kovadapt" / "settings.json" and p.is_file()
+    assert not (custom / "settings.json").exists()
+    loaded = Settings.load()  # default path round-trips the customization
+    assert loaded.target_accuracy_high == 0.91
+    assert loaded.profile_dir == str(custom)

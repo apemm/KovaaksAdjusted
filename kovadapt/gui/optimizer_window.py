@@ -44,11 +44,15 @@ from ..optimize.watchdog import (
     startup_registered,
     unregister_startup,
 )
-from .theme import ACCENT, BAD, FG_DIM, GOOD, WARN
+from . import theme
 
-_STATUS_COLOR = {"ok": GOOD, "warn": WARN, "bad": BAD, "info": ACCENT,
-                 "unknown": FG_DIM}
 _STATUS_DOT = {"ok": "●", "warn": "●", "bad": "●", "info": "○", "unknown": "○"}
+
+
+def _status_color(status: str) -> str:
+    pal = theme.current()
+    return {"ok": pal.good, "warn": pal.warn, "bad": pal.bad,
+            "info": pal.accent}.get(status, pal.fg_dim)
 
 
 class _ScanWorker(QThread):
@@ -76,10 +80,9 @@ class _CheckRow(QFrame):
     def __init__(self, result: CheckResult, on_fix, parent=None) -> None:
         super().__init__(parent)
         self.result = result
-        dot = QLabel(_STATUS_DOT.get(result.status, "○"))
-        dot.setStyleSheet(
-            f"color: {_STATUS_COLOR.get(result.status, FG_DIM)}; font-size: 15px;")
+        self._dot = dot = QLabel(_STATUS_DOT.get(result.status, "○"))
         dot.setFixedWidth(18)
+        self.restyle()
         title = QLabel(f"<b>{result.title}</b>")
         title.setTextFormat(Qt.RichText)
         self.detail = QLabel(result.detail)
@@ -98,6 +101,10 @@ class _CheckRow(QFrame):
             self.fix_btn.clicked.connect(lambda: on_fix(self))
             grid.addWidget(self.fix_btn, 0, 2, 2, 1, Qt.AlignVCenter)
         grid.setColumnStretch(1, 1)
+
+    def restyle(self) -> None:
+        self._dot.setStyleSheet(
+            f"color: {_status_color(self.result.status)}; font-size: 15px;")
 
     def show_outcome(self, msg: str) -> None:
         self.detail.setText(msg)
@@ -173,16 +180,21 @@ class OptimizerWindow(QWidget):
         self.wd_log.setReadOnly(True)
         self.wd_log.setMaximumBlockCount(200)
         self.wd_log.setMaximumHeight(110)
+        self.jitter_lbl = QLabel(
+            "Evidence: watch a session with telemetry on and per-run input "
+            "jitter shows up here, before vs after each auto-tune.")
+        self.jitter_lbl.setProperty("dim", True)
+        self.jitter_lbl.setWordWrap(True)
+        self._jitter_runs: list[tuple[float, float]] = []   # (epoch, jitter_ms)
         wd_box = QGroupBox("Watchdog (free Process Lasso replacement)")
         wv = QVBoxLayout(wd_box)
         wv.addWidget(self.wd_toggle)
         wv.addWidget(self.wd_startup)
+        wv.addWidget(self.jitter_lbl)
         wv.addWidget(self.wd_log)
 
         # --- advice -----------------------------------------------------------
         self.launch_label = QLabel(steam_launch_options(HardwareInfo()))
-        self.launch_label.setStyleSheet(
-            f"font-family: Consolas, monospace; color: {ACCENT};")
         self.launch_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         copy_btn = QPushButton("Copy")
         copy_btn.setFixedWidth(70)
@@ -221,7 +233,51 @@ class OptimizerWindow(QWidget):
         lay.addWidget(wd_box)
         lay.addWidget(adv_box, 2)
 
+        self.restyle()
         self.rescan()
+
+    # ------------------------------------------------------------- theming
+    def restyle(self, *_pal) -> None:
+        pal = theme.current()
+        self.launch_label.setStyleSheet(
+            f"font-family: Consolas, monospace; color: {pal.accent};")
+        for i in range(self.rows_layout.count() - 1):
+            w = self.rows_layout.itemAt(i).widget()
+            if isinstance(w, _CheckRow):
+                w.restyle()
+
+    # ------------------------------------------------- input-health evidence
+    def note_input_health(self, ih: dict) -> None:
+        """Per-run input-health from the watcher: turn watchdog tweaks into
+        before/after jitter evidence instead of folklore."""
+        import time
+
+        jit = ih.get("jitter_ms")
+        if not jit:
+            return
+        self._jitter_runs.append((time.time(), float(jit)))
+        del self._jitter_runs[:-50]
+        tunes = self.watchdog.tune_times
+        if tunes:
+            t = tunes[-1]
+            pre = [j for ts, j in self._jitter_runs if ts < t]
+            post = [j for ts, j in self._jitter_runs if ts >= t]
+            if pre and post:
+                self.jitter_lbl.setText(
+                    f"Evidence: input jitter {sum(post) / len(post):.2f} ms across "
+                    f"{len(post)} run(s) since the last auto-tune, vs "
+                    f"{sum(pre) / len(pre):.2f} ms across {len(pre)} before it.")
+                return
+            if post:
+                self.jitter_lbl.setText(
+                    f"Evidence: input jitter {sum(post) / len(post):.2f} ms across "
+                    f"{len(post)} run(s) since the auto-tune (no pre-tune runs "
+                    "this session to compare yet).")
+                return
+        js = [j for _, j in self._jitter_runs]
+        self.jitter_lbl.setText(
+            f"Evidence: input jitter {sum(js) / len(js):.2f} ms across "
+            f"{len(js)} run(s) — no watchdog tune this session yet.")
 
     # ------------------------------------------------------------- scanning
     def rescan(self) -> None:
@@ -320,13 +376,19 @@ class OptimizerWindow(QWidget):
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
-        """Wait for the scan thread before Qt teardown (called at app exit;
-        a QThread destroyed while running is a fatal abort in Qt 6)."""
+        """App is exiting: wait for the scan thread before Qt teardown (a
+        QThread destroyed while running is a fatal abort in Qt 6), then close
+        for real so this window can't keep the app alive."""
+        self._closing = True
         if self._scan is not None and self._scan.isRunning():
             self._scan.wait(20000)
+        self.close()
 
     def closeEvent(self, event) -> None:
-        # Closing the window hides it; the watchdog keeps running (that is
-        # its point). It stops when the whole app exits (daemon thread).
+        # User-closing the window hides it; the watchdog keeps running (that
+        # is its point). Real teardown happens via shutdown() at app exit.
+        if getattr(self, "_closing", False):
+            super().closeEvent(event)
+            return
         event.ignore()
         self.hide()

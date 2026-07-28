@@ -1,7 +1,8 @@
 """kovadapt command-line interface.
 
-    kovadapt gui                     launch the desktop app (dark theme)
+    kovadapt gui                     launch the desktop app
     kovadapt scenarios [filter]      list installed scenarios
+    kovadapt play "<scenario>"       jump KovaaK's into the adaptive variant
     kovadapt watch "<scenario>"      run the adaptation loop for a scenario
     kovadapt generate "<scenario>"   one-shot: build/refresh the adaptive .sce
     kovadapt status "<scenario>"     show learned profile + region heatmap
@@ -29,6 +30,23 @@ def _settings() -> Settings:
     return s
 
 
+def _base_scenario(name: str) -> str:
+    """Strip trailing ADAPTIVE_SUFFIXes from a user-supplied scenario name.
+
+    Adaptive edits are absolute against the base .sce and must never compound;
+    passing "X [Adaptive]" to watch/generate would build
+    "X [Adaptive] [Adaptive]" from the already-edited variant and fork a
+    second profile. Repeated stripping also repairs doubled-suffix names left
+    behind by earlier mistakes.
+    """
+    base = name
+    while base.endswith(ADAPTIVE_SUFFIX):
+        base = base[: -len(ADAPTIVE_SUFFIX)]
+    if base != name:
+        print(f'note: "{name}" is an adaptive variant — using base scenario "{base}"')
+    return base
+
+
 def cmd_scenarios(args) -> None:
     s = _settings()
     names = sorted(p.stem for p in s.scenarios_dir.glob("*.sce"))
@@ -41,7 +59,7 @@ def cmd_watch(args) -> None:
     from .watcher import SessionWatcher
 
     s = _settings()
-    w = SessionWatcher(s, args.scenario)
+    w = SessionWatcher(s, _base_scenario(args.scenario))
     if not w.base_sce_path().is_file():
         sys.exit(f"scenario file not found: {w.base_sce_path()}")
     try:
@@ -54,14 +72,15 @@ def cmd_generate(args) -> None:
     from .adapt.archetype import detect_archetype
 
     s = _settings()
-    adaptive = args.scenario + ADAPTIVE_SUFFIX
+    scenario = _base_scenario(args.scenario)
+    adaptive = scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
     if not profile.archetype:
-        profile.archetype = detect_archetype(args.scenario)
+        profile.archetype = detect_archetype(scenario)
     plan = AdaptationEngine(s).plan(profile, None)
     out = generate_adaptive_variant(
-        s.scenarios_dir / f"{args.scenario}.sce", plan, s,
+        s.scenarios_dir / f"{scenario}.sce", plan, s,
         s.scenarios_dir / f"{adaptive}.sce",
     )
     profile.save(s.profile_path)
@@ -70,7 +89,7 @@ def cmd_generate(args) -> None:
 
 def cmd_status(args) -> None:
     s = _settings()
-    profile = PlayerProfile.load(args.scenario + ADAPTIVE_SUFFIX, s.profile_path)
+    profile = PlayerProfile.load(_base_scenario(args.scenario) + ADAPTIVE_SUFFIX, s.profile_path)
     if profile.run_count == 0:
         print("no runs recorded yet")
         return
@@ -98,17 +117,38 @@ def cmd_status(args) -> None:
 def cmd_replay(args) -> None:
     """Rebuild the profile from existing stats history (base + adaptive runs)."""
     s = _settings()
-    adaptive = args.scenario + ADAPTIVE_SUFFIX
+    scenario = _base_scenario(args.scenario)
+    adaptive = scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile(scenario=adaptive)
     engine = AdaptationEngine(s)
-    n = 0
-    for name in (args.scenario, adaptive):
-        for run in iter_runs(s.stats_dir, scenario=name):
-            engine.observe(profile, run)
-            n += 1
+    # EWMAs and bandit credit are order-sensitive: merge the base and adaptive
+    # streams into true chronological order before folding them in.
+    runs = [run for name in (scenario, adaptive)
+            for run in iter_runs(s.stats_dir, scenario=name)]
+    runs.sort(key=lambda r: r.started)
+    for run in runs:
+        engine.observe(profile, run)
     profile.save(s.profile_path)
-    print(f"replayed {n} runs into {profile.scenario!r} "
+    print(f"replayed {len(runs)} runs into {profile.scenario!r} "
           f"(accuracy EWMA {profile.ewma_accuracy:.1%})")
+
+
+def cmd_play(args) -> None:
+    """Queue the adaptive playlist and deep-link the game into the scenario."""
+    from . import launcher
+
+    s = _settings()
+    scenario = _base_scenario(args.scenario)
+    adaptive = scenario + ADAPTIVE_SUFFIX
+    if (s.scenarios_dir / f"{adaptive}.sce").is_file():
+        msg, ok = launcher.play_adaptive(s, scenario)
+    else:
+        print(f"no adaptive variant yet — launching the base scenario "
+              f"(run `kovadapt watch \"{scenario}\"` to adapt)")
+        msg, ok = launcher.launch_scenario(scenario)
+    print(msg)
+    if not ok:
+        sys.exit(1)
 
 
 def cmd_watchdog(args) -> None:
@@ -185,6 +225,7 @@ def main(argv: list[str] | None = None) -> None:
     ck.set_defaults(fn=cmd_checkup)
 
     for name, fn, hlp in (
+        ("play", cmd_play, "jump KovaaK's into the adaptive variant (Steam deep link)"),
         ("watch", cmd_watch, "run the live adaptation loop"),
         ("generate", cmd_generate, "one-shot generate the adaptive variant"),
         ("status", cmd_status, "show learned player profile"),

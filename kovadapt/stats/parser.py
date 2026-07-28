@@ -66,11 +66,19 @@ def parse_stats_csv(path: Path | str) -> Run:
             if key.endswith(":"):
                 run.summary[key] = val.strip()
 
+    prev_clock, rollover = None, 0.0
     for row in csv.reader(kill_section):
         if len(row) < 13:
             continue
         try:
-            clock = _clock_seconds(row[1])
+            clock = _clock_seconds(row[1]) + rollover
+            if prev_clock is not None and clock < prev_clock:
+                # Timestamps are wall-clock seconds-since-midnight; a drop
+                # means the run crossed 00:00 (same correction as the run
+                # window reconstruction in analysis/report.py).
+                rollover += 86400.0
+                clock += 86400.0
+            prev_clock = clock
             if t0 is None:
                 t0 = clock
             run.kills.append(

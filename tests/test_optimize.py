@@ -78,6 +78,30 @@ def test_frame_gen_rec_is_honest():
     assert fg[0].priority == 3   # situational, never "do this"
 
 
+def test_hags_advice_is_consistent_per_gpu():
+    """Every GPU generation gets exactly one HAGS recommendation — never a
+    priority-1 'turn it ON' alongside a 'try OFF' (the RTX 20-series trap)."""
+    def hags_recs(hw: HardwareInfo):
+        return [r for r in recommended_settings(hw)
+                if "HAGS" in r.title or "GPU scheduling" in r.title]
+
+    rtx20 = hags_recs(HardwareInfo(gpu_name="NVIDIA GeForce RTX 2070", gpu_vendor="nvidia"))
+    assert len(rtx20) == 1
+    assert "OFF" in rtx20[0].title           # matches the checkup probe's advice
+
+    rtx30 = hags_recs(HardwareInfo(gpu_name="NVIDIA GeForce RTX 3070", gpu_vendor="nvidia"))
+    assert len(rtx30) == 1
+    assert rtx30[0].title.startswith("HAGS ON") and rtx30[0].priority == 1
+
+    gtx10 = hags_recs(HardwareInfo(gpu_name="NVIDIA GeForce GTX 1080", gpu_vendor="nvidia"))
+    assert len(gtx10) == 1 and "OFF" in gtx10[0].title
+
+    rx6 = hags_recs(HardwareInfo(gpu_name="AMD Radeon RX 6800 XT", gpu_vendor="amd"))
+    assert len(rx6) == 1 and rx6[0].title.endswith("ON")
+
+    assert hags_recs(HardwareInfo()) == []   # unknown GPU: no HAGS guidance
+
+
 def test_launch_options_and_myths():
     assert "-USEALLAVAILABLECORES" in steam_launch_options(HardwareInfo())
     flags = dict(skipped_launch_options())
@@ -123,7 +147,7 @@ def test_config_corruption_detection(tmp_path, monkeypatch):
 
 def test_run_all_never_raises():
     results = SystemCheckup("", HardwareInfo()).run_all()
-    assert len(results) == 7
+    assert len(results) == 12
     assert all(r.status in ("ok", "warn", "bad", "info", "unknown") for r in results)
     assert SystemCheckup("", HardwareInfo()).fix("nonexistent") \
         == "no automated fix for this item"
@@ -156,6 +180,12 @@ def test_watchdog_applies_once_per_pid(monkeypatch):
     wd.stop()
     assert applied == [100, 200]     # once per launch, re-armed after exit
     assert any("watchdog on" in e for e in events)
+    # Jitter-evidence markers: one epoch timestamp per applied tuning, and the
+    # timestamp surfaces in the event payload for downstream correlation.
+    assert len(wd.tune_times) == 2
+    now = time.time()
+    assert all(now - 60 < t <= now for t in wd.tune_times)
+    assert any("tuned at epoch" in e for e in events)
 
 
 def test_watchdog_reports_missing_psutil(monkeypatch):
@@ -217,3 +247,155 @@ def test_power_fix_reuses_existing_ultimate_copy(monkeypatch):
     assert "Ultimate" in msg
     assert not any("-duplicatescheme" in c for call in calls for c in call)
     assert ["powercfg", "/setactive", ult] in calls
+
+
+# ------------------------------------------------------ core parking checkup
+POWERCFG_CPMINCORES = """\
+Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
+  Subgroup GUID: 54533251-82be-4824-96c1-47b60b740d00  (Processor power management)
+    Power Setting GUID: 0cc5b647-c1df-4637-891a-dec35c318583  (Processor performance core parking min cores)
+      Minimum Possible Setting: 0x00000000
+      Maximum Possible Setting: 0x00000064
+      Possible Settings increment: 0x00000001
+      Possible Settings units: %
+    Current AC Power Setting Index: {ac}
+    Current DC Power Setting Index: 0x00000032
+"""
+
+
+def test_powercfg_ac_index_parsing():
+    from kovadapt.optimize.checkup import parse_powercfg_ac_index
+
+    assert parse_powercfg_ac_index(POWERCFG_CPMINCORES.format(ac="0x00000064")) == 100
+    assert parse_powercfg_ac_index(POWERCFG_CPMINCORES.format(ac="0x0000000a")) == 10
+    # The DC line alone must not satisfy the AC pattern.
+    assert parse_powercfg_ac_index("Current DC Power Setting Index: 0x00000064") is None
+    assert parse_powercfg_ac_index(
+        "The power scheme, subgroup or setting specified does not exist.") is None
+    assert parse_powercfg_ac_index("") is None
+
+
+def test_core_parking_status_mapping(monkeypatch):
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    checkup = ck.SystemCheckup("", HardwareInfo())
+
+    monkeypatch.setattr(ck, "_run",
+                        lambda cmd, timeout=15.0: POWERCFG_CPMINCORES.format(ac="0x00000064"))
+    assert checkup._c_parking().status == "ok"
+
+    monkeypatch.setattr(ck, "_run",
+                        lambda cmd, timeout=15.0: POWERCFG_CPMINCORES.format(ac="0x00000032"))
+    res = checkup._c_parking()
+    assert res.status == "warn" and not res.can_fix     # may need admin: never auto
+    assert "powercfg /setacvalueindex" in res.detail    # exact command surfaced
+    assert "50" in res.detail
+
+    monkeypatch.setattr(ck, "_run", lambda cmd, timeout=15.0:
+                        "The power scheme, subgroup or setting specified does not exist.")
+    assert checkup._c_parking().status == "unknown"
+
+
+# ---------------------------------------------------- gamedvr / game mode
+def test_gamedvr_registry_mapping(monkeypatch):
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    checkup = ck.SystemCheckup("", HardwareInfo())
+
+    values = {"AppCaptureEnabled": 0, "GameDVR_Enabled": 0}
+    monkeypatch.setattr(ck, "_read_hkcu_dword", lambda path, name: values[name])
+    assert checkup._c_gamedvr().status == "ok"
+
+    values["GameDVR_Enabled"] = 1
+    res = checkup._c_gamedvr()
+    assert res.status == "warn" and res.can_fix and res.safe
+    assert "GameDVR_Enabled=1" in res.detail        # prior value shown to restore
+
+    monkeypatch.setattr(ck, "_read_hkcu_dword", lambda path, name: None)
+    res = checkup._c_gamedvr()                      # absent = Windows default = on
+    assert res.status == "warn"
+    assert "default on" in res.detail
+
+
+def test_game_mode_registry_mapping(monkeypatch):
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    checkup = ck.SystemCheckup("", HardwareInfo())
+
+    monkeypatch.setattr(ck, "_read_hkcu_dword", lambda path, name: None)
+    res = checkup._c_game_mode()
+    assert res.status == "info" and not res.can_fix  # absent = default ON = fine
+
+    monkeypatch.setattr(ck, "_read_hkcu_dword", lambda path, name: 1)
+    assert checkup._c_game_mode().status == "info"
+
+    monkeypatch.setattr(ck, "_read_hkcu_dword", lambda path, name: 0)
+    res = checkup._c_game_mode()
+    assert res.status == "warn" and res.can_fix and res.safe
+
+
+# ------------------------------------------------------------ hags live
+def test_wddm27_caps_decoding():
+    from kovadapt.optimize.hardware import decode_wddm27_caps
+
+    assert decode_wddm27_caps(0x0) == (False, False)
+    assert decode_wddm27_caps(0x1) == (True, False)      # supported, running off
+    assert decode_wddm27_caps(0x3) == (True, True)       # supported, running on
+    assert decode_wddm27_caps(0x7) == (True, True)       # EnabledByDefault bit ignored
+    assert decode_wddm27_caps(0xFFFFFFF9) == (True, False)  # reserved bits ignored
+
+
+def test_hags_live_vs_registry_mapping(monkeypatch):
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    checkup = ck.SystemCheckup("", HardwareInfo())
+
+    monkeypatch.setattr(ck, "hags_live_state", lambda: (True, True))
+    monkeypatch.setattr(ck, "_hags_registry_mode", lambda: 2)
+    assert checkup._c_hags_live().status == "ok"
+
+    monkeypatch.setattr(ck, "_hags_registry_mode", lambda: 1)  # intent off, live on
+    res = checkup._c_hags_live()
+    assert res.status == "warn"
+    assert "reboot" in res.detail
+
+    monkeypatch.setattr(ck, "_hags_registry_mode", lambda: None)  # no override set
+    assert checkup._c_hags_live().status == "info"
+
+    monkeypatch.setattr(ck, "hags_live_state", lambda: (False, False))
+    assert checkup._c_hags_live().status == "info"     # driver has no hw scheduling
+
+    monkeypatch.setattr(ck, "hags_live_state", lambda: (None, None))
+    assert checkup._c_hags_live().status == "unknown"  # query failed
+
+
+# --------------------------------------------------------------- timer
+def test_timer_resolution_status_mapping(monkeypatch):
+    from kovadapt.optimize import checkup as ck
+
+    monkeypatch.setattr(ck, "WINDOWS", True)
+    monkeypatch.setattr(ck, "_query_timer_resolution", lambda: (15.63, 0.5))
+    monkeypatch.setattr(ck, "_game_running", lambda: True)
+
+    win10 = ck.SystemCheckup("", HardwareInfo(is_windows_11=False))
+    res = win10._c_timer()
+    assert res.status == "warn" and not res.can_fix  # owned by the requesting app
+
+    monkeypatch.setattr(ck, "_game_running", lambda: False)
+    assert win10._c_timer().status == "info"         # coarse but game not running
+
+    monkeypatch.setattr(ck, "_game_running", lambda: None)  # no psutil: never warn
+    assert win10._c_timer().status == "info"
+
+    win11 = ck.SystemCheckup("", HardwareInfo(is_windows_11=True))
+    monkeypatch.setattr(ck, "_game_running", lambda: True)
+    res = win11._c_timer()
+    assert res.status == "info"                      # win11 handles it per-process
+    assert "per-process" in res.detail
+
+    monkeypatch.setattr(ck, "_query_timer_resolution", lambda: None)
+    assert win11._c_timer().status == "unknown"

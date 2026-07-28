@@ -52,6 +52,15 @@ class OptimizerView(QWidget):
         self.window.raise_()
         self.window.activateWindow()
 
+    def restyle(self, *_pal) -> None:
+        if self.window is not None:
+            self.window.restyle()
+
+    def note_report(self, rep) -> None:
+        """Feed per-run input health into the watchdog evidence panel."""
+        if self.window is not None:
+            self.window.note_input_health(getattr(rep, "input_health", None) or {})
+
     def shutdown(self) -> None:
         if self.window is not None:
             self.window.shutdown()

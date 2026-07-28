@@ -19,12 +19,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .hardware import HardwareInfo
+from .hardware import HardwareInfo, hags_live_state
 
 WINDOWS = sys.platform == "win32"
 
 GAME_EXE = "FPSAimTrainer.exe"
 GAME_PROCESS = "FPSAimTrainer"
+
+# Game Bar / Game DVR background-capture switches (both must be 0 for "off").
+GAMEDVR_APP_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR"
+GAMEDVR_STORE_KEY = r"System\GameConfigStore"
+GAMEBAR_KEY = r"Software\Microsoft\GameBar"
 
 # Ultimate Performance scheme (hidden on most consumer SKUs until duplicated).
 ULTIMATE_GUID = "e9a42b02-d5df-448d-aa66-ad3f9edeb1c9"
@@ -65,6 +70,94 @@ def _run(cmd: list[str], timeout: float = 15.0) -> str:
     return (out.stdout or "") + (out.stderr or "")
 
 
+def _read_hkcu_dword(path: str, name: str) -> int | None:
+    """One HKCU DWORD, None when the key/value is absent or unreadable."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+            return int(winreg.QueryValueEx(k, name)[0])
+    except OSError:
+        return None
+
+
+def _hags_registry_mode() -> int | None:
+    """HwSchMode registry value (2 = on, 1 = off), None when absent —
+    the after-reboot INTENT, not necessarily what the driver runs with."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
+        ) as k:
+            return int(winreg.QueryValueEx(k, "HwSchMode")[0])
+    except FileNotFoundError:
+        return None
+
+
+_KOVADAPT_KEY = r"Software\kovadapt"
+
+
+def _stored_scheme_guid() -> str | None:
+    """GUID of the performance scheme a previous fix activated. Name matching
+    is locale-dependent and duplicated schemes get fresh random GUIDs, so
+    this HKCU note is the only way to recognize our own scheme again on
+    non-English Windows."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _KOVADAPT_KEY) as k:
+            return str(winreg.QueryValueEx(k, "PowerSchemeGuid")[0]).lower()
+    except OSError:
+        return None
+
+
+def _store_scheme_guid(guid: str) -> None:
+    import winreg
+
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _KOVADAPT_KEY) as k:
+        winreg.SetValueEx(k, "PowerSchemeGuid", 0, winreg.REG_SZ, guid.lower())
+
+
+def parse_powercfg_ac_index(output: str) -> int | None:
+    """Current AC value from `powercfg /q` output (hex like 0x00000064),
+    None when the setting is missing from the listing."""
+    m = re.search(r"Current AC Power Setting Index:\s*(0x[0-9a-fA-F]+|\d+)", output)
+    if not m:
+        return None
+    raw = m.group(1)
+    return int(raw, 16) if raw.lower().startswith("0x") else int(raw)
+
+
+def _query_timer_resolution() -> tuple[float, float] | None:
+    """(current_ms, finest_ms) via NtQueryTimerResolution (100 ns units),
+    None on failure. Confusingly, ntdll's "maximum" is the finest resolution."""
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+        coarsest = ctypes.c_ulong()
+        finest = ctypes.c_ulong()
+        current = ctypes.c_ulong()
+        if ntdll.NtQueryTimerResolution(ctypes.byref(coarsest), ctypes.byref(finest),
+                                        ctypes.byref(current)) != 0:
+            return None
+        return current.value / 10000.0, finest.value / 10000.0
+    except Exception:
+        return None
+
+
+def _game_running() -> bool | None:
+    """True/False when psutil can tell us, None when it isn't installed."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    for p in psutil.process_iter(["name"]):
+        if GAME_PROCESS.lower() in (p.info["name"] or "").lower():
+            return True
+    return False
+
+
 def game_config_path() -> Path:
     import os
 
@@ -96,11 +189,20 @@ class SystemCheckup:
         self.hw = hw
         self.checks: list[Check] = [
             Check("power_plan", "High-performance power plan", self._c_power, self._f_power),
+            Check("core_parking", "Core parking off on the active plan",
+                  self._c_parking),
             Check("hags", "Hardware-accelerated GPU scheduling", self._c_hags),
+            Check("hags_live", "GPU scheduling: registry vs live driver",
+                  self._c_hags_live),
             Check("fso", "Fullscreen optimizations disabled on the game",
                   self._c_fso, self._f_fso),
             Check("mouse_accel", "Windows mouse acceleration off",
                   self._c_mouse, self._f_mouse),
+            Check("gamedvr", "Game Bar background capture off",
+                  self._c_gamedvr, self._f_gamedvr),
+            Check("game_mode", "Windows Game Mode", self._c_game_mode,
+                  self._f_game_mode),
+            Check("timer_res", "System timer resolution", self._c_timer),
             Check("chromium", "Background Chromium apps", self._c_chromium),
             Check("game_config", "KovaaK's config file health", self._c_config,
                   self._f_config),
@@ -134,8 +236,13 @@ class SystemCheckup:
         if not WINDOWS:
             return CheckResult(cid, title, "unknown", "not Windows")
         out = _run(["powercfg", "/getactivescheme"]).lower()
-        # Duplicated schemes get a fresh random GUID, so match by name too
-        # (GUID match kept as the locale-independent fallback).
+        # Duplicated schemes get a fresh random GUID and localized names, so
+        # recognize: canonical GUIDs, English names, and the GUID a previous
+        # kovadapt fix recorded (the locale-independent path).
+        stored = _stored_scheme_guid()
+        if stored and stored in out:
+            return CheckResult(cid, title, "ok",
+                               "The performance plan kovadapt activated is active.")
         if ULTIMATE_GUID in out or "ultimate performance" in out:
             return CheckResult(cid, title, "ok", "Ultimate Performance is active.")
         if HIGH_PERF_GUID in out or "high performance" in out:
@@ -165,33 +272,60 @@ class SystemCheckup:
             return None
 
         listing = _run(["powercfg", "/list"])
-        guid = named_guid(listing, "ultimate performance")
+        # Reuse, in order: the copy we made before (GUID note in HKCU — the
+        # only locale-independent handle), then an English-named copy.
+        stored = _stored_scheme_guid()
+        guid = stored if (stored and stored in listing.lower()) else None
+        guid = guid or named_guid(listing, "ultimate performance")
         name = "Ultimate"
         if guid is None:
             m = _GUID_RE.search(_run(["powercfg", "-duplicatescheme", ULTIMATE_GUID]))
             guid = m.group(0).lower() if m else None
-        if guid is None:  # localized name + duplication failed: High Perf fallback
+        if guid is None:  # duplication failed: High Perf fallback
             guid, name = named_guid(listing, "high performance"), "High"
         if guid is not None:
             _run(["powercfg", "/setactive", guid])
             if guid in _run(["powercfg", "/getactivescheme"]).lower():
+                try:
+                    _store_scheme_guid(guid)   # recognize it next scan, any locale
+                except OSError:
+                    pass
                 return f"{name} Performance plan activated."
         return "could not activate — change it in Windows Power Options"
+
+    # ------------------------------------------------------------ parking
+    def _c_parking(self) -> CheckResult:
+        cid, title = "core_parking", "Core parking off on the active plan"
+        if not WINDOWS:
+            return CheckResult(cid, title, "unknown", "not Windows")
+        # /qh, not /q: CPMINCORES is a hidden setting on stock plans and /q
+        # omits hidden settings entirely (verified on Win11 24H2).
+        out = _run(["powercfg", "/qh", "SCHEME_CURRENT", "SUB_PROCESSOR", "CPMINCORES"])
+        pct = parse_powercfg_ac_index(out)
+        if pct is None:
+            return CheckResult(cid, title, "unknown",
+                               "could not read CPMINCORES from the active plan "
+                               "(powercfg output unrecognized)")
+        if pct >= 100:
+            return CheckResult(cid, title, "ok",
+                               f"Min unparked cores is {pct}% — no core can park "
+                               "mid-run on this plan.")
+        return CheckResult(
+            cid, title, "warn",
+            f"The active plan keeps only {pct}% of cores unparked; a parked core "
+            "waking mid-flick is a frame-time spike. Changing it can need admin, "
+            "so kovadapt won't write it — run: powercfg /setacvalueindex "
+            "SCHEME_CURRENT SUB_PROCESSOR CPMINCORES 100 && powercfg /setactive "
+            "SCHEME_CURRENT",
+        )
 
     # -------------------------------------------------------------- hags
     def _c_hags(self) -> CheckResult:
         cid, title = "hags", "Hardware-accelerated GPU scheduling"
         if not WINDOWS:
             return CheckResult(cid, title, "unknown", "not Windows")
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
-            ) as k:
-                mode = int(winreg.QueryValueEx(k, "HwSchMode")[0])
-        except FileNotFoundError:
+        mode = _hags_registry_mode()
+        if mode is None:
             # Value absent = driver default (not "unsupported"); modern
             # NVIDIA/AMD drivers default HAGS on where they support it.
             return CheckResult(
@@ -216,6 +350,44 @@ class SystemCheckup:
             f"{self.hw.gpu_name}. Change it in Settings > System > Display > "
             "Graphics > Default settings (needs admin + reboot), so kovadapt "
             "won't flip it automatically.",
+        )
+
+    def _c_hags_live(self) -> CheckResult:
+        """The registry probe above is only the after-reboot intent; this asks
+        the graphics kernel (D3DKMTQueryAdapterInfo) what is running NOW."""
+        cid, title = "hags_live", "GPU scheduling: registry vs live driver"
+        if not WINDOWS:
+            return CheckResult(cid, title, "unknown", "not Windows")
+        supported, enabled = hags_live_state()
+        if supported is None:
+            return CheckResult(cid, title, "unknown",
+                               "WDDM 2.7 caps query failed — live HAGS state "
+                               "unavailable (pre-2004 Windows or an odd driver)")
+        if not supported:
+            return CheckResult(
+                cid, title, "info",
+                "The driver reports no hardware-scheduling support, so the HAGS "
+                "toggle has no effect on this GPU/driver.",
+            )
+        live = "on" if enabled else "off"
+        try:
+            mode = _hags_registry_mode()
+        except Exception:
+            mode = None
+        if mode is None:
+            return CheckResult(cid, title, "info",
+                               f"HAGS is live {live} (driver default — no registry "
+                               "override set).")
+        if (mode == 2) == bool(enabled):
+            return CheckResult(cid, title, "ok",
+                               f"Registry intent and the live driver agree: HAGS "
+                               f"is {live}.")
+        want = "on" if mode == 2 else "off"
+        return CheckResult(
+            cid, title, "warn",
+            f"The registry says HAGS {want} but the driver is running with it "
+            f"{live} — a reboot is pending, or the driver overrode the toggle. "
+            "The live state is what your frames actually get.",
         )
 
     # --------------------------------------------------------------- fso
@@ -305,6 +477,109 @@ class SystemCheckup:
         )
         return ("pointer acceleration off (persisted)" if ok
                 else "could not change the setting")
+
+    # ----------------------------------------------------------- gamedvr
+    def _c_gamedvr(self) -> CheckResult:
+        cid, title = "gamedvr", "Game Bar background capture off"
+        if not WINDOWS:
+            return CheckResult(cid, title, "unknown", "not Windows")
+        app = _read_hkcu_dword(GAMEDVR_APP_KEY, "AppCaptureEnabled")
+        store = _read_hkcu_dword(GAMEDVR_STORE_KEY, "GameDVR_Enabled")
+        # Absent value = Windows default = capture enabled.
+        if app == 0 and store == 0:
+            return CheckResult(cid, title, "ok",
+                               "Game DVR background capture is off — no capture "
+                               "process shadowing the game.")
+
+        def show(v: int | None) -> str:
+            return "absent (default on)" if v is None else str(v)
+
+        return CheckResult(
+            cid, title, "warn",
+            "Game DVR keeps a background capture process recording gameplay, "
+            "which costs frames and frame-time consistency. Current values: "
+            f"AppCaptureEnabled={show(app)}, GameDVR_Enabled={show(store)} — "
+            "set them back to restore.",
+            can_fix=True, safe=True,
+            fix_label="Turn off Game Bar background capture",
+        )
+
+    def _f_gamedvr(self) -> str:
+        import winreg
+
+        prior = []
+        for path, name in ((GAMEDVR_APP_KEY, "AppCaptureEnabled"),
+                           (GAMEDVR_STORE_KEY, "GameDVR_Enabled")):
+            old = _read_hkcu_dword(path, name)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as k:
+                winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, 0)
+            prior.append(f"{name} was {'absent' if old is None else old}")
+        return ("background capture off (per-user; " + ", ".join(prior) +
+                " — set back to restore, or toggle in Settings > Gaming > Captures)")
+
+    # --------------------------------------------------------- game mode
+    def _c_game_mode(self) -> CheckResult:
+        cid, title = "game_mode", "Windows Game Mode"
+        if not WINDOWS:
+            return CheckResult(cid, title, "unknown", "not Windows")
+        val = _read_hkcu_dword(GAMEBAR_KEY, "AutoGameModeEnabled")
+        # Absent value = Windows default = Game Mode on.
+        if val is None or val != 0:
+            return CheckResult(
+                cid, title, "info",
+                f"Game Mode is on{' (default)' if val is None else ''}. Current "
+                "Microsoft guidance is to keep it on: it steers Windows Update "
+                "and driver notifications away from the running game.",
+            )
+        return CheckResult(
+            cid, title, "warn",
+            "Game Mode is off. On Windows 11 Microsoft's current guidance is ON — "
+            "it defers background work while the game runs; the old advice to "
+            "disable it dates from its buggy 2017 debut.",
+            can_fix=True, safe=True,
+            fix_label="Turn Game Mode on",
+        )
+
+    def _f_game_mode(self) -> str:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, GAMEBAR_KEY) as k:
+            winreg.SetValueEx(k, "AutoGameModeEnabled", 0, winreg.REG_DWORD, 1)
+        return ("Game Mode on (per-user, reversible in Settings > Gaming > "
+                "Game Mode)")
+
+    # ------------------------------------------------------------- timer
+    def _c_timer(self) -> CheckResult:
+        cid, title = "timer_res", "System timer resolution"
+        if not WINDOWS:
+            return CheckResult(cid, title, "unknown", "not Windows")
+        res = _query_timer_resolution()
+        if res is None:
+            return CheckResult(cid, title, "unknown",
+                               "NtQueryTimerResolution failed")
+        cur, finest = res
+        state = f"currently {cur:.2f} ms (finest this system supports: {finest:.2f} ms)"
+        if self.hw.is_windows_11:
+            return CheckResult(
+                cid, title, "info",
+                f"Timer {state}. Windows 11 raises resolution per-process, so a "
+                "game asking for 1 ms gets it even when this desktop-wide "
+                "reading looks coarse — nothing to do here.",
+            )
+        if cur > 1.05 and _game_running():
+            return CheckResult(
+                cid, title, "warn",
+                f"Timer {state} while the game is running — on Windows 10 the "
+                "resolution is global and frame pacing suffers above ~1 ms. No "
+                "auto-fix: it is owned by whichever app requested it; run a 1 ms "
+                "timer tool alongside the game.",
+            )
+        return CheckResult(
+            cid, title, "info",
+            f"Timer {state}. On Windows 10 the resolution is global; re-check "
+            "with the game running, and keep a 1 ms timer tool handy if it "
+            "reads coarse mid-session.",
+        )
 
     # ---------------------------------------------------------- chromium
     def _c_chromium(self) -> CheckResult:

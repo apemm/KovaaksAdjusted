@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Settings
+from .onboarding import HintBar
 
 # Override keys editable per archetype (subset of Settings fields that map
 # cleanly to "how should adaptation differ for this task type").
@@ -226,6 +227,10 @@ class ConfigView(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         lay = QVBoxLayout(self)
+        lay.addWidget(HintBar(settings, (
+            "Every knob has a tooltip — hover it. The defaults reproduce the "
+            "shipped behavior, <b>Reset to defaults</b> gets you back, and "
+            "nothing applies until <b>Save settings</b>.")))
         lay.addWidget(scroll)
 
     # ------------------------------------------------------------------
@@ -313,5 +318,6 @@ class ConfigView(QWidget):
             overrides[name] = ov
         s.archetype_overrides = overrides
         path = s.save()
-        self.status.setText(f"saved to {path} (applies to the next watch session)")
+        self.status.setText(
+            f"saved to {path} — restart the watch session to apply everything")
         self.settings_changed.emit(s)
