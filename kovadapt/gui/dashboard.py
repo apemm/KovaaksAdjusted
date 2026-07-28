@@ -205,6 +205,18 @@ class Dashboard(QWidget):
         must not create '[Adaptive] [Adaptive]' compounding variants."""
         return self.scenario.currentText().strip().removesuffix(ADAPTIVE_SUFFIX)
 
+    def play_scenario(self, name: str) -> None:
+        """Entry point for the scenario browser: select + play."""
+        self.scenario.setCurrentText(name)
+        self.play()
+
+    def watch_scenario(self, name: str) -> None:
+        if self.worker is not None:
+            self.append_log(f"already adapting {self._watching!r} — stop it first")
+            return
+        self.scenario.setCurrentText(name)
+        self.toggle()
+
     def play(self) -> None:
         """Watch + queue playlist + deep-link into the adaptive scenario."""
         if self._stopping:

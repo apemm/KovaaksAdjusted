@@ -53,9 +53,9 @@ def test_main_window_constructs_and_closes(qapp, settings):
 
     themes = ThemeManager(qapp, settings)
     win = MainWindow(settings, themes)
-    assert win._tabs.count() == 4
-    assert [win._tabs.tabText(i) for i in range(4)] == [
-        "Dashboard", "Analysis", "Adaptability", "Optimizer"]
+    assert win._tabs.count() == 5
+    assert [win._tabs.tabText(i) for i in range(5)] == [
+        "Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
     assert win.dashboard.worker is None
     win.close()
 
@@ -86,6 +86,27 @@ def test_overlay_lifecycle(qapp, settings):
     ov.set_unlocked(False)
     ov.stop_session()
     ov.close()
+
+
+def test_scenario_browser_lists_and_filters(qapp, settings):
+    from kovadapt.gui.browser import ScenarioBrowser
+
+    (settings.scenarios_dir / "Alpha Track Long.sce").write_text("[Scenario]\n")
+    (settings.scenarios_dir / "Beta 1wall Click.sce").write_text("[Scenario]\n")
+    (settings.scenarios_dir / "Beta 1wall Click [Adaptive].sce").write_text("[Scenario]\n")
+    b = ScenarioBrowser(settings)
+    assert b.table.rowCount() == 2          # adaptive variant folds into base
+    names = {b.table.item(i, 0).data(0x0100) for i in range(2)}  # Qt.UserRole
+    assert names == {"Alpha Track Long", "Beta 1wall Click"}
+    b.search.setText("beta")
+    visible = [i for i in range(2) if not b.table.isRowHidden(i)]
+    assert len(visible) == 1
+    b.search.setText("")
+    fired: list[str] = []
+    b.play_requested.connect(fired.append)
+    b.table.selectRow(0)
+    b._emit_play()
+    assert len(fired) == 1
 
 
 def test_hint_bars_tuck_away(qapp, settings):

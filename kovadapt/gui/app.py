@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ..config import Settings
 from .analysis_view import AnalysisView
+from .browser import ScenarioBrowser
 from .config_view import ConfigView
 from .dashboard import Dashboard
 from .onboarding import WelcomeDialog, set_hints_visible
@@ -47,16 +48,22 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         self.dashboard = Dashboard(settings)
+        self.browser = ScenarioBrowser(settings)
         self.analysis = AnalysisView(settings)
         self.config = ConfigView(settings)
         self.optimizer = OptimizerView(settings)
         tabs.addTab(self.dashboard, "Dashboard")
+        tabs.addTab(self.browser, "Scenarios")
         tabs.addTab(self.analysis, "Analysis")
         tabs.addTab(self.config, "Adaptability")
         tabs.addTab(self.optimizer, "Optimizer")
         self.setCentralWidget(tabs)
         self._tabs = tabs
         tabs.setCornerWidget(self._corner(), Qt.TopRightCorner)
+
+        # browser actions land on the dashboard (session owner)
+        self.browser.play_requested.connect(self._browser_play)
+        self.browser.watch_requested.connect(self._browser_watch)
 
         # new run report -> refresh analysis tab and flag it
         self.dashboard.report_ready.connect(self._on_report)
@@ -117,9 +124,17 @@ class MainWindow(QMainWindow):
         p.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
+    def _browser_play(self, name: str) -> None:
+        self._tabs.setCurrentWidget(self.dashboard)
+        self.dashboard.play_scenario(name)
+
+    def _browser_watch(self, name: str) -> None:
+        self._tabs.setCurrentWidget(self.dashboard)
+        self.dashboard.watch_scenario(name)
+
     # ------------------------------------------------------------------
     def _restyle(self, pal) -> None:
-        for view in (self.dashboard, self.analysis, self.optimizer):
+        for view in (self.dashboard, self.browser, self.analysis, self.optimizer):
             view.restyle(pal)
 
     def _on_report(self, rep) -> None:
