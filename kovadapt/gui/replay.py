@@ -2,11 +2,14 @@
 
 Visual language (all derived from the recorded MouseTrace — no video):
 
-    dim grey line     full crosshair path of the window
+    faint grey line   full crosshair path of the window (deliberately subtle)
     green segments    clean flicks (low overshoot, <= 1 correction)
     red segments      flawed flicks (overshoot > 10% or >= 2 corrections)
     red ✕             shots (left clicks)
     bright dot+trail  playhead sweeping in (scaled) real time
+
+The path/flicks/shots checkboxes in the control bar hide layers without
+touching the item architecture — they only flip setVisible on the items.
 
 Lightweight by construction: the overlays are exactly two PlotCurveItems
 regardless of flick count (NaN-separated segments), the path is decimated
@@ -20,6 +23,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -68,6 +72,19 @@ class TrajectoryReplay(QWidget):
         self.btn.clicked.connect(self.toggle)
         self.speed_btn = QPushButton("0.5x")
         self.speed_btn.clicked.connect(self._cycle_speed)
+        # layer toggles: hide/show existing items, never restructure them
+        self.toggle_path = QCheckBox("path")
+        self.toggle_path.setToolTip("Show the faint full crosshair path of the window")
+        self.toggle_flicks = QCheckBox("flicks")
+        self.toggle_flicks.setToolTip(
+            "Show flick-quality overlays: green = clean, red = overshoot/correction")
+        self.toggle_shots = QCheckBox("shots")
+        self.toggle_shots.setToolTip("Show an ✕ where each shot was fired")
+        for box in (self.toggle_path, self.toggle_flicks, self.toggle_shots):
+            box.setChecked(True)
+        self.toggle_path.toggled.connect(self._full.setVisible)
+        self.toggle_flicks.toggled.connect(self._set_flicks_visible)
+        self.toggle_shots.toggled.connect(self._shots.setVisible)
         self.scrub = QSlider(Qt.Horizontal)
         self.scrub.setRange(0, _SLIDER_STEPS)
         self.scrub.sliderMoved.connect(self._scrubbed)
@@ -80,6 +97,9 @@ class TrajectoryReplay(QWidget):
         bar = QHBoxLayout()
         bar.addWidget(self.btn)
         bar.addWidget(self.speed_btn)
+        bar.addWidget(self.toggle_path)
+        bar.addWidget(self.toggle_flicks)
+        bar.addWidget(self.toggle_shots)
         bar.addWidget(self.scrub, 1)
         bar.addWidget(self.info)
         sub = QHBoxLayout()
@@ -101,7 +121,11 @@ class TrajectoryReplay(QWidget):
         """Re-pen every curve from the active palette (called on theme switch)."""
         pal = theme.current()
         self.plot.setBackground(pal.bg_alt)
-        self._full.setPen(pg.mkPen(pal.fg_dim, width=1))
+        # ~40% alpha: the full path is context, not the story — the comet
+        # trail and flick overlays must read on top of it
+        full_pen = pg.mkColor(pal.fg_dim)
+        full_pen.setAlphaF(0.4)
+        self._full.setPen(pg.mkPen(full_pen, width=1))
         self._good.setPen(pg.mkPen(pal.good, width=2))
         self._bad.setPen(pg.mkPen(pal.bad, width=2))
         self._live.setPen(pg.mkPen(pal.accent, width=2))
@@ -111,6 +135,12 @@ class TrajectoryReplay(QWidget):
             f"<span style='color:{pal.good}'>—</span> clean flick&nbsp;&nbsp;"
             f"<span style='color:{pal.bad}'>—</span> overshoot/correction&nbsp;&nbsp;"
             f"<span style='color:{pal.bad}'>✕</span> shot")
+
+    # ------------------------------------------------------------------
+    def _set_flicks_visible(self, on: bool) -> None:
+        """One toggle drives both flick overlays (they are a single layer)."""
+        self._good.setVisible(on)
+        self._bad.setVisible(on)
 
     # ------------------------------------------------------------------
     def load(self, trace: MouseTrace, t0: float | None = None,

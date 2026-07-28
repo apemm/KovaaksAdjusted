@@ -70,6 +70,24 @@ def _kind_color(kind: str) -> str:
             "slow_flick": pal.warn, "clean_flick": pal.good}.get(kind, pal.accent)
 
 
+def _clips_available() -> bool:
+    """Whether the [clips] extra (dxcam/opencv) is importable. Lazy on purpose:
+    kovadapt.capture must never be pulled in at module import."""
+    try:
+        from ..capture.clips import CLIPS_AVAILABLE
+    except ImportError:
+        return False
+    return CLIPS_AVAILABLE
+
+
+def _caption(text: str) -> QLabel:
+    """Dim, word-wrapped how-to-read-this caption shown under a plot."""
+    lab = QLabel(text)
+    lab.setWordWrap(True)
+    lab.setProperty("dim", True)
+    return lab
+
+
 class AnalysisView(QWidget):
     def __init__(self, settings: Settings | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -93,19 +111,29 @@ class AnalysisView(QWidget):
         head.addLayout(head_col, 1)
         head.addWidget(open_btn, 0, Qt.AlignTop)
 
-        # left column: bias bars + movement heatmap
+        # left column: bias bars + movement heatmap, each with a plain-language caption
         self.bias_plot = pg.PlotWidget(title="Flick quality by direction (lower = better)")
         self.bias_plot.setMaximumHeight(180)
+        self.bias_plot.setLabel("left", "flick cost (overshoot + corrections)")
+        self.bias_caption = _caption(
+            "Each bar scores flicks toward that side — taller is worse. Built from "
+            "overshoot plus corrective submovements; the red bar is your weakest "
+            "direction this run.")
         self.heat_plot = pg.PlotWidget(title="Aim travel around engagements")
         self.heat_plot.setAspectLocked(True)
         self.heat_img = pg.ImageItem()
         self.heat_plot.addItem(self.heat_img)
         cmap = pg.colormap.get("inferno")
         self.heat_img.setLookupTable(cmap.getLookupTable(0.0, 1.0, 256))
+        self.heat_caption = _caption(
+            "Where your crosshair spent its time around engagements — bright = more "
+            "travel. A lopsided cloud means your engagements cluster on one side.")
 
         left = QVBoxLayout()
         left.addWidget(self.bias_plot)
+        left.addWidget(self.bias_caption)
         left.addWidget(self.heat_plot, 1)
+        left.addWidget(self.heat_caption)
         left_w = QWidget()
         left_w.setLayout(left)
 
@@ -115,12 +143,17 @@ class AnalysisView(QWidget):
         self.clip_btn = QPushButton("Play video clip")
         self.clip_btn.setEnabled(False)
         self.clip_btn.clicked.connect(self._play_clip)
+        self.clip_hint = QLabel("")           # why clips are off, when they are
+        self.clip_hint.setWordWrap(True)
+        self.clip_hint.setProperty("dim", True)
         self.replay = TrajectoryReplay()
 
         mo_box = QGroupBox("Notable moments")
         mo_lay = QVBoxLayout(mo_box)
         mo_lay.addWidget(self.moments, 1)
         mo_lay.addWidget(self.clip_btn)
+        mo_lay.addWidget(self.clip_hint)
+        self._update_clip_state(-1)
         right = QSplitter(Qt.Vertical)
         right.addWidget(mo_box)
         rep_box = QGroupBox("Trajectory replay")
@@ -183,6 +216,7 @@ class AnalysisView(QWidget):
         self._draw_bias(rep)
         self._draw_heat()
         self._fill_moments(rep)
+        self._update_clip_state(self.moments.currentRow())
         if self.trace is not None and len(self.trace) > 1:
             self.replay.load(self.trace, label="full run", flicks=self.flicks)
         else:
@@ -226,6 +260,15 @@ class AnalysisView(QWidget):
         bars = pg.BarGraphItem(x=list(range(3)), height=vals, width=0.6,
                                brushes=colors, pens=[None] * 3)
         self.bias_plot.addItem(bars)
+        # value labels above each bar, so runs are comparable at a glance
+        for i, v in enumerate(vals):
+            txt = pg.TextItem(f"{v:.2f}", color=pal.fg, anchor=(0.5, 1.0))
+            txt.setPos(i, v)
+            self.bias_plot.addItem(txt)
+        self.bias_plot.setLabel("left", "flick cost (overshoot + corrections)",
+                                color=pal.fg_dim)
+        top = max(vals) if max(vals) > 0 else 1.0
+        self.bias_plot.setYRange(0, top * 1.25, padding=0)   # always anchored at 0
         ax = self.bias_plot.getAxis("bottom")
         ns = [(b.get(d) or {}).get("n", 0) for d in dirs]
         ax.setTicks([[(i, f"{d}\n({n} flicks)") for i, (d, n) in enumerate(zip(dirs, ns))]])
@@ -254,14 +297,37 @@ class AnalysisView(QWidget):
 
     def _select_moment(self, row: int) -> None:
         if self.report is None or row < 0 or row >= len(self.report.notable):
-            self.clip_btn.setEnabled(False)
+            self._update_clip_state(-1)
             return
         m = self.report.notable[row]
-        self.clip_btn.setEnabled(str(row) in (self.report.clip_files or {}))
+        self._update_clip_state(row)
         if self.trace is not None and len(self.trace) > 1:
             self.replay.load(self.trace, m["t_start"], m["t_end"],
                              label=m["kind"].replace("_", " "),
                              flicks=self.flicks)
+
+    # ------------------------------------------------------------------
+    def _clips_off_reason(self) -> str | None:
+        """Why the clips feature can't produce clips at all right now, or None
+        when it can (then a missing clip is just a moment without one)."""
+        if self._settings is not None and not self._settings.clips_enabled:
+            return ("Enable 'Capture video clips' in Adaptability, then new "
+                    "notable moments get clips")
+        if not _clips_available():
+            return "pip install kovadapt[clips] — dxcam/opencv are not installed"
+        return None
+
+    def _update_clip_state(self, row: int) -> None:
+        """Enable the clip button when the selected moment has a clip; when it
+        doesn't, the disabled button's tooltip says exactly why."""
+        has_clip = (self.report is not None and row >= 0
+                    and str(row) in (self.report.clip_files or {}))
+        self.clip_btn.setEnabled(has_clip)
+        off = self._clips_off_reason()
+        self.clip_btn.setToolTip(
+            "" if has_clip else off or "No clip was captured for this moment")
+        self.clip_hint.setText(off or "")
+        self.clip_hint.setVisible(off is not None)
 
     def _play_clip(self) -> None:
         row = self.moments.currentRow()

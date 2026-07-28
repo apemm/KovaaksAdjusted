@@ -143,3 +143,42 @@ def test_welcome_dialog_dismissed_early_shows_again(qapp, settings):
     dlg.reject()                         # closed without finishing
     assert settings.onboarding_done is False
     dlg.deleteLater()
+
+
+def test_analysis_view_captions_toggles_and_clip_story(qapp, settings):
+    from kovadapt.analysis.report import RunReport
+    from kovadapt.gui.analysis_view import AnalysisView
+
+    view = AnalysisView(settings)
+    rep = RunReport(
+        scenario="Beta 1wall Click", started_iso="2026-07-28T10:00:00",
+        score=420.0, accuracy=0.61, avg_ttk=0.9, kills=30, kps=1.4,
+        notable=[{"kind": "overshoot", "text": "worst overshoot",
+                  "t_start": 1.0, "t_end": 2.0}],
+        summary_text="30 kills at 61% accuracy.")
+    view.show_report(rep)                # no trace: heatmap/replay stay empty
+
+    # captions: plain-language, dim, word-wrapped, non-empty
+    for cap in (view.bias_caption, view.heat_caption):
+        assert cap.text()
+        assert cap.wordWrap()
+        assert cap.property("dim") is True
+
+    # replay layer toggles flip visibility of the existing plot items
+    r = view.replay
+    for box, items in ((r.toggle_path, (r._full,)),
+                       (r.toggle_flicks, (r._good, r._bad)),
+                       (r.toggle_shots, (r._shots,))):
+        assert box.isChecked()           # all layers default ON
+        box.setChecked(False)
+        assert all(not it.isVisible() for it in items)
+        box.setChecked(True)
+        assert all(it.isVisible() for it in items)
+
+    # clips are disabled in these Settings: the dead button explains itself,
+    # and the same one-liner appears as the inline dim hint under it
+    assert not view.clip_btn.isEnabled()
+    assert "Capture video clips" in view.clip_btn.toolTip()
+    assert not view.clip_hint.isHidden()
+    assert view.clip_hint.text() == view.clip_btn.toolTip()
+    view.deleteLater()

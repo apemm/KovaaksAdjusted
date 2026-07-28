@@ -33,25 +33,58 @@ class Palette:
     bad: str
 
 
-DARK = Palette(
-    name="dark", is_dark=True,
-    bg="#0f1117", bg_alt="#161a22", bg_raised="#1f2430",
-    border="#2a3040", fg="#d9dde6", fg_dim="#8d95a6",
-    accent="#4f9dff", accent_hover="#75b3ff", accent_fg="#0d1420",
-    selection="#2e5f9e",
-    good="#4fc17c", warn="#e0b45f", bad="#e06c5f",
-)
+# Accent presets: (accent, hover, on-accent text, selection wash) per mode.
+ACCENTS: dict[str, dict[str, tuple[str, str, str, str]]] = {
+    "indigo": {  # the Colicit-vivid default
+        "light": ("#5b50e8", "#443ad1", "#ffffff", "#e3e0fb"),
+        "dark": ("#8f84ff", "#a9a0ff", "#10111a", "#37317d"),
+    },
+    "ocean": {   # the v0.4 look
+        "light": ("#2f7de1", "#1e63bd", "#ffffff", "#d8e7fa"),
+        "dark": ("#4f9dff", "#75b3ff", "#0d1420", "#2e5f9e"),
+    },
+    "mint": {
+        "light": ("#0f9d6b", "#0b7a53", "#ffffff", "#d3f0e4"),
+        "dark": ("#3ecf9a", "#63dcb0", "#0a1410", "#1c5c46"),
+    },
+    "rose": {
+        "light": ("#d64072", "#b32c5c", "#ffffff", "#f8dde8"),
+        "dark": ("#ff7aa5", "#ff9bbb", "#1a0d12", "#7c2c49"),
+    },
+}
 
-LIGHT = Palette(
-    name="light", is_dark=False,
-    bg="#f2f4f7", bg_alt="#ffffff", bg_raised="#e7eaf0",
-    border="#d3d8e0", fg="#22262e", fg_dim="#68707f",
-    accent="#2f7de1", accent_hover="#1e63bd", accent_fg="#ffffff",
-    selection="#cfe1f8",
-    good="#1f9d55", warn="#b07d1f", bad="#cc4a3a",
-)
+
+def build_palette(dark: bool, accent: str = "indigo") -> Palette:
+    """Assemble a palette: cream-editorial light / warm-tinted dark base
+    (Colicit-style: paper, ink, one vivid accent) + the chosen accent."""
+    acc, hover, on_acc, sel = ACCENTS.get(accent, ACCENTS["indigo"])[
+        "dark" if dark else "light"]
+    if dark:
+        return Palette(
+            name="dark", is_dark=True,
+            bg="#101116", bg_alt="#171922", bg_raised="#1f2230",
+            border="#2b2f3d", fg="#dcdee6", fg_dim="#8e94a3",
+            accent=acc, accent_hover=hover, accent_fg=on_acc, selection=sel,
+            good="#4fc17c", warn="#e0b45f", bad="#e06c5f",
+        )
+    return Palette(
+        name="light", is_dark=False,
+        bg="#f6f4ee", bg_alt="#fdfcf8", bg_raised="#edeae1",
+        border="#ddd8cb", fg="#191b1f", fg_dim="#706d63",
+        accent=acc, accent_hover=hover, accent_fg=on_acc, selection=sel,
+        good="#1f9d55", warn="#a87b18", bad="#c94f3d",
+    )
+
+
+DARK = build_palette(dark=True)
+LIGHT = build_palette(dark=False)
 
 _current: Palette = DARK
+
+
+def _rgba(hex_color: str, alpha: int) -> str:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({r}, {g}, {b}, {alpha})"
 
 
 def current() -> Palette:
@@ -67,6 +100,12 @@ def build_qss(p: Palette) -> str:
     color: {p.fg};
 }}
 QMainWindow, QDialog, QWidget {{ background: {p.bg}; }}
+QMainWindow {{
+    background: qradialgradient(cx: 0.9, cy: 0.05, radius: 1.4,
+        fx: 0.9, fy: 0.05,
+        stop: 0 {_rgba(p.accent, 26 if p.is_dark else 18)},
+        stop: 0.45 {p.bg}, stop: 1 {p.bg});
+}}
 
 QTabWidget::pane {{ border: none; border-top: 1px solid {p.border}; }}
 QTabBar {{ background: transparent; }}
@@ -228,14 +267,15 @@ class ThemeManager:
         return _current
 
     def _resolve(self) -> Palette:
+        accent = getattr(self.s, "accent", "indigo")
         if self.mode == "dark":
-            return DARK
+            return build_palette(dark=True, accent=accent)
         if self.mode == "light":
-            return LIGHT
+            return build_palette(dark=False, accent=accent)
         from PySide6.QtCore import Qt
 
         scheme = self._app.styleHints().colorScheme()
-        return LIGHT if scheme == Qt.ColorScheme.Light else DARK
+        return build_palette(dark=scheme != Qt.ColorScheme.Light, accent=accent)
 
     def set_mode(self, mode: str) -> None:
         """Switch + persist. No-op on unknown modes."""
@@ -247,6 +287,16 @@ class ThemeManager:
             self.s.save()
         except OSError:
             pass  # theme still applies for this session
+        self.apply()
+
+    def set_accent(self, accent: str) -> None:
+        if accent not in ACCENTS or accent == getattr(self.s, "accent", "indigo"):
+            return
+        self.s.accent = accent
+        try:
+            self.s.save()
+        except OSError:
+            pass
         self.apply()
 
     def _os_scheme_changed(self, *_args) -> None:

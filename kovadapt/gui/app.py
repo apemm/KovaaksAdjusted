@@ -15,8 +15,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, QVariantAnimation
 from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -29,13 +30,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Settings
+from . import logo, transition
 from .analysis_view import AnalysisView
 from .browser import ScenarioBrowser
 from .config_view import ConfigView
 from .dashboard import Dashboard
 from .onboarding import WelcomeDialog, set_hints_visible
 from .optimizer_view import OptimizerView
-from .theme import ThemeManager
+from .theme import ACCENTS, ThemeManager
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +70,7 @@ class MainWindow(QMainWindow):
         # new run report -> refresh analysis tab and flag it
         self.dashboard.report_ready.connect(self._on_report)
         tabs.currentChanged.connect(self._clear_unread)
+        tabs.currentChanged.connect(self._fade_tab)
         themes.changed.connect(self._restyle)
 
         sb = self.statusBar()
@@ -82,8 +85,15 @@ class MainWindow(QMainWindow):
         self.theme_pick.setToolTip("Auto follows the Windows light/dark setting")
         self.theme_pick.setCurrentIndex(
             {"auto": 0, "dark": 1, "light": 2}.get(self.themes.mode, 0))
-        self.theme_pick.currentIndexChanged.connect(
-            lambda i: self.themes.set_mode(("auto", "dark", "light")[i]))
+        self.theme_pick.currentIndexChanged.connect(self._pick_mode)
+
+        self.accent_pick = QComboBox()
+        for key in ACCENTS:
+            self.accent_pick.addItem(key.capitalize(), key)
+        self.accent_pick.setToolTip("Accent color")
+        idx = list(ACCENTS).index(self.s.accent) if self.s.accent in ACCENTS else 0
+        self.accent_pick.setCurrentIndex(idx)
+        self.accent_pick.currentIndexChanged.connect(self._pick_accent)
 
         help_btn = QPushButton("?")
         help_btn.setFixedWidth(30)
@@ -107,8 +117,24 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 2, 6, 4)
         lay.setSpacing(6)
         lay.addWidget(self.theme_pick)
+        lay.addWidget(self.accent_pick)
         lay.addWidget(help_btn)
         return w
+
+    def _wipe_from_corner(self) -> None:
+        """Old theme held on screen; new one revealed through a growing
+        circle at the theme controls — the eye dilating."""
+        corner = self._tabs.cornerWidget(Qt.TopRightCorner)
+        center = corner.mapTo(self, corner.rect().center())
+        transition.iris_wipe(self, center)
+
+    def _pick_mode(self, i: int) -> None:
+        self._wipe_from_corner()
+        self.themes.set_mode(("auto", "dark", "light")[i])
+
+    def _pick_accent(self, i: int) -> None:
+        self._wipe_from_corner()
+        self.themes.set_accent(self.accent_pick.itemData(i))
 
     def _sync_hints_action(self) -> None:
         self._hints_action.blockSignals(True)
@@ -148,6 +174,22 @@ class MainWindow(QMainWindow):
         if i == idx:
             self._tabs.setTabText(idx, "Analysis")
 
+    def _fade_tab(self, _i: int) -> None:
+        """Floaty 150 ms fade-in on tab switch; the effect is removed after
+        so it can't interfere with plot repaints."""
+        w = self._tabs.currentWidget()
+        if w is None or not self.isVisible():
+            return
+        eff = QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(eff)
+        anim = QVariantAnimation(w)
+        anim.setDuration(150)
+        anim.setStartValue(0.35)
+        anim.setEndValue(1.0)
+        anim.valueChanged.connect(eff.setOpacity)
+        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+
     def closeEvent(self, event) -> None:  # stop worker threads cleanly
         w = self.dashboard.worker
         if w is not None:
@@ -171,10 +213,19 @@ def main() -> int:
     app.setStyle("Fusion")
     settings = Settings.load()
     themes = ThemeManager(app, settings)
+    app.setWindowIcon(logo.make_icon())
+
+    splash = logo.SplashScreen()   # "the eye wakes up" while we construct
+    splash.start()
+    app.processEvents()
     win = MainWindow(settings, themes)
-    win.show()
-    if not settings.onboarding_done:
-        QTimer.singleShot(150, lambda: WelcomeDialog(settings, win).exec())
+
+    def reveal() -> None:
+        win.show()
+        if not settings.onboarding_done:
+            QTimer.singleShot(150, lambda: WelcomeDialog(settings, win).exec())
+
+    splash.finish(reveal)
     return app.exec()
 
 

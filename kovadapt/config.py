@@ -112,8 +112,9 @@ class Settings:
     clip_fps: int = 30
     clip_buffer_seconds: float = 90.0
     clip_scale: float = 0.5              # downscale factor for buffered frames
-    # --- App shell (v0.4): theme, overlay, onboarding ---
+    # --- App shell (v0.4+): theme, overlay, onboarding ---
     theme: str = "auto"                  # auto | dark | light ("auto" follows Windows)
+    accent: str = "indigo"               # accent preset (gui/theme.py ACCENTS)
     overlay_opacity: float = 0.9         # in-game overlay window opacity (0.3-1.0)
     overlay_clickthrough: bool = True    # overlay ignores the mouse (position with Unlock)
     overlay_autoshow: bool = False       # pop the overlay whenever watching starts
