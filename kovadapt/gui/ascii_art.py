@@ -1,15 +1,19 @@
 """ASCII LED art: the kovadapt eye, rendered the way real ASCII art is made.
 
-A shaded painting of the eye — almond stroke, lid crease, tapered curling
-lashes, sclera form-shadow, iris fibers under a limbal ring, reticle, twin
-glints — is rendered as a continuous ink field (numpy) and then converted
-to characters through the classic Bourke density ramp, one character per
-cell with intensity-driven alpha (antialiased strokes) and supersampled
-edges. Every cell still behaves like an LED in the synchronized matrix:
-noise warm-up, outline-and-lash sweep, rainbow iris fill, reticle typing
-outward, glints, then a left-to-right shading wash and breathing.
+A shaded painting of the eye is built as a continuous ink field (numpy) and
+converted to characters through the Bourke density ramp — 141x67 cells,
+supersampled, intensity-driven alpha. The iris is macro-photography grade:
+a deep soft-edged pupil, a wavy collarette ring, two layers of radial fiber
+striations with crypts between them, a dark limbal ring, ambient shadow
+from the upper lid, and layered highlights (a sharp specular with halo, a
+small catchlight, a faint lower sheen). Rainbow hue runs around the iris
+with a touch of radial iridescence.
 
-The stencil is procedural and cached; ~2.5k lit cells render in a few ms.
+Choreography: the EYE completes first — noise warm-up, outline and lashes,
+the iris rainbow-sweeping in, glints, a tone wash — and only then the
+crosshair scribes in OVER the finished eye as a separate accent-colored
+overlay pass with a soft backing, so the reticle always reads against the
+busy iris. Then everything breathes.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from PySide6.QtWidgets import QWidget
 
 from . import theme
 
-COLS, ROWS = 97, 47          # odd x odd: true center column/row for the reticle
+COLS, ROWS = 141, 67         # odd x odd: true center column/row for the reticle
 _SS = 3                      # supersamples per cell axis
 _ASPECT = 2.0                # cell height : width
 
@@ -34,8 +38,9 @@ _MIN_INK = 0.05
 
 _W = 0.88                    # almond half-width (world x in [-1, 1])
 _H = 0.52                    # almond apex height
-_RI = 0.30                   # iris radius
+_RI = 0.315                  # iris radius
 _CY = 0.02                   # iris center y
+_PUPIL = 0.21                # pupil radius (fraction of iris)
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,7 @@ class Cell:
     order: float     # 0..1 within the role's animation
     hue: float       # rainbow hue for iris cells
     ink: float       # 0..1 field intensity (drives alpha / value)
+    rad: float       # 0..1 radius inside the iris (iris cells only)
     seed: float
 
 
@@ -66,7 +72,8 @@ def _grid() -> tuple[np.ndarray, np.ndarray]:
 
 
 def _stroke(ink: np.ndarray, X: np.ndarray, Y: np.ndarray,
-            pts: np.ndarray, width: float | np.ndarray, strength: float | np.ndarray) -> None:
+            pts: np.ndarray, width: float | np.ndarray,
+            strength: float | np.ndarray) -> None:
     """Add a stroke (dense point cloud) to the ink field, gaussian falloff."""
     d2 = np.full_like(X, np.inf)
     w = np.broadcast_to(np.asarray(width, dtype=float), (len(pts),))
@@ -83,15 +90,14 @@ def _stroke(ink: np.ndarray, X: np.ndarray, Y: np.ndarray,
 
 
 def _lash_points(frac: float, curl: float, length: float) -> np.ndarray:
-    """Curved, tapering lash from a point on the upper lid."""
     x0 = -_W + 2.0 * _W * frac
     y0 = float(_upper(x0))
     slope = 2.0 * _H * x0 / (_W * _W)
     nx, ny = slope, -1.0                       # outward (up) normal
     n = math.hypot(nx, ny)
     nx, ny = nx / n, ny / n
-    tx, ty = -ny, nx                           # tangent, for the curl
-    s = np.linspace(0.05, 1.0, 10)[:, None]
+    tx, ty = -ny, nx
+    s = np.linspace(0.05, 1.0, 12)[:, None]
     base = np.array([x0, y0])
     return base + s * length * np.array([nx, ny]) \
         + (s ** 2) * curl * np.array([tx, ty])
@@ -101,69 +107,91 @@ def _render() -> list[Cell]:
     X, Y = _grid()
     ink = np.zeros_like(X)
 
-    # ---- almond outline (slightly heavier toward the corners) ------------
-    xs = np.linspace(-_W, _W, 160)
+    # ---- almond outline (heavier toward the corners) ---------------------
+    xs = np.linspace(-_W, _W, 240)
     up = np.stack([xs, _upper(xs)], axis=1)
     lo = np.stack([xs, -_upper(xs)], axis=1)
     corner = np.abs(xs) / _W
-    w_line = 0.012 + 0.010 * corner ** 4
+    w_line = 0.011 + 0.009 * corner ** 4
     _stroke(ink, X, Y, up, w_line, 0.98)
     _stroke(ink, X, Y, lo, w_line, 0.92)
 
     # ---- lid crease above the upper lid ----------------------------------
-    xs_c = np.linspace(-_W * 0.72, _W * 0.72, 90)
+    xs_c = np.linspace(-_W * 0.74, _W * 0.74, 120)
     crease = np.stack([xs_c * 1.06, _upper(xs_c) * 1.38 - 0.05], axis=1)
-    _stroke(ink, X, Y, crease, 0.016, 0.30)
+    _stroke(ink, X, Y, crease, 0.015, 0.30)
 
-    # ---- lashes: nine up top (curling outward), four small below ---------
-    rng = np.linspace(0.10, 0.90, 9)
-    for i, frac in enumerate(rng):
-        side = (frac - 0.5) * 2.0                   # -1 .. 1
-        pts = _lash_points(float(frac), curl=0.10 * side,
-                           length=0.16 + 0.05 * math.sin(i * 2.3))
-        taper = np.linspace(1.0, 0.25, len(pts))
-        _stroke(ink, X, Y, pts, 0.012 * taper, 0.95 * taper)
-    for frac in (0.25, 0.45, 0.62, 0.80):
+    # ---- lashes: eleven curling on top, five small below -----------------
+    for i, frac in enumerate(np.linspace(0.08, 0.92, 11)):
+        side = (frac - 0.5) * 2.0
+        pts = _lash_points(float(frac), curl=0.11 * side,
+                           length=0.15 + 0.05 * math.sin(i * 2.1))
+        taper = np.linspace(1.0, 0.22, len(pts))
+        _stroke(ink, X, Y, pts, 0.010 * taper, 0.95 * taper)
+    for frac in (0.22, 0.38, 0.55, 0.70, 0.84):
         x0 = -_W + 2.0 * _W * frac
         y0 = float(-_upper(x0))
-        pts = np.stack([np.full(5, x0) + (frac - 0.5) * 0.05,
-                        np.linspace(y0, y0 + 0.07, 5)], axis=1)
-        _stroke(ink, X, Y, pts, 0.010, 0.5)
+        pts = np.stack([np.full(6, x0) + (frac - 0.5) * 0.05,
+                        np.linspace(y0, y0 + 0.065, 6)], axis=1)
+        _stroke(ink, X, Y, pts, 0.009, 0.5)
 
     # ---- sclera form shadow inside the almond ----------------------------
     inside = (np.abs(X) < _W) & (Y > _upper(np.clip(X, -_W, _W))) \
         & (Y < -_upper(np.clip(X, -_W, _W)))
     lid_dist = np.abs(Y - _upper(np.clip(X, -_W, _W)))
-    sclera = 0.10 + 0.22 * np.exp(-lid_dist / 0.10)      # shadow under the lid
-    sclera += 0.08 * (np.abs(X) / _W) ** 2               # corners darken
+    sclera = 0.10 + 0.22 * np.exp(-lid_dist / 0.10)
+    sclera += 0.08 * (np.abs(X) / _W) ** 2
     ink = np.where(inside, np.maximum(ink, sclera * 0.55), ink)
 
-    # ---- iris: fibers under a limbal ring, pupil hub, reticle ------------
+    # ---- the iris: macro detail ------------------------------------------
     DX, DY = X, Y - _CY
     dist = np.hypot(DX, DY)
     ang = np.arctan2(DX, -DY)                            # 0 at 12 o'clock
     rr = dist / _RI
     in_iris = rr <= 1.0
-    fibers = 0.42 + 0.20 * np.abs(np.sin(ang * 22.0 + rr * 4.0)) \
-        + 0.12 * np.abs(np.sin(ang * 9.0 - rr * 2.0))
-    fibers *= 0.75 + 0.25 * rr                           # lighter core, darker rim
-    limbal = 0.38 * np.exp(-((rr - 0.97) / 0.09) ** 2)
-    pupil = 0.98 * (rr < 0.16)
-    iris_ink = np.clip(fibers + limbal, 0.0, 1.0)
+
+    # two layers of radial fibers, wavering slightly with radius
+    fine = np.abs(np.sin(ang * 46.0 + np.sin(rr * 9.0) * 1.6))
+    coarse = np.abs(np.sin(ang * 13.0 - rr * 3.0))
+    fibers = 0.34 + 0.20 * fine + 0.14 * coarse
+    fibers *= 0.72 + 0.28 * rr                           # denser toward the rim
+
+    # collarette: wavy ring around the pupil (the iris's inner lace)
+    col_r = 0.40 + 0.045 * np.sin(ang * 11.0)
+    collarette = 0.30 * np.exp(-((rr - col_r) / 0.055) ** 2)
+
+    # crypts: darker pockets between fiber bundles
+    crypts = np.zeros_like(X)
+    for k, (ca, cr) in enumerate(((0.7, 0.62), (1.9, 0.74), (3.1, 0.58),
+                                  (4.3, 0.70), (5.5, 0.66))):
+        d_ang = np.angle(np.exp(1j * (ang - ca)))
+        crypts += 0.22 * np.exp(-((d_ang / 0.22) ** 2 + ((rr - cr) / 0.10) ** 2))
+
+    # limbal ring + soft-edged deep pupil
+    limbal = 0.42 * np.exp(-((rr - 0.965) / 0.075) ** 2)
+    pupil = 0.98 / (1.0 + np.exp((rr - _PUPIL) / 0.025))     # soft edge
+    # bright ring just outside the pupil (subtractive glow)
+    glow = 0.30 * np.exp(-((rr - (_PUPIL + 0.09)) / 0.05) ** 2)
+
+    # ambient shadow cast on the iris by the upper lid
+    lid_ao = 0.28 * np.exp(-np.abs(Y - _upper(np.clip(X, -_W, _W))) / 0.13)
+
+    iris_ink = np.clip(fibers + collarette + crypts + limbal + lid_ao - glow,
+                       0.0, 1.0)
     ink = np.where(in_iris, np.maximum(ink, iris_ink), ink)
-    ink = np.where(in_iris & (rr < 0.16), np.maximum(ink, pupil), ink)
+    ink = np.where(in_iris, np.maximum(ink, pupil), ink)
 
-    on_v = (np.abs(DX) < 0.014) & (rr > 0.30) & (rr < 1.04)
-    on_h = (np.abs(DY) < 0.014 * _ASPECT) & (rr > 0.30) & (rr < 1.04)
-    ink = np.where(on_v | on_h, np.maximum(ink, 0.94), ink)
-
-    # ---- twin glints subtract ink (they are light, not dark) -------------
-    g1 = np.exp(-(((DX + 0.38 * _RI) / (0.16 * _RI)) ** 2
-                  + ((DY + 0.42 * _RI) / (0.22 * _RI)) ** 2))
-    g2 = np.exp(-(((DX - 0.52 * _RI) / (0.10 * _RI)) ** 2
-                  + ((DY - 0.50 * _RI) / (0.14 * _RI)) ** 2))
-    glint = np.clip(g1 + 0.7 * g2, 0.0, 1.0)
-    ink = np.clip(ink - glint * 0.9, 0.0, 1.0)
+    # ---- highlights subtract ink (light against the detail) --------------
+    g1 = np.exp(-(((DX + 0.36 * _RI) / (0.15 * _RI)) ** 2
+                  + ((DY + 0.44 * _RI) / (0.20 * _RI)) ** 2))       # specular
+    g1h = 0.45 * np.exp(-(((DX + 0.36 * _RI) / (0.30 * _RI)) ** 2
+                          + ((DY + 0.44 * _RI) / (0.40 * _RI)) ** 2))  # halo
+    g2 = 0.8 * np.exp(-(((DX - 0.50 * _RI) / (0.09 * _RI)) ** 2
+                        + ((DY - 0.52 * _RI) / (0.12 * _RI)) ** 2))  # catchlight
+    sheen = 0.22 * np.exp(-((rr - 0.72) / 0.16) ** 2) \
+        * np.clip(-np.cos(ang), 0.0, 1.0)                            # lower sheen
+    glint = np.clip(g1 + g1h + g2 + sheen, 0.0, 1.2)
+    ink = np.clip(ink - glint * 0.85, 0.0, 1.0)
 
     # ---- reduce to cells + classify --------------------------------------
     cell_ink = ink.reshape(ROWS, _SS, COLS, _SS).mean(axis=(1, 3))
@@ -179,8 +207,8 @@ def _render() -> list[Cell]:
 
     up_c = _upper(np.clip(cx, -_W, _W))
     near_outline = (np.abs(cx) <= _W * 1.05) & (
-        (np.abs(cyv - up_c) < 0.09) | (np.abs(cyv + up_c) < 0.09))
-    above_lid = cyv < up_c - 0.02
+        (np.abs(cyv - up_c) < 0.07) | (np.abs(cyv + up_c) < 0.07))
+    above_lid = cyv < up_c - 0.015
 
     cells: list[Cell] = []
     for r in range(ROWS):
@@ -190,25 +218,38 @@ def _render() -> list[Cell]:
                 continue
             ch = _RAMP[min(int(v * (len(_RAMP) - 1) + 0.5), len(_RAMP) - 1)]
             d = float(cdist[r, c])
-            if d <= 1.04 and glint_cell[r, c] > 0.45:
+            if d <= 1.04 and glint_cell[r, c] > 0.5:
                 role, order, hue = "glint", 0.0, 0.0
-            elif d < 0.16:
-                role, order, hue = "hub", 0.0, 0.0
-            elif d <= 1.04 and (abs(cdx[r, c]) < 0.014 or
-                                abs(cdy[r, c]) < 0.014 * _ASPECT) and d > 0.30:
-                role, order, hue = "reticle", min(d, 1.0), 0.0
             elif d <= 1.02:
                 hue = float(cang[r, c]) / (2 * math.pi)
                 role, order = "iris", hue
             elif near_outline[r, c] or above_lid[r, c]:
                 role = "lash" if above_lid[r, c] else "outline"
-                order, hue = (float(cx[r, c]) + _W) / (2 * _W), 0.0
-                order = min(max(order, 0.0), 1.0)
+                order = min(max((float(cx[r, c]) + _W) / (2 * _W), 0.0), 1.0)
+                hue = 0.0
             else:
                 role, hue = "shade", 0.0
                 order = (float(cx[r, c]) + 1.0) / 2.0
-            cells.append(Cell(c, r, ch, role, order, hue, v,
+            # rad is the radial distance from the pupil for EVERY cell: the
+            # whole eye fills outward from the spark
+            cells.append(Cell(c, r, ch, role, order, hue, v, d,
                               float(seeds[r, c])))
+
+    # ---- the crosshair: a separate overlay pass over the finished eye ----
+    cc_mid = (COLS - 1) // 2
+    rr_mid = (ROWS - 1) // 2 + round(_CY * COLS / 4.0)
+    for r in range(ROWS):
+        d = float(cdist[r, cc_mid])
+        if 0.34 <= d <= 1.10:
+            cells.append(Cell(cc_mid, r, "|", "reticle", min(d, 1.0),
+                              0.0, 0.9, d, float(seeds[r, cc_mid])))
+    for c in range(COLS):
+        d = float(cdist[rr_mid, c])
+        if 0.34 <= d <= 1.10:
+            cells.append(Cell(c, rr_mid, "-", "reticle", min(d, 1.0),
+                              0.0, 0.9, d, float(seeds[rr_mid, c])))
+    cells.append(Cell(cc_mid, rr_mid, "+", "hub", 0.0, 0.0, 1.0, 0.0,
+                      float(seeds[rr_mid, cc_mid])))
     return cells
 
 
@@ -231,37 +272,66 @@ def _pop(age: float) -> float:
     return 1.0
 
 
-def led_state(cell: Cell, t: float) -> float:
-    """Brightness 0..~1.5 for one cell at time t. Phases: warmup noise ->
-    outline+lash sweep -> rainbow iris fill -> reticle -> glints -> the
-    shading wash sweeps in -> everything breathes."""
-    s = cell.seed
-    warm = 0.0
-    if t < 1.3 and cell.role != "shade":
-        warm = 0.12 * max(0.0, math.sin(t * (5.0 + 4.0 * s) + s * 6.28)) \
-            * min(t / 0.4, 1.0)
+_SPARK = 0.85          # when the pupil ignites
+_SWEEP_START = 4.65    # the reticle's rotating sweep
+_SWEEP_LEN = 0.6
 
-    if cell.role == "outline":
-        lit_at = 1.0 + cell.order * 0.95
-    elif cell.role == "lash":
-        lit_at = 1.35 + cell.order * 0.95
-    elif cell.role == "iris":
-        lit_at = 2.45 + cell.order * 1.05
-    elif cell.role in ("reticle", "hub"):
-        lit_at = 3.55 + (cell.order * 0.3 if cell.role == "reticle" else 0.0)
+
+def led_state(cell: Cell, t: float) -> float:
+    """Brightness 0..~1.6 at time t. Out of total darkness, a spark at the
+    pupil pulses rainbow outward along the iris veins; the fill escapes the
+    rim into the lids, lashes and shading; the crosshair is imposed at the
+    end by a rotating sweep. cell.rad is radial distance from the pupil, so
+    every role's timing is 'when the pulse reaches me'."""
+    s = cell.seed
+
+    if cell.role == "iris":
+        # vein-ragged wavefront: fingers of the pulse run ahead along fibers
+        finger = 0.22 * math.sin(cell.hue * 2 * math.pi * 13.0 + s * 4.0)
+        lit_at = _SPARK + cell.rad * 1.35 + max(finger, -cell.rad)
     elif cell.role == "glint":
-        lit_at = 3.95
-    else:  # shade: the painting's tone wash arrives last, left to right
-        lit_at = 4.15 + cell.order * 0.75
-    b = _pop(t - lit_at)
-    if b == 0.0:
-        return warm
-    if t > 5.2:
+        lit_at = 3.9
+    elif cell.role in ("outline", "lash", "shade"):
+        # the energy escapes the rim and keeps travelling outward
+        reach = max(cell.rad - 1.0, 0.0)
+        base = {"outline": 2.35, "lash": 2.5, "shade": 2.75}[cell.role]
+        lit_at = base + reach * 0.85 + 0.1 * s
+    elif cell.role == "reticle":
+        # ignited by the rotating sweep as it passes this tick's angle
+        ang = _reticle_angle(cell)
+        lit_at = _SWEEP_START + _SWEEP_LEN * (ang / (2 * math.pi))
+    else:  # hub locks after the sweep completes, double flash
+        lit_at = _SWEEP_START + _SWEEP_LEN + 0.25
+    age = t - lit_at
+
+    if age <= 0.0:
+        # darkness — except a faint heartbeat gathering at the pupil
+        if cell.role == "iris" and cell.rad < 0.30 and t > 0.25:
+            beat = max(0.0, math.sin((t - 0.25) * 5.2))
+            return 0.10 * beat * min((t - 0.25) / 0.5, 1.0) * (1.0 - cell.rad / 0.30)
+        return 0.0
+
+    if cell.role == "hub" and (age < 0.18 or 0.32 < age < 0.46):
+        return 1.6
+    b = _pop(age)
+    # an echo pulse ripples outward once the iris is lit
+    if cell.role == "iris" and 2.6 < t < 3.6:
+        echo = math.exp(-((t - 2.7 - cell.rad * 0.8) / 0.12) ** 2)
+        b += 0.35 * echo
+    if t > 6.2:
         b *= 0.93 + 0.07 * math.sin(2.0 * math.pi * 0.35 * t + s * 1.2)
     return b
 
 
-TOTAL = 5.2      # seconds until fully lit (breathing continues after)
+def _reticle_angle(cell: Cell) -> float:
+    """Clockwise angle from 12 o'clock of a reticle cell (for the sweep)."""
+    half = COLS / 2.0
+    x = (cell.col - (COLS - 1) / 2.0) / half
+    y = (cell.row - (ROWS - 1) / 2.0) * _ASPECT / half - _CY
+    return math.atan2(x, -y) % (2 * math.pi)
+
+
+TOTAL = 6.1      # seconds until fully lit (breathing continues after)
 
 
 # ------------------------------------------------------------------ widget
@@ -275,21 +345,31 @@ def _mono() -> QFont:
 
 def paint_grid(p: QPainter, rect: QRectF, t: float | None,
                ink: QColor, bg: QColor, is_dark: bool) -> None:
-    """Draw the stencil into rect at time t (None = fully lit, static)."""
+    """Draw the stencil into rect at time t (None = fully lit, static).
+    Two passes: the eye, then the reticle overlay with a soft backing so
+    the crosshair reads against the iris detail."""
+    pal = theme.current()
     cw = rect.width() / COLS
     ch = rect.height() / ROWS
     font = _mono()
     font.setPixelSize(max(int(ch * 1.05), 3))
     p.setFont(font)
     sat, val = (0.80, 0.95) if not is_dark else (0.72, 1.0)
+
+    overlay: list[tuple[Cell, float]] = []
     for cell in stencil():
         b = 1.0 if t is None else led_state(cell, t)
         if b <= 0.01:
             continue
+        if cell.role in ("reticle", "hub"):
+            overlay.append((cell, b))
+            continue
         if cell.role == "iris":
-            # bright constant value: the CHARACTER density carries the fiber
-            # texture; darkening the color as well just muddies the rainbow
-            col = QColor.fromHsvF(cell.hue, sat * (0.75 + 0.25 * cell.ink), val)
+            # bright constant value: character density carries the fiber
+            # texture; a touch of radial iridescence in the hue
+            hue = (cell.hue + 0.05 * math.sin(cell.rad * 6.0)) % 1.0
+            s_mod = sat * (0.72 + 0.28 * cell.ink)
+            col = QColor.fromHsvF(hue, s_mod, val)
         elif cell.role == "glint":
             col = QColor("#ffffff") if is_dark else QColor(ink)
             col.setAlphaF(0.9 if is_dark else 0.35)
@@ -298,7 +378,7 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
             col.setAlphaF(0.28 + 0.45 * cell.ink)
         else:
             col = QColor(ink)
-            col.setAlphaF(0.35 + 0.65 * cell.ink)   # antialiased strokes
+            col.setAlphaF(0.35 + 0.65 * cell.ink)
         if b < 1.0:
             a = col.alphaF()
             r0, g0, b0 = bg.redF(), bg.greenF(), bg.blueF()
@@ -316,6 +396,53 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
         p.drawText(QRectF(rect.x() + cell.col * cw, rect.y() + cell.row * ch,
                           cw * 1.8, ch * 1.25),
                    Qt.AlignLeft | Qt.AlignTop, cell.ch)
+
+    # ---- reticle overlay: accent color on a soft backing -----------------
+    back = QColor(bg)
+    for cell, b in overlay:
+        x = rect.x() + cell.col * cw
+        y = rect.y() + cell.row * ch
+        back.setAlphaF(0.55 * min(b, 1.0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(back)
+        p.drawRoundedRect(QRectF(x - cw * 0.15, y, cw * 1.3, ch * 1.05), 2, 2)
+        col = QColor(pal.accent)
+        if b > 1.0:
+            k = min(b - 1.0, 0.6)
+            col = QColor.fromRgbF(col.redF() + (1 - col.redF()) * k,
+                                  col.greenF() + (1 - col.greenF()) * k,
+                                  col.blueF() + (1 - col.blueF()) * k)
+        col.setAlphaF(min(b, 1.0))
+        p.setPen(col)
+        f2 = QFont(p.font())
+        f2.setBold(True)
+        p.setFont(f2)
+        p.drawText(QRectF(x, y, cw * 1.8, ch * 1.25),
+                   Qt.AlignLeft | Qt.AlignTop, cell.ch)
+        p.setFont(font)
+
+    # ---- the imposed sweep: an accent hand rotating once over the iris,
+    # igniting the reticle ticks as it passes
+    if t is not None and _SWEEP_START <= t <= _SWEEP_START + _SWEEP_LEN + 0.12:
+        from PySide6.QtGui import QPen
+
+        prog = min((t - _SWEEP_START) / _SWEEP_LEN, 1.0)
+        px_x = rect.width() / 2.0
+        px_y = rect.height() * COLS / (2.0 * _ASPECT * ROWS)
+        cx_px = rect.x() + rect.width() / 2.0
+        cy_px = rect.y() + rect.height() / 2.0 + _CY * px_y
+        radius = 1.18 * _RI
+        for k in range(7):
+            a = prog * 2 * math.pi - k * 0.11
+            if a < 0:
+                continue
+            col = QColor(pal.accent)
+            col.setAlphaF(max(0.65 - k * 0.09, 0.0))
+            p.setPen(QPen(col, 2.0))
+            p.drawLine(
+                int(cx_px), int(cy_px),
+                int(cx_px + radius * math.sin(a) * px_x),
+                int(cy_px - radius * math.cos(a) * px_y))
 
 
 class AsciiEye(QWidget):

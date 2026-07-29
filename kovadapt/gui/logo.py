@@ -17,7 +17,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from . import ascii_art, theme
+from . import ascii_art
 
 _WORD = "kovadapt"
 
@@ -33,7 +33,7 @@ class SplashScreen(QWidget):
     """Frameless ASCII LED splash. start() begins the show; finish(callback)
     lets it fade once the animation has played out."""
 
-    MIN_SECONDS = 6.2     # the LED show plus a couple of breaths
+    MIN_SECONDS = 7.0     # darkness, the spark, the fill, the sweep, a breath
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -79,43 +79,45 @@ class SplashScreen(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
-        pal = theme.current()
+        # The splash is ALWAYS darkness — the eye is born out of black,
+        # whatever theme the app itself uses.
+        bg = QColor("#0a0a0e")
+        ink = QColor("#d8dae2")
         t = self._t
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
         p.setOpacity(max(self._fade, 0.0))
 
-        p.setPen(QPen(QColor(pal.border), 1))
-        p.setBrush(QColor(pal.bg))
+        p.setPen(QPen(QColor("#23252e"), 1))
+        p.setBrush(bg)
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 16, 16)
 
         # near-square canvas so the 2:1 character cells keep the eye's shape
         ascii_art.paint_grid(
-            p, QRectF(40, 26, 440, 422), t,
-            QColor(pal.fg), QColor(pal.bg), pal.is_dark)
+            p, QRectF(40, 26, 440, 422), t, ink, bg, True)
 
         # wordmark types itself, terminal cursor blinking while it does
-        chars = _WORD[: max(0, int((t - 2.6) / 0.14))]
-        if chars or t > 2.6:
+        chars = _WORD[: max(0, int((t - 2.8) / 0.14))]
+        if chars or t > 2.8:
             f = QFont(ascii_art._mono())
             f.setPixelSize(34)
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
             cursor = "▌" if (len(chars) < len(_WORD) and int(t * 3) % 2 == 0) else ""
-            p.setPen(QColor(pal.fg))
+            p.setPen(QColor("#e8e9ee"))
             p.drawText(QRectF(0, 468, self.width(), 46), Qt.AlignCenter,
                        chars + cursor)
-        if t > 4.0:
-            a = min((t - 4.0) / 0.5, 1.0)
-            col = QColor(pal.fg_dim)
+        if t > 4.4:
+            a = min((t - 4.4) / 0.5, 1.0)
+            col = QColor("#8e94a3")
             col.setAlphaF(a)
             p.setPen(col)
             p.setFont(QFont("Segoe UI", 9))
             p.drawText(QRectF(0, 522, self.width(), 20), Qt.AlignCenter,
                        "adaptive KovaaK's")
         if self._status:
-            col = QColor(pal.fg_dim)
+            col = QColor("#8e94a3")
             col.setAlphaF(0.9)
             p.setPen(col)
             f = QFont(ascii_art._mono())
