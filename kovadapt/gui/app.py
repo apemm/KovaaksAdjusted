@@ -1,10 +1,11 @@
 """kovadapt GUI: the KovaaK's hub.
 
-    Dashboard    play adaptive tasks, launch the game, live session + overlay
-    Scenarios    every installed scenario, training state, one click to play
-    Analysis     post-run report: bias, heatmap, notable moments, replays/clips
-    Adaptability full configuration surface
-    Optimizer    free Process Lasso basics + tuning checklist
+    Dashboard      play adaptive tasks, launch the game, live session + overlay
+    Scenarios      every installed scenario, training state, one click to play
+    Analysis       post-run report: bias, heatmap, notable moments, replays/clips
+    Adaptability   full configuration surface
+    Optimizer      free Process Lasso basics + tuning checklist
+    How it learns  the adaptive model explained (gui/ml_page.py, when present)
 
 One continuous scrollable page-space (gui/shell.py) instead of tabs: the
 sections stack over the parallax backdrop and the slim top nav bar
@@ -45,6 +46,11 @@ from .onboarding import WelcomeDialog, set_hints_visible
 from .optimizer_view import OptimizerView
 from .shell import NavBar, PageSpace
 from .theme import ACCENTS, ThemeManager
+
+try:
+    from .ml_page import MLPage
+except ImportError:      # authored separately; the section is skipped until it lands
+    MLPage = None
 
 
 class _ThemeCombo(QComboBox):
@@ -105,20 +111,24 @@ class MainWindow(QMainWindow):
         self.s = settings
         self.themes = themes
         self.setWindowTitle("kovadapt — adaptive KovaaK's")
-        self.resize(1300, 860)
+        self.resize(1360, 900)
 
         self.dashboard = Dashboard(settings)
         self.browser = ScenarioBrowser(settings)
         self.analysis = AnalysisView(settings)
         self.config = ConfigView(settings)
         self.optimizer = OptimizerView(settings)
+        self.ml_page = MLPage(settings) if MLPage is not None else None
         # one continuous scroll of transparent sections over the backdrop
         self.space = PageSpace()
-        for name, page in (("Dashboard", self.dashboard),
-                           ("Scenarios", self.browser),
-                           ("Analysis", self.analysis),
-                           ("Adaptability", self.config),
-                           ("Optimizer", self.optimizer)):
+        sections = [("Dashboard", self.dashboard),
+                    ("Scenarios", self.browser),
+                    ("Analysis", self.analysis),
+                    ("Adaptability", self.config),
+                    ("Optimizer", self.optimizer)]
+        if self.ml_page is not None:
+            sections.append(("How it learns", self.ml_page))   # always last
+        for name, page in sections:
             self.space.add_section(name, page)
         self.nav = NavBar(self.space, corner=self._corner())
         # everything is clickable first: hovering a panel never traps the wheel
@@ -137,7 +147,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.backdrop = Backdrop(self)
 
-        # Ctrl+1..5 jump straight to a section
+        # Ctrl+1..N jump straight to a section (Ctrl+6 = How it learns)
         for i in range(self.space.count()):
             sc = QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self)
             sc.activated.connect(lambda i=i: self.space.scroll_to(i))
@@ -257,7 +267,10 @@ class MainWindow(QMainWindow):
             self.backdrop.notify_resize()
 
     def _restyle(self, pal) -> None:
-        for view in (self.dashboard, self.browser, self.analysis, self.optimizer):
+        views = [self.dashboard, self.browser, self.analysis, self.optimizer]
+        if self.ml_page is not None:
+            views.append(self.ml_page)
+        for view in views:
             view.restyle(pal)
         self.nav.restyle(pal)
         self.backdrop.notify_theme()
@@ -298,15 +311,18 @@ def main() -> int:
     themes = ThemeManager(app, settings)
     app.setWindowIcon(logo.make_icon())
 
-    splash = logo.SplashScreen()   # the ASCII eye wakes up while we work
-    splash.start()
-    app.processEvents()
+    splash = None
+    if not settings.skip_splash:
+        splash = logo.SplashScreen()   # the ASCII eye wakes up while we work
+        splash.start()
+        app.processEvents()
     win = MainWindow(settings, themes)
 
     from .boot import BootWorker
 
     boot = BootWorker(settings, parent=win)
-    boot.status.connect(splash.set_status)
+    if splash is not None:
+        boot.status.connect(splash.set_status)
     boot.trends_ready.connect(win.set_trends)
     boot.start()
 
@@ -315,7 +331,10 @@ def main() -> int:
         if not settings.onboarding_done:
             QTimer.singleShot(150, lambda: WelcomeDialog(settings, win).exec())
 
-    splash.finish(reveal)
+    if splash is not None:
+        splash.finish(reveal)
+    else:
+        reveal()                       # skip_splash: straight to the window
     return app.exec()
 
 

@@ -21,6 +21,7 @@ from ..config import Settings
 from ..profile.player import PlayerProfile
 from . import kb
 from .report import RunReport
+from .sens import SensCase, sens_case
 from .skill import SkillTrends
 
 # kovadapt's own calibration cutoffs (labeled "editorial" in reasoning text
@@ -38,8 +39,8 @@ _CROSS_SESSION_MIN_RUNS = 15  # runs before a cross-session progress claim
 
 @dataclass(frozen=True)
 class Insight:
-    id: str                  # KB diagnostic id this is grounded in
-    kind: str                # "diagnosis" | "positive" | "health" | "progress"
+    id: str                  # KB entry id (diagnostic or principle) this is grounded in
+    kind: str                # "diagnosis" | "positive" | "health" | "progress" | "info"
     severity: str            # "info" | "attention" | "warning"
     title: str
     body: str                # sourced interpretation (KB text)
@@ -198,7 +199,52 @@ def generate_insights(
     if trends is not None:
         out.extend(_cross_session_insights(trends))
 
+    # ---- sensitivity: the case both ways (never a directive) --------------
+    if settings.mouse_dpi > 0 and settings.game_sens > 0:
+        case = sens_case(rep, profile, settings, trends=trends)
+        if case is not None and (case.for_lower or case.for_higher):
+            out.append(_sens_insight(case, settings))
+
     return out
+
+
+def _sens_insight(case: SensCase, settings: Settings) -> Insight:
+    """Composite card over p-sensitivity-doctrine plus the diagnostics that
+    contributed lines (merged sources come with the SensCase). Both sides
+    are ALWAYS rendered — an evidence-free side is stated as such, never
+    dropped — so the card can never read as a one-way directive."""
+    lower = " ".join(case.for_lower) or (
+        "nothing in this run's evidence argues that way.")
+    higher = " ".join(case.for_higher) or (
+        "nothing in this run's evidence argues that way.")
+    body = (
+        f"The case for LOWER sensitivity (more cm/360): {lower} "
+        f"The case for HIGHER sensitivity (less cm/360): {higher} "
+        f"{case.neutral}"
+    )
+    reasoning = (
+        f"cm/360 = 2.54 x 360 / (dpi x sens x 0.022) = 2.54 x 360 / "
+        f"({settings.mouse_dpi:g} x {settings.game_sens:g} x 0.022) = {case.cm360:.2f} cm. "
+        f"{len(case.for_lower)} evidence line(s) argue for lower and {len(case.for_higher)} "
+        "for higher, each carrying its own live numbers and kb citation; every numeric cutoff "
+        "without a primary source is labeled editorial (kb GAPS)."
+    )
+    prescription = (
+        "No direction is recommended — the evidence argues both ways and sens-stability "
+        "doctrine is contested: Voltaic endorses sens changes for practice and says not to "
+        "obsess over it; Aimer7 forbids changing settings to inflate a score yet prescribes "
+        "temporary sens changes in his own protocols; pro practice spans both poles (s1mple "
+        "vs TenZ). If you do trial a change, change one variable and judge it by averages "
+        "over runs, not single scores."
+    )
+    return Insight(
+        id="p-sensitivity-doctrine", kind="info", severity="info",
+        title="Your sensitivity: the case both ways",
+        body=body, reasoning=reasoning, prescription=prescription,
+        confidence=("high (cm/360 math, Aimer7/Voltaic ranges); medium (per-signal sens "
+                    "attribution); contested (whether to change at all)"),
+        sources=case.sources,
+    )
 
 
 def _cross_session_insights(trends: SkillTrends) -> list[Insight]:

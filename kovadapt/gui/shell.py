@@ -1,8 +1,10 @@
 """Single-page shell: one scrollable space of sections instead of tabs.
 
-`PageSpace` is a vertical QScrollArea whose content is the five page widgets
-stacked as full-width sections, each under a big title + hairline divider, so
-the whole app reads as one continuous surface over the parallax backdrop.
+`PageSpace` is a vertical QScrollArea whose content is the page widgets
+stacked as sections, each under a big title + hairline divider. Every
+section flows in ONE centered editorial column (max ~950px) with whitespace
+rails left and right where the parallax backdrop shows through, so the whole
+app reads as one continuous magazine surface.
 `NavBar` is the slim bar above it: flat link buttons that smooth-scroll to
 their section, the active section highlighted, the window's corner controls
 docked on the right.
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 _SCROLL_MS = 350
+_COLUMN_MAX = 950   # editorial column width; the rails either side show backdrop
 
 
 class WheelGuard(QObject):
@@ -74,7 +77,9 @@ class WheelGuard(QObject):
 
 
 class _Section(QWidget):
-    """One full-width section: header row (title + divider) over the page."""
+    """One full-height section: a single centered editorial column (max
+    ~950px) holding the header (title + divider) over the page, whitespace
+    rails either side where the parallax backdrop shows through."""
 
     def __init__(self, title: str, page: QWidget, parent=None) -> None:
         super().__init__(parent)
@@ -84,16 +89,32 @@ class _Section(QWidget):
 
         head = QLabel(title)
         head.setProperty("sectionTitle", True)
+        # editorial scale: a widget-level sheet outranks the app QSS baseline
+        head.setStyleSheet(
+            "font-size: 30px; font-weight: 700; letter-spacing: 0.5px;")
         divider = QFrame()
         divider.setProperty("sectionDivider", True)
         divider.setFixedHeight(1)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 28, 22, 40)
-        lay.setSpacing(14)
-        lay.addWidget(head)
-        lay.addWidget(divider)
-        lay.addWidget(page, 1)
+        column = QWidget()
+        column.setObjectName("tabPage")     # transparent, backdrop shows through
+        column.setMaximumWidth(_COLUMN_MAX)
+        col = QVBoxLayout(column)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(16)
+        col.addWidget(head)
+        col.addWidget(divider)
+        col.addWidget(page, 1)
+
+        # stretch-rail-column-rail-stretch: the column takes up to
+        # _COLUMN_MAX, the equal stretches center it, the margins keep a
+        # minimum rail even on narrow windows.
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(22, 34, 22, 48)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        lay.addWidget(column, 100)
+        lay.addStretch(1)
 
 
 class PageSpace(QScrollArea):

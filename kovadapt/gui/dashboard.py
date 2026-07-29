@@ -70,7 +70,9 @@ class Dashboard(QWidget):
         self.start_btn = QPushButton("Start adapting")
         self.start_btn.clicked.connect(self.toggle)
 
+        # full-width Play panel: the column's lead panel, generous rows
         row1 = QHBoxLayout()
+        row1.setSpacing(10)
         row1.addWidget(QLabel("Scenario:"))
         row1.addWidget(self.scenario, 1)
         row1.addWidget(self.refresh_btn)
@@ -78,12 +80,15 @@ class Dashboard(QWidget):
         self.rec_lbl = QLabel("")
         self.rec_lbl.setTextFormat(Qt.RichText)
         row2 = QHBoxLayout()
+        row2.setSpacing(10)
         row2.addWidget(self.install_lbl, 1)
         row2.addWidget(self.rec_lbl)
         row2.addWidget(self.launch_btn)
         row2.addWidget(self.play_btn)
         play_box = QGroupBox("Play")
         pv = QVBoxLayout(play_box)
+        pv.setContentsMargins(14, 12, 14, 14)
+        pv.setSpacing(12)
         pv.addLayout(row1)
         pv.addLayout(row2)
 
@@ -114,28 +119,36 @@ class Dashboard(QWidget):
         self.ov_auto.setChecked(settings.overlay_autoshow)
         self.ov_auto.toggled.connect(self._set_autoshow)
 
+        # overlay controls: their own full-width row in the column
         ov_box = QGroupBox("Overlay")
         ov = QHBoxLayout(ov_box)
+        ov.setContentsMargins(14, 12, 14, 14)
+        ov.setSpacing(12)
         ov.addWidget(self.ov_toggle)
         ov.addWidget(self.ov_unlock)
         ov.addWidget(self.ov_opacity, 1)
         ov.addWidget(self.ov_auto)
 
-        # ---------------------------------------------------- profile stats
+        # ------------------------------- profile stats: two-column grid
         self.stat_labels: dict[str, QLabel] = {}
         stats_box = QGroupBox("Learned profile")
         grid = QGridLayout(stats_box)
+        grid.setContentsMargins(14, 14, 14, 14)
+        grid.setHorizontalSpacing(36)
+        grid.setVerticalSpacing(14)
         for i, (key, cap) in enumerate([
             ("runs", "Runs"), ("accuracy", "Accuracy EWMA"),
             ("scale", "Target scale"), ("movement", "Movement"),
             ("focus", "Focus region"), ("pace", "Pace (kills/s)"),
             ("archetype", "Archetype"), ("fatigue", "Session fatigue"),
         ]):
-            grid.addWidget(QLabel(cap), i // 3, (i % 3) * 2)
+            grid.addWidget(QLabel(cap), i // 2, (i % 2) * 2)
             lab = QLabel("—")
             lab.setProperty("stat", True)
-            grid.addWidget(lab, i // 3, (i % 3) * 2 + 1)
+            grid.addWidget(lab, i // 2, (i % 2) * 2 + 1)
             self.stat_labels[key] = lab
+        grid.setColumnStretch(1, 1)         # value columns breathe
+        grid.setColumnStretch(3, 1)
 
         # calibration readiness: the iris motif filling through the rainbow
         self.readiness = AsciiProgress()
@@ -143,12 +156,13 @@ class Dashboard(QWidget):
         self.readiness_msg = QLabel("play runs to calibrate the adaptive model")
         self.readiness_msg.setProperty("dim", True)
         self.readiness_msg.setWordWrap(True)
-        grid.addWidget(self.readiness, 3, 0, 1, 3)
-        grid.addWidget(self.readiness_msg, 3, 3, 1, 3)
+        grid.addWidget(self.readiness, 4, 0, 1, 2)
+        grid.addWidget(self.readiness_msg, 4, 2, 1, 2)
 
-        # accuracy history sparkline
+        # accuracy history sparkline — tall enough to actually read
         self.trend = pg.PlotWidget(title="Accuracy per run")
-        self.trend.setMaximumHeight(160)
+        self.trend.setMinimumHeight(240)
+        self.trend.setMaximumHeight(340)
         self.trend.showGrid(y=True, alpha=0.2)
         self.trend_curve = self.trend.plot([], [], symbol="o", symbolSize=5,
                                            symbolPen=None)
@@ -157,8 +171,10 @@ class Dashboard(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
+        self.log.setMinimumHeight(180)
 
         lay = QVBoxLayout(self)
+        lay.setSpacing(16)
         lay.addWidget(hint)
         lay.addWidget(play_box)
         lay.addWidget(ov_box)

@@ -29,8 +29,9 @@ Issues = "https://github.com/apemm/KovaaksAdjusted/issues"
 [project.optional-dependencies]
 gui = ["PySide6>=6.6", "pyqtgraph>=0.13", "psutil>=5.9"]
 clips = ["dxcam>=0.0.5", "opencv-python>=4.8"]
+ml = ["torch>=2.2"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
-all = ["kovadapt[gui,clips]"]
+all = ["kovadapt[gui,clips,ml]"]
 
 [project.scripts]
 kovadapt = "kovadapt.cli:main"

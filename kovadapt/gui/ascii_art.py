@@ -1,19 +1,24 @@
 """ASCII LED art: the kovadapt eye, rendered the way real ASCII art is made.
 
 A shaded painting of the eye is built as a continuous ink field (numpy) and
-converted to characters through the Bourke density ramp — 141x67 cells,
-supersampled, intensity-driven alpha. The iris is macro-photography grade:
-a deep soft-edged pupil, a wavy collarette ring, two layers of radial fiber
-striations with crypts between them, a dark limbal ring, ambient shadow
-from the upper lid, and layered highlights (a sharp specular with halo, a
-small catchlight, a faint lower sheen). Rainbow hue runs around the iris
-with a touch of radial iridescence.
+converted to characters through the Bourke density ramp — 141x67 cells by
+default, supersampled, intensity-driven alpha; stencil() also builds
+higher-resolution grids for the splash. The iris is macro-photography
+grade: a deep soft-edged pupil, a wavy collarette ring, two layers of
+radial fiber striations with crypts between them, a dark limbal ring,
+ambient shadow from the upper lid, and layered highlights. On top of the
+rainbow hue that runs around the iris, every cell carries its own seeded
+color detail — per-fiber-bundle hue jitter, radial color banding,
+heterochromatic flecks, value jitter — so the iris never reads as one
+smooth wheel.
 
-Choreography: the EYE completes first — noise warm-up, outline and lashes,
-the iris rainbow-sweeping in, glints, a tone wash — and only then the
-crosshair scribes in OVER the finished eye as a separate accent-colored
-overlay pass with a soft backing, so the reticle always reads against the
-busy iris. Then everything breathes.
+Opening choreography (no crosshair — the reticle cells remain in the
+stencil for static renders, and the opening excludes them): darkness, a
+heartbeat gathering at the pupil, lightning ignition along seeded fiber
+angles, the glow escaping the rim into lids/lashes/shading, one slow
+deliberate blink (lids as rows of characters with lash silhouettes — see
+blink_cells), then a gleam sweeping the iris that settles into the twin
+glints, which keep a live twinkle while everything breathes.
 """
 
 from __future__ import annotations
@@ -55,6 +60,10 @@ class Cell:
     ink: float       # 0..1 field intensity (drives alpha / value)
     rad: float       # 0..1 radius inside the iris (iris cells only)
     seed: float
+    # per-cell iris color detail (defaults keep non-iris construction terse)
+    hue_j: float = 0.0    # seeded hue offset: fiber bundle + radial band
+    fleck: float = -1.0   # heterochromatic fleck hue offset, or -1 (none)
+    vj: float = 0.0       # seeded value jitter
 
 
 def _seed_arr(c: np.ndarray, r: np.ndarray) -> np.ndarray:
@@ -65,11 +74,11 @@ def _upper(x: np.ndarray | float) -> np.ndarray | float:
     return -_H * (1.0 - (x / _W) ** 2)
 
 
-def _grid() -> tuple[np.ndarray, np.ndarray]:
-    half = COLS / 2.0
-    xs = (np.arange(COLS * _SS) / _SS - (COLS - 1) / 2.0) / half
-    ys = (np.arange(ROWS * _SS) / _SS - (ROWS - 1) / 2.0) * _ASPECT / half
-    return np.meshgrid(xs, ys)
+def _grid(cols: int, rows: int, ss: int) -> tuple[np.ndarray, np.ndarray]:
+    half = cols / 2.0
+    xs = ((np.arange(cols * ss) / ss - (cols - 1) / 2.0) / half)
+    ys = ((np.arange(rows * ss) / ss - (rows - 1) / 2.0) * _ASPECT / half)
+    return np.meshgrid(xs.astype(np.float32), ys.astype(np.float32))
 
 
 def _stroke(ink: np.ndarray, X: np.ndarray, Y: np.ndarray,
@@ -104,8 +113,8 @@ def _lash_points(frac: float, curl: float, length: float) -> np.ndarray:
         + (s ** 2) * curl * np.array([tx, ty])
 
 
-def _render() -> list[Cell]:
-    X, Y = _grid()
+def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
+    X, Y = _grid(cols, rows, ss)
     ink = np.zeros_like(X)
 
     # ---- almond outline (heavier toward the corners) ---------------------
@@ -157,20 +166,23 @@ def _render() -> list[Cell]:
     fibers = 0.34 + 0.20 * fine + 0.14 * coarse
     fibers *= 0.72 + 0.28 * rr                           # denser toward the rim
 
-    # collarette: wavy ring around the pupil (the iris's inner lace)
+    # collarette: wavy ring around the pupil (the iris's inner lace) —
+    # tighter and stronger, so the inner lace survives cell reduction
     col_r = 0.40 + 0.045 * np.sin(ang * 11.0)
-    collarette = 0.30 * np.exp(-((rr - col_r) / 0.055) ** 2)
+    collarette = 0.38 * np.exp(-((rr - col_r) / 0.05) ** 2)
 
-    # crypts: darker pockets between fiber bundles
+    # crypts: darker pockets between fiber bundles (seven, deeper)
     crypts = np.zeros_like(X)
     for k, (ca, cr) in enumerate(((0.7, 0.62), (1.9, 0.74), (3.1, 0.58),
-                                  (4.3, 0.70), (5.5, 0.66))):
+                                  (4.3, 0.70), (5.5, 0.66), (2.5, 0.52),
+                                  (5.0, 0.80))):
         d_ang = np.angle(np.exp(1j * (ang - ca)))
-        crypts += 0.22 * np.exp(-((d_ang / 0.22) ** 2 + ((rr - cr) / 0.10) ** 2))
+        crypts += 0.30 * np.exp(-((d_ang / 0.24) ** 2 + ((rr - cr) / 0.11) ** 2))
 
     # limbal ring + soft-edged deep pupil
     limbal = 0.42 * np.exp(-((rr - 0.965) / 0.075) ** 2)
-    pupil = 0.98 / (1.0 + np.exp((rr - _PUPIL) / 0.025))     # soft edge
+    # soft edge; exponent clamped so float32 grids can't overflow exp()
+    pupil = 0.98 / (1.0 + np.exp(np.minimum((rr - _PUPIL) / 0.025, 60.0)))
     # bright ring just outside the pupil (subtractive glow)
     glow = 0.30 * np.exp(-((rr - (_PUPIL + 0.09)) / 0.05) ** 2)
 
@@ -192,19 +204,37 @@ def _render() -> list[Cell]:
     sheen = 0.22 * np.exp(-((rr - 0.72) / 0.16) ** 2) \
         * np.clip(-np.cos(ang), 0.0, 1.0)                            # lower sheen
     glint = np.clip(g1 + g1h + g2 + sheen, 0.0, 1.2)
-    ink = np.clip(ink - glint * 0.85, 0.0, 1.0)
+    if subtract_glints:
+        # highlights carve light out of the detail (static renders); the
+        # splash keeps the iris whole and overlays glint cells instead, so
+        # the highlight can APPEAR later as part of the animation
+        ink = np.clip(ink - glint * 0.85, 0.0, 1.0)
 
     # ---- reduce to cells + classify --------------------------------------
-    cell_ink = ink.reshape(ROWS, _SS, COLS, _SS).mean(axis=(1, 3))
-    cc, rr_i = np.meshgrid(np.arange(COLS), np.arange(ROWS))
-    half = COLS / 2.0
-    cx = (cc - (COLS - 1) / 2.0) / half
-    cyv = (rr_i - (ROWS - 1) / 2.0) * _ASPECT / half
+    cell_ink = ink.reshape(rows, ss, cols, ss).mean(axis=(1, 3))
+    cc, rr_i = np.meshgrid(np.arange(cols), np.arange(rows))
+    half = cols / 2.0
+    cx = (cc - (cols - 1) / 2.0) / half
+    cyv = (rr_i - (rows - 1) / 2.0) * _ASPECT / half
     cdx, cdy = cx, cyv - _CY
     cdist = np.hypot(cdx, cdy) / _RI
     cang = np.arctan2(cdx, -cdy) % (2 * math.pi)
-    glint_cell = glint.reshape(ROWS, _SS, COLS, _SS).mean(axis=(1, 3))
-    seeds = _seed_arr(cc.astype(float), rr_i.astype(float))
+    glint_cell = glint.reshape(rows, ss, cols, ss).mean(axis=(1, 3))
+    fc, fr = cc.astype(float), rr_i.astype(float)
+    seeds = _seed_arr(fc, fr)
+
+    # per-cell iris color detail, all seeded and resolution-local:
+    # one hue offset per fiber bundle, one per radial band, a warm-shifted
+    # core, sparse heterochromatic flecks, and per-cell value jitter
+    bundle = np.floor(cang * (13.0 / (2.0 * math.pi)))
+    hue_jit = (_seed_arr(bundle * 1.37 + 4.2, bundle * 0.61) - 0.5) * 0.11
+    band = np.floor(cdist * 4.5)
+    hue_jit = hue_jit + (_seed_arr(band + 9.0, band * 1.31) - 0.5) * 0.07
+    hue_jit = hue_jit - 0.05 * np.clip(1.0 - cdist, 0.0, 1.0)
+    fl = _seed_arr(fc + 31.0, fr + 17.0)
+    flecks = np.where(fl < 0.075,
+                      0.32 + 0.28 * _seed_arr(fc + 3.0, fr + 77.0), -1.0)
+    vjit = (_seed_arr(fc + 57.0, fr + 91.0) - 0.5) * 0.22
 
     up_c = _upper(np.clip(cx, -_W, _W))
     near_outline = (np.abs(cx) <= _W * 1.05) & (
@@ -212,8 +242,8 @@ def _render() -> list[Cell]:
     above_lid = cyv < up_c - 0.015
 
     cells: list[Cell] = []
-    for r in range(ROWS):
-        for c in range(COLS):
+    for r in range(rows):
+        for c in range(cols):
             v = float(cell_ink[r, c])
             g = float(glint_cell[r, c])
             d = float(cdist[r, c])
@@ -221,14 +251,14 @@ def _render() -> list[Cell]:
                 # the glint core has near-zero ink BY DESIGN (highlights are
                 # subtractive) — emit solid bright cells there instead of an
                 # empty hole, so the highlight reads white on dark grounds
-                if g > 0.35 and d <= 1.04:
+                if subtract_glints and g > 0.35 and d <= 1.04:
                     ch = _RAMP[min(int((0.45 + 0.55 * g) * (len(_RAMP) - 1)),
                                    len(_RAMP) - 1)]
                     cells.append(Cell(c, r, ch, "glint", 0.0, 0.0, g, d,
                                       float(seeds[r, c])))
                 continue
             ch = _RAMP[min(int(v * (len(_RAMP) - 1) + 0.5), len(_RAMP) - 1)]
-            if d <= 1.04 and g > 0.5:
+            if subtract_glints and d <= 1.04 and g > 0.5:
                 role, order, hue = "glint", 0.0, 0.0
             elif d <= 1.02:
                 hue = float(cang[r, c]) / (2 * math.pi)
@@ -242,18 +272,36 @@ def _render() -> list[Cell]:
                 order = (float(cx[r, c]) + 1.0) / 2.0
             # rad is the radial distance from the pupil for EVERY cell: the
             # whole eye fills outward from the spark
-            cells.append(Cell(c, r, ch, role, order, hue, v, d,
-                              float(seeds[r, c])))
+            if role == "iris":
+                cells.append(Cell(c, r, ch, role, order, hue, v, d,
+                                  float(seeds[r, c]), float(hue_jit[r, c]),
+                                  float(flecks[r, c]), float(vjit[r, c])))
+            else:
+                cells.append(Cell(c, r, ch, role, order, hue, v, d,
+                                  float(seeds[r, c])))
 
-    # ---- the crosshair: a separate overlay pass over the finished eye ----
-    cc_mid = (COLS - 1) // 2
-    rr_mid = (ROWS - 1) // 2 + round(_CY * COLS / 4.0)
-    for r in range(ROWS):
+    if not subtract_glints:
+        # overlay glint cells co-located with the (whole) iris beneath —
+        # the animation crossfades between the two at each position
+        for r in range(rows):
+            for c in range(cols):
+                g = float(glint_cell[r, c])
+                if g > 0.35 and float(cdist[r, c]) <= 1.04:
+                    ch = _RAMP[min(int((0.45 + 0.55 * g) * (len(_RAMP) - 1)),
+                                   len(_RAMP) - 1)]
+                    cells.append(Cell(c, r, ch, "glint", 0.0, 0.0, g,
+                                      float(cdist[r, c]), float(seeds[r, c])))
+
+    # ---- the crosshair: overlay cells for STATIC renders (icon, backdrop
+    # reticle layer) — the opening excludes the "reticle"/"hub" roles
+    cc_mid = (cols - 1) // 2
+    rr_mid = (rows - 1) // 2 + round(_CY * cols / 4.0)
+    for r in range(rows):
         d = float(cdist[r, cc_mid])
         if 0.34 <= d <= 1.10:
             cells.append(Cell(cc_mid, r, "|", "reticle", min(d, 1.0),
                               0.0, 0.9, d, float(seeds[r, cc_mid])))
-    for c in range(COLS):
+    for c in range(cols):
         d = float(cdist[rr_mid, c])
         if 0.34 <= d <= 1.10:
             cells.append(Cell(c, rr_mid, "-", "reticle", min(d, 1.0),
@@ -263,14 +311,20 @@ def _render() -> list[Cell]:
     return cells
 
 
-_STENCIL: list[Cell] | None = None
+_STENCILS: dict[tuple[int, int, bool], list[Cell]] = {}
 
 
-def stencil() -> list[Cell]:
-    global _STENCIL
-    if _STENCIL is None:
-        _STENCIL = _render()
-    return _STENCIL
+def stencil(cols: int = COLS, rows: int = ROWS, *,
+            subtract_glints: bool = True) -> list[Cell]:
+    """The character stencil at a given grid resolution (cached). The
+    default 141x67 grid feeds every static render and the live backdrop;
+    the splash asks for a denser grid (supersampling drops to 2x there —
+    small cells need it less and the build must stay start-up friendly)."""
+    key = (cols, rows, subtract_glints)
+    if key not in _STENCILS:
+        _STENCILS[key] = _render(cols, rows, _SS if cols <= COLS else 2,
+                                 subtract_glints)
+    return _STENCILS[key]
 
 
 # ------------------------------------------------------------ choreography
@@ -282,19 +336,46 @@ def _pop(age: float) -> float:
     return 1.0
 
 
-_SPARK = 0.85          # when the pupil ignites
+_SPARK = 1.15          # when the pupil ignites (two heartbeats first)
 _BOLTS = (0.35, 1.45, 2.30, 3.55, 4.40, 5.60)   # lightning angles (rad, cw)
-_SWEEP_START = 4.65    # the reticle's rotating sweep
-_SWEEP_LEN = 0.6
 _RETICLE_RED = "#ff3b30"
+
+# the opening blink: fast eased close, held full closure, slower cushioned
+# reopen — real blinks are temporally asymmetric (Trutoiu et al., Modeling
+# and Animating Eye Blinks)
+BLINK_T = 4.55
+BLINK_CLOSE, BLINK_HOLD, BLINK_OPEN = 0.38, 0.22, 0.70
+GLEAM_T = 6.0          # the gleam sweeps in only after the reopen
+GLEAM_LEN = 0.9
+BREATHE_T = 6.9
+
+
+def splash_blink(t: float) -> float:
+    """0 (open) .. 1 (shut) for the opening's single deliberate blink."""
+    u = t - BLINK_T
+    if u <= 0.0:
+        return 0.0
+    if u < BLINK_CLOSE:
+        s = u / BLINK_CLOSE
+        return s * s * (3.0 - 2.0 * s)
+    u -= BLINK_CLOSE
+    if u < BLINK_HOLD:
+        return 1.0
+    u -= BLINK_HOLD
+    if u < BLINK_OPEN:
+        s = u / BLINK_OPEN
+        return 1.0 - s * s * (3.0 - 2.0 * s)
+    return 0.0
 
 
 def led_state(cell: Cell, t: float) -> float:
     """Brightness 0..~1.6 at time t. Out of total darkness, a spark at the
     pupil pulses rainbow outward along the iris veins; the fill escapes the
-    rim into the lids, lashes and shading; the crosshair is imposed at the
-    end by a rotating sweep. cell.rad is radial distance from the pupil, so
-    every role's timing is 'when the pulse reaches me'."""
+    rim into the lids, lashes and shading; after the blink the gleam band
+    ignites the glints left to right. cell.rad is radial distance from the
+    pupil, so every role's timing is 'when the pulse reaches me'. No
+    crosshair: reticle/hub cells only get a token late timing here — the
+    opening excludes those roles outright."""
     s = cell.seed
 
     if cell.role == "iris":
@@ -310,20 +391,18 @@ def led_state(cell: Cell, t: float) -> float:
             if 0.0 < age < 0.38:        # lightning strobe before settling
                 return 1.55 if int(age * 26) % 3 != 0 else 0.25
         else:
-            lit_at = _SPARK + 0.35 + cell.rad * 0.95 + d_bolt * 0.5
+            lit_at = _SPARK + 0.40 + cell.rad * 0.95 + d_bolt * 0.5
     elif cell.role == "glint":
-        lit_at = 3.9
+        # ignited by the gleam band as it sweeps the iris left to right
+        xn = ((cell.col - (COLS - 1) / 2.0) / (COLS / 2.0)) / _RI
+        lit_at = GLEAM_T + GLEAM_LEN * (min(max(xn, -1.3), 1.3) + 1.3) / 2.6
     elif cell.role in ("outline", "lash", "shade"):
         # the energy escapes the rim and keeps travelling outward
         reach = max(cell.rad - 1.0, 0.0)
-        base = {"outline": 2.35, "lash": 2.5, "shade": 2.75}[cell.role]
-        lit_at = base + reach * 0.85 + 0.1 * s
-    elif cell.role == "reticle":
-        # ignited by the rotating sweep as it passes this tick's angle
-        ang = _reticle_angle(cell)
-        lit_at = _SWEEP_START + _SWEEP_LEN * (ang / (2 * math.pi))
-    else:  # hub locks after the sweep completes, double flash
-        lit_at = _SWEEP_START + _SWEEP_LEN + 0.25
+        base = {"outline": 2.85, "lash": 3.0, "shade": 3.25}[cell.role]
+        lit_at = base + reach * 0.55 + 0.1 * s
+    else:  # reticle/hub: static renders only; never part of the opening
+        lit_at = 3.2 + 0.3 * cell.order
     age = t - lit_at
 
     if age <= 0.0:
@@ -333,27 +412,21 @@ def led_state(cell: Cell, t: float) -> float:
             return 0.10 * beat * min((t - 0.25) / 0.5, 1.0) * (1.0 - cell.rad / 0.30)
         return 0.0
 
-    if cell.role == "hub" and (age < 0.18 or 0.32 < age < 0.46):
-        return 1.6
     b = _pop(age)
     # an echo pulse ripples outward once the iris is lit
-    if cell.role == "iris" and 2.6 < t < 3.6:
-        echo = math.exp(-((t - 2.7 - cell.rad * 0.8) / 0.12) ** 2)
+    if cell.role == "iris" and 3.0 < t < 3.9:
+        echo = math.exp(-((t - 3.05 - cell.rad * 0.8) / 0.12) ** 2)
         b += 0.35 * echo
-    if t > 6.2:
+    if cell.role == "glint" and age > 0.35:
+        left = cell.col < (COLS - 1) / 2.0
+        b *= 0.86 + 0.14 * math.sin(
+            2.0 * math.pi * 0.5 * t + (0.0 if left else math.pi))
+    if t > BREATHE_T:
         b *= 0.93 + 0.07 * math.sin(2.0 * math.pi * 0.35 * t + s * 1.2)
     return b
 
 
-def _reticle_angle(cell: Cell) -> float:
-    """Clockwise angle from 12 o'clock of a reticle cell (for the sweep)."""
-    half = COLS / 2.0
-    x = (cell.col - (COLS - 1) / 2.0) / half
-    y = (cell.row - (ROWS - 1) / 2.0) * _ASPECT / half - _CY
-    return math.atan2(x, -y) % (2 * math.pi)
-
-
-TOTAL = 6.1      # seconds until fully lit (breathing continues after)
+TOTAL = 7.1      # seconds until fully settled (breathing continues after)
 
 
 # ------------------------------------------------------------------ widget
@@ -395,12 +468,17 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
             overlay.append((cell, b))
             continue
         if cell.role == "iris":
-            # bright constant value: character density carries the fiber
-            # texture; a touch of radial iridescence in the hue
+            # character density carries the fiber texture; the hue carries
+            # the cell's seeded detail — radial iridescence, fiber-bundle
+            # jitter, radial banding, heterochromatic flecks, value jitter
             base_hue = cell.hue if iris_hue is None else iris_hue
-            hue = (base_hue + 0.05 * math.sin(cell.rad * 6.0)) % 1.0
+            hue = (base_hue + 0.05 * math.sin(cell.rad * 6.0) + cell.hue_j) % 1.0
             s_mod = sat * (0.72 + 0.28 * cell.ink)
-            col = QColor.fromHsvF(hue, s_mod, val)
+            v_mod = min(max(val * (1.0 + cell.vj * 0.5), 0.0), 1.0)
+            if cell.fleck >= 0.0:
+                hue = (hue + cell.fleck) % 1.0
+                s_mod = min(s_mod * 1.15, 1.0)
+            col = QColor.fromHsvF(hue, s_mod, v_mod)
         elif cell.role == "glint":
             col = QColor("#ffffff") if is_dark else QColor(ink)
             col.setAlphaF(min(0.55 + 0.45 * cell.ink, 1.0) if is_dark else 0.35)
@@ -454,29 +532,6 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
         p.drawText(QRectF(x + 0.7, y, cw * 1.8, ch * 1.25),
                    Qt.AlignLeft | Qt.AlignTop, cell.ch)
         p.setFont(font)
-
-    # ---- the imposed sweep: an accent hand rotating once over the iris,
-    # igniting the reticle ticks as it passes
-    if t is not None and _SWEEP_START <= t <= _SWEEP_START + _SWEEP_LEN + 0.12:
-        from PySide6.QtGui import QPen
-
-        prog = min((t - _SWEEP_START) / _SWEEP_LEN, 1.0)
-        px_x = rect.width() / 2.0
-        px_y = rect.height() * COLS / (2.0 * _ASPECT * ROWS)
-        cx_px = rect.x() + rect.width() / 2.0
-        cy_px = rect.y() + rect.height() / 2.0 + _CY * px_y
-        radius = 1.18 * _RI
-        for k in range(7):
-            a = prog * 2 * math.pi - k * 0.11
-            if a < 0:
-                continue
-            col = QColor(_RETICLE_RED)
-            col.setAlphaF(max(0.65 - k * 0.09, 0.0))
-            p.setPen(QPen(col, 2.0))
-            p.drawLine(
-                int(cx_px), int(cy_px),
-                int(cx_px + radius * math.sin(a) * px_x),
-                int(cy_px - radius * math.cos(a) * px_y))
 
 
 class AsciiEye(QWidget):
@@ -575,18 +630,118 @@ def blink_amount(phase: float) -> float:
     return math.sin(math.pi * u) ** 2
 
 
+def lid_margins(x, k: float):
+    """World-space y of the moving (upper, lower) lid margins at closure
+    k for world x (scalar or array). The lids meet on a seam biased well
+    below center — the upper lid does ~3/4 of the travel, the lower lid
+    rises the rest, the way real lids close."""
+    up = _upper(x)
+    meet = _CY + 0.62 * (-up - _CY)
+    return (1.0 - k) * up + k * meet, (1.0 - k) * (-up) + k * meet
+
+
+# lid glyph alphabets: heavy chars build the margin silhouette, sparse
+# directional strokes hang below it as lashes (solid-style ASCII craft:
+# dense chars for silhouette, lighter ones to soften)
+_MARGIN_UP = "wWmM"
+_MARGIN_LO = "~-_~"
+_FRINGE_LO = "'`,"
+
+
+def blink_cells(k: float, cols: int = COLS,
+                rows: int = ROWS) -> list[tuple[int, int, str, str, float]]:
+    """The eyelids AS CHARACTERS at closure k: rows of lid-skin glyphs
+    sweep down/up with the moving margins, the margin row itself is a
+    heavy lash silhouette, and sparse directional lashes hang off it.
+    Returns (col, row, ch, kind, shade) tuples, kind in {"skin", "lash"},
+    shade 0..1 for the caller's alpha. Pure in (k, cols, rows) — the
+    backdrop's perfect loop depends on that. Empty when k <= 0."""
+    if k <= 0.0:
+        return []
+    half = cols / 2.0
+    row_h = 2.0 * _ASPECT / cols                 # world height of one row
+    c_all = np.arange(cols)
+    x_all = (c_all - (cols - 1) / 2.0) / half
+    keep = np.abs(x_all) < _W * 0.995
+    ci = c_all[keep]
+    xs = x_all[keep]
+    um, lm = lid_margins(xs, k)
+    rest_u = _upper(xs)
+    rest_l = -rest_u
+    r_all = np.arange(rows)
+    y = ((r_all - (rows - 1) / 2.0) * _ASPECT / half)[:, None]
+    UM, LM = um[None, :], lm[None, :]
+
+    skin_u = (y >= rest_u[None, :] + 0.01) & (y < UM - 0.55 * row_h)
+    lash_u = (np.abs(y - UM) <= 0.55 * row_h) & (y >= rest_u[None, :] - 0.2 * row_h)
+    fringe_u = (y - UM > 0.55 * row_h) & (y - UM <= 1.7 * row_h)
+    skin_l = (y > LM + 0.55 * row_h) & (y <= rest_l[None, :] - 0.01)
+    lash_l = (np.abs(y - LM) <= 0.55 * row_h) \
+        & (y <= rest_l[None, :] + 0.2 * row_h) & ~lash_u & ~skin_u
+    fringe_l = (LM - y > 0.55 * row_h) & (LM - y <= 1.4 * row_h) \
+        & ~skin_u & ~lash_u & ~fringe_u
+    fringe_u &= ~skin_l & ~lash_l
+
+    fc2 = np.broadcast_to(ci[None, :].astype(float), skin_u.shape)
+    fr2 = np.broadcast_to(r_all[:, None].astype(float), skin_u.shape)
+    seeds = _seed_arr(fc2 + 13.0, fr2 + 5.0)
+    n_ramp = len(_RAMP) - 1
+
+    out: list[tuple[int, int, str, str, float]] = []
+    # ---- lid skin: banded rows of ramp chars riding the margin curve ----
+    d_u = np.where(skin_u, UM - y, 0.0)
+    d_l = np.where(skin_l, y - LM, 0.0)
+    for mask, dist in ((skin_u, d_u), (skin_l, d_l)):
+        shade = np.clip(0.30 + 0.45 * np.exp(-dist / 0.13)
+                        + 0.10 * np.cos(dist * 48.0), 0.05, 1.0)
+        for r, j in zip(*np.nonzero(mask)):
+            sh = float(shade[r, j])
+            out.append((int(ci[j]), int(r), _RAMP[int(sh * 0.72 * n_ramp)],
+                        "skin", sh))
+
+    # ---- the moving margins: heavy lash-silhouette rows -----------------
+    slope_u = (2.0 * _H * xs / (_W * _W)) * ((1.0 - k) - 0.62 * k)
+    for r, j in zip(*np.nonzero(lash_u)):
+        s = float(slope_u[j])
+        if s > 0.5:
+            ch = "\\"
+        elif s < -0.5:
+            ch = "/"
+        else:
+            ch = _MARGIN_UP[int(seeds[r, j] * 3.99)]
+        out.append((int(ci[j]), int(r), ch, "lash", 0.85))
+    for r, j in zip(*np.nonzero(lash_l)):
+        out.append((int(ci[j]), int(r), _MARGIN_LO[int(seeds[r, j] * 3.99)],
+                    "lash", 0.55))
+
+    # ---- lashes hanging off the margins (sparse, splayed outward) -------
+    for r, j in zip(*np.nonzero(fringe_u)):
+        if seeds[r, j] >= 0.42:
+            continue
+        x = float(xs[j])
+        ch = "/" if x < -0.12 else ("\\" if x > 0.12 else "|")
+        out.append((int(ci[j]), int(r), ch, "lash", 0.7))
+    for r, j in zip(*np.nonzero(fringe_l)):
+        if seeds[r, j] >= 0.30:
+            continue
+        out.append((int(ci[j]), int(r), _FRINGE_LO[int(seeds[r, j] * 9.99)],
+                    "lash", 0.45))
+    return out
+
+
 def blink_lid_paths(rect: QRectF,
                     k: float) -> tuple[QPainterPath, QPainterPath] | None:
-    """Eyelid geometry for the backdrop blink at amount k (0 open, 1 shut)
-    in the pixel space paint_grid uses for `rect` (cell centers).
+    """Eyelid ERASE geometry for the backdrop blink at amount k (0 open,
+    1 shut) in the pixel space paint_grid uses for `rect` (cell centers).
+    The character lids from blink_cells are drawn over the erased region.
 
     Returns (wedges, edges). `wedges` holds two closed regions, one per
     lid, each spanning from just inside the resting lid parabola (inset so
-    the almond outline and lid margin survive the blink) down/up to the
-    moving lid edge — the same parabola eased toward the iris centerline
-    y=_CY, so the sweep keeps the almond's curvature instead of reading as
+    the almond outline survives the blink) down/up to the moving lid
+    margin from lid_margins — the same parabola eased toward the shut
+    seam, so the sweep keeps the almond's curvature instead of reading as
     a rectangle wipe. `edges` holds the two moving lid-margin polylines
-    for stroking. None when k <= 0."""
+    (the curve the character lash rows ride). None when k <= 0."""
     if k <= 0.0:
         return None
     half = COLS / 2.0
@@ -600,32 +755,31 @@ def blink_lid_paths(rect: QRectF,
         return rect.y() + (wy * half / _ASPECT + (ROWS - 1) / 2.0 + 0.5) * ch
 
     inset = 0.03            # leave the outline / lid margin un-erased
-    pad = 0.025 * k         # push the wedges past the meeting line when shut
+    pad = 0.025 * k         # push the wedges past the meeting seam when shut
     xs = np.linspace(-_W, _W, 49)
     rest_u = _upper(xs) + inset
     rest_l = -_upper(xs) - inset
-    seam_u = (1.0 - k) * _upper(xs) + k * _CY      # the visible lid margins:
-    seam_l = (1.0 - k) * -_upper(xs) + k * _CY     # meet at y=_CY when shut
+    seam_u, seam_l = lid_margins(xs, k)
     edge_u = np.maximum(seam_u + pad, rest_u)
     edge_l = np.minimum(seam_l - pad, rest_l)
 
     wedges = QPainterPath()
     # both wedges wind the same way (top boundary L->R, bottom R->L), and the
-    # winding rule keeps the band where the shut lids overlap at y=_CY inside
-    # (odd-even would punch it back out)
+    # winding rule keeps the band where the shut lids overlap at the seam
+    # inside (odd-even would punch it back out)
     wedges.setFillRule(Qt.WindingFill)
     edges = QPainterPath()
     for top, bottom, edge in ((rest_u, edge_u, seam_u),
                               (edge_l, rest_l, seam_l)):
         wedges.moveTo(px(float(xs[0])), py(float(top[0])))
-        for x, y in zip(xs[1:], top[1:]):
-            wedges.lineTo(px(float(x)), py(float(y)))
-        for x, y in zip(xs[::-1], bottom[::-1]):
-            wedges.lineTo(px(float(x)), py(float(y)))
+        for x, yv in zip(xs[1:], top[1:]):
+            wedges.lineTo(px(float(x)), py(float(yv)))
+        for x, yv in zip(xs[::-1], bottom[::-1]):
+            wedges.lineTo(px(float(x)), py(float(yv)))
         wedges.closeSubpath()
         edges.moveTo(px(float(xs[0])), py(float(edge[0])))
-        for x, y in zip(xs[1:], edge[1:]):
-            edges.lineTo(px(float(x)), py(float(y)))
+        for x, yv in zip(xs[1:], edge[1:]):
+            edges.lineTo(px(float(x)), py(float(yv)))
     return wedges, edges
 
 

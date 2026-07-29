@@ -197,6 +197,30 @@ def test_archetype_detection(fixtures):
     assert detect_archetype("unnamed task", run) == "clicking"
 
 
+def test_size_controller_is_accuracy_biased(fixtures):
+    """Below-band recovery outweighs above-band pushing: the same excess
+    grows targets more than it shrinks them (accuracy-first design)."""
+    s = _settings()
+    prof_lo = PlayerProfile(scenario="lo")
+    prof_hi = PlayerProfile(scenario="hi")
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+    run.summary["Hit Count:"] = "90"
+    mid = 0.5 * (s.target_accuracy_low + s.target_accuracy_high)
+    below = s.target_accuracy_low - 0.05
+    above = s.target_accuracy_high + 0.05
+    run.summary["Miss Count:"] = str(round(90 * (1 - below) / below))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(0))
+    engine.plan(prof_lo, run)
+    run.summary["Miss Count:"] = str(round(90 * (1 - above) / above))
+    engine2 = AdaptationEngine(s, rng=np.random.default_rng(0))
+    engine2.plan(prof_hi, run)
+    grow = prof_lo.target_scale - 1.0
+    shrink = 1.0 - prof_hi.target_scale
+    assert grow > 0 and shrink > 0
+    assert grow > shrink * 1.3          # same excess, asymmetric response
+    _ = mid
+
+
 def test_settings_for_archetype():
     s = Settings(kovaaks_root=".")
     t = s.for_archetype("tracking")

@@ -168,3 +168,40 @@ def test_cross_session_trends_trigger_cards():
     (over,) = [i for i in got2 if i.id == "dx-overshoot-control"]
     assert "sessions" in over.title and "20" in over.reasoning and over.sources
     assert "dx-fitts-progress" not in ids(got2)
+
+
+# ------------------------------------------------------------- sensitivity
+def test_sens_insight_argues_both_ways_never_a_directive():
+    rep = make_rep(overshoot_rate=0.45, mean_corrections=2.5)
+    got = generate_insights(rep, make_prof(history=hist()), settings())
+    (card,) = [i for i in got if i.id == "p-sensitivity-doctrine"]
+    assert card.kind == "info" and card.severity == "info"
+    body = card.body.lower()
+    # the no-directive invariant: BOTH cases are always rendered together
+    assert "case for lower" in body and "case for higher" in body
+    # never a one-way imperative
+    for banned in ("lower your sens", "raise your sens",
+                   "increase your sens", "decrease your sens"):
+        assert banned not in body
+    assert "no direction" in card.prescription.lower()
+    # reasoning = the cm/360 math with the live dpi/sens numbers
+    assert "cm/360" in card.reasoning and "800" in card.reasoning \
+        and "0.022" in card.reasoning
+    assert card.sources and card.confidence
+
+
+def test_sens_insight_needs_configured_dpi_and_sens():
+    rep = make_rep(overshoot_rate=0.45, mean_corrections=2.5)
+    prof = make_prof(history=hist())
+    s0 = settings()
+    s0.mouse_dpi = 0.0
+    assert "p-sensitivity-doctrine" not in ids(generate_insights(rep, prof, s0))
+    s1 = settings()
+    s1.game_sens = 0.0
+    assert "p-sensitivity-doctrine" not in ids(generate_insights(rep, prof, s1))
+
+
+def test_sens_insight_silent_on_thin_evidence():
+    # clean run: no substantive side -> the card must not appear at all
+    got = generate_insights(make_rep(), make_prof(history=hist()), settings())
+    assert "p-sensitivity-doctrine" not in ids(got)

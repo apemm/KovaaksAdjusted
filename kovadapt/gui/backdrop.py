@@ -7,9 +7,12 @@ everything except the iris and glints is rendered once into a base pixmap
 (and the reticle into a small overlay pixmap); each animation frame
 Source-blits the base into a reusable frame pixmap, redraws only the few
 hundred live iris/glint glyphs with colors from ascii_art.loop_cell_color,
-re-blits the reticle, and — once per loop — sweeps two eyelid wedges shut
-for a blink (erase-composited parabolas matching the almond's curvature,
-not a rectangle wipe). The loop clock rides the existing 30 Hz parallax
+re-blits the reticle, and — once per loop — blinks: the eye's interior is
+erase-composited between the resting lid parabolas and the moving margins
+(ascii_art.blink_lid_paths), then the lids are drawn AS CHARACTERS from
+ascii_art.blink_cells — rows of lid-skin glyphs sweeping with the margin,
+a heavy lash-silhouette row on the moving edge, the same visual style as
+the opening's blink. The loop clock rides the existing 30 Hz parallax
 timer at half rate (~15 fps) and pauses while the window is hidden or
 minimized. Every time-dependent term is periodic in ascii_art.LOOP_T, so
 frame(LOOP_T) is byte-identical to frame(0).
@@ -21,7 +24,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QPainter,
-                           QPen, QPixmap, QStaticText)
+                           QPixmap, QStaticText)
 
 from . import ascii_art, theme
 
@@ -71,6 +74,7 @@ class Backdrop:
         self._overlay: QPixmap | None = None   # reticle + hub, re-blit on top
         self._frame: QPixmap | None = None     # base + live cells, per frame
         self._live: list[tuple[QPointF, QStaticText, ascii_art.Cell]] = []
+        self._blink_st: dict[str, QStaticText] = {}   # lid glyphs, by char
         self._font: QFont | None = None
         self._ink = QColor("#ffffff")
         self._iris_hue: float | None = None
@@ -153,18 +157,27 @@ class Backdrop:
         p.drawPixmap(0, 0, self._overlay)
         k = ascii_art.blink_amount(phase)
         if k > 0.0:
-            wedges, edges = ascii_art.blink_lid_paths(
+            wedges, _edges = ascii_art.blink_lid_paths(
                 QRectF(0, 0, pm.width(), pm.height()), k)
             # the lids: erase the eye's interior between the resting lid
-            # curve and the moving edge, then stroke the lid margin
+            # curve and the moving margin, then draw the lids AS CHARACTERS
+            # — the same lid-skin rows + lash silhouettes as the opening
             p.setCompositionMode(QPainter.CompositionMode_Clear)
             p.fillPath(wedges, QColor(0, 0, 0))
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            margin = QColor(self._ink)
-            margin.setAlphaF(0.55 * k)
-            p.setPen(QPen(margin, max(pm.height() / ascii_art.ROWS * 0.4, 1.0)))
-            p.setBrush(Qt.NoBrush)
-            p.drawPath(edges)
+            cw = pm.width() / ascii_art.COLS
+            ch = pm.height() / ascii_art.ROWS
+            lid = QColor(self._ink)
+            for col, row, chr_, kind, shade in ascii_art.blink_cells(k):
+                st = self._blink_st.get(chr_)
+                if st is None:
+                    st = QStaticText(chr_)
+                    st.setTextFormat(Qt.PlainText)
+                    self._blink_st[chr_] = st
+                lid.setAlphaF(min(0.22 + 0.40 * shade if kind == "skin"
+                                  else 0.30 + 0.55 * shade, 1.0))
+                p.setPen(lid)
+                p.drawStaticText(QPointF(col * cw, row * ch), st)
         p.end()
 
     # ------------------------------------------------------------------

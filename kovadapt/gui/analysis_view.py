@@ -1,14 +1,16 @@
 """Post-run analysis tab: summary, bias, heatmap, notable moments with
-trajectory replays and (when captured) video clips — side by side."""
+trajectory replays and (when captured) video clips — side by side.
+
+The charts are character art (gui/viz.py) in the ascii_art visual
+language; pyqtgraph remains only inside TrajectoryReplay's canvas."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import numpy as np
-import pyqtgraph as pg
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -29,9 +31,18 @@ from ..analysis.report import RunReport
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
 from ..telemetry.trace import MouseTrace
-from . import ascii_art, theme
+from . import ascii_art, theme, viz
 from .onboarding import HintBar
 from .replay import TrajectoryReplay
+
+_TRAVEL_CAPTION = (
+    "Where your crosshair spent its time around engagements — brighter, denser "
+    "glyphs = more travel. A lopsided grid means your engagements cluster on "
+    "one side. Hover a zone for its value.")
+_DEFICIT_CAPTION = (
+    "Estimated weakness per wall region from this run's flicks — brighter, "
+    "denser glyphs mark zones your flicks reach slowly or overshoot. Same "
+    "r{row}c{col} grid the adaptive engine targets; hover a zone for its score.")
 
 
 class _InsightCard(QFrame):
@@ -114,40 +125,43 @@ class AnalysisView(QWidget):
         head.addWidget(self.empty_mark)
         head.addWidget(open_btn, 0, Qt.AlignTop)
 
-        # left column: bias bars + movement heatmap, each with a plain-language caption
-        self.bias_plot = pg.PlotWidget(title="Flick quality by direction (lower = better)")
-        self.bias_plot.setMinimumHeight(220)
-        self.bias_plot.setLabel("left", "flick cost (overshoot + corrections)")
+        # left column: bias bars + zone heatmap + accuracy trend, each with a
+        # plain-language caption — all character art (gui/viz.py)
+        self.bias_bars = viz.AsciiBars(title="flick quality by direction · lower is better")
         self.bias_caption = _caption(
-            "Each bar scores flicks toward that side — taller is worse. Built from "
+            "Each bar scores flicks toward that side — longer is worse. Built from "
             "overshoot plus corrective submovements; the red bar is your weakest "
             "direction this run.")
-        self.heat_plot = pg.PlotWidget(title="Aim travel around engagements")
-        self.heat_plot.setAspectLocked(True)
-        self.heat_img = pg.ImageItem()
-        self.heat_plot.addItem(self.heat_img)
-        cmap = pg.colormap.get("inferno")
-        self.heat_img.setLookupTable(cmap.getLookupTable(0.0, 1.0, 256))
-        self.heat_caption = _caption(
-            "Where your crosshair spent its time around engagements — bright = more "
-            "travel. A lopsided cloud means your engagements cluster on one side.")
+        self.heat_map = viz.AsciiHeatmap(title="aim travel around engagements")
+        self.heat_caption = _caption(_TRAVEL_CAPTION)
+        self.trend_spark = viz.AsciiTrend(title="accuracy over runs", fmt="{:.0%}")
+        self.trend_caption = _caption(
+            "Session-to-session accuracy for this scenario. The adaptive loop "
+            "should bend this upward without ever letting it pin at 100%.")
 
         bias_w = QWidget()
         bv = QVBoxLayout(bias_w)
         bv.setContentsMargins(0, 0, 0, 0)
-        bv.addWidget(self.bias_plot, 1)
+        bv.addWidget(self.bias_bars, 1)
         bv.addWidget(self.bias_caption)
         heat_w = QWidget()
         hv = QVBoxLayout(heat_w)
         hv.setContentsMargins(0, 0, 0, 0)
-        hv.addWidget(self.heat_plot, 1)
+        hv.addWidget(self.heat_map, 1)
         hv.addWidget(self.heat_caption)
+        self.trend_w = QWidget()
+        tv = QVBoxLayout(self.trend_w)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.addWidget(self.trend_spark, 1)
+        tv.addWidget(self.trend_caption)
+        self.trend_w.hide()                    # appears once the profile has history
         # vertical splitter: the flick-quality bars get real room instead of
         # being crushed under the heatmap
         left_w = QSplitter(Qt.Vertical)
         left_w.addWidget(bias_w)
         left_w.addWidget(heat_w)
-        left_w.setSizes([320, 380])
+        left_w.addWidget(self.trend_w)
+        left_w.setSizes([300, 340, 240])
 
         # right column: notable moments + replay
         self.moments = QListWidget()
@@ -204,18 +218,17 @@ class AnalysisView(QWidget):
 
     # ------------------------------------------------------------------
     def restyle(self, *_pal) -> None:
-        pal = theme.current()
-        self.bias_plot.setBackground(pal.bg_alt)
-        self.heat_plot.setBackground(pal.bg_alt)
+        # the viz widgets read theme.current() at paint time — update() is all
+        for chart in (self.bias_bars, self.heat_map, self.trend_spark):
+            chart.restyle()
         self.replay.restyle()
         if getattr(self, "_last_insights", None) is not None:
             self._fill_insights(*self._last_insights)   # cards bake colors
         if self.report is not None:
-            self._draw_bias(self.report)
             for i in range(self.moments.count()):
                 it = self.moments.item(i)
                 kind = self.report.notable[i]["kind"] if i < len(self.report.notable) else ""
-                it.setForeground(pg.mkColor(_kind_color(kind)))
+                it.setForeground(QColor(_kind_color(kind)))
 
     # ------------------------------------------------------------------
     def set_trends(self, trends) -> None:
@@ -237,7 +250,7 @@ class AnalysisView(QWidget):
         self.title.setText(f"{rep.scenario} — {rep.started_iso.replace('T', ' ')[:19]}")
         self.summary.setText(rep.summary_text)
         self._draw_bias(rep)
-        self._draw_heat()
+        self._draw_heat(rep)
         self._fill_moments(rep)
         self._update_clip_state(self.moments.currentRow())
         if self.trace is not None and len(self.trace) > 1:
@@ -260,6 +273,7 @@ class AnalysisView(QWidget):
             if not name.endswith(ADAPTIVE_SUFFIX):
                 name += ADAPTIVE_SUFFIX
             profile = PlayerProfile.load(name, self._settings.profile_path)
+        self._fill_trend(profile)
         if profile is None or self._settings is None or profile.run_count == 0:
             self.coach_box.hide()
             return
@@ -271,8 +285,19 @@ class AnalysisView(QWidget):
             self.coach_lay.addWidget(_InsightCard(ins))
         self.coach_box.setVisible(bool(insights))
 
+    def _fill_trend(self, profile: PlayerProfile | None) -> None:
+        """Accuracy-over-runs sparkline from the profile history (hidden
+        until at least two runs exist)."""
+        hist = profile.history if profile is not None else []
+        accs = [float(h.get("accuracy", 0.0)) for h in hist[-60:]]
+        if len(accs) >= 2:
+            self.trend_spark.set_data(accs, tag=f"{accs[-1]:.0%}")
+            self.trend_w.show()
+        else:
+            self.trend_spark.clear()
+            self.trend_w.hide()
+
     def _draw_bias(self, rep: RunReport) -> None:
-        self.bias_plot.clear()
         b = rep.bias or {}
         dirs = ["left", "vertical", "right"]
         vals = [
@@ -280,40 +305,38 @@ class AnalysisView(QWidget):
             + 0.15 * (b.get(d) or {}).get("corrections", 0.0)
             for d in dirs
         ]
-        pal = theme.current()
-        colors = [pal.bad if v == max(vals) and v > 0 else pal.accent for v in vals]
-        bars = pg.BarGraphItem(x=list(range(3)), height=vals, width=0.6,
-                               brushes=colors, pens=[None] * 3)
-        self.bias_plot.addItem(bars)
-        # value labels above each bar, so runs are comparable at a glance
-        for i, v in enumerate(vals):
-            txt = pg.TextItem(f"{v:.2f}", color=pal.fg, anchor=(0.5, 1.0))
-            txt.setPos(i, v)
-            self.bias_plot.addItem(txt)
-        self.bias_plot.setLabel("left", "flick cost (overshoot + corrections)",
-                                color=pal.fg_dim)
-        top = max(vals) if max(vals) > 0 else 1.0
-        self.bias_plot.setYRange(0, top * 1.25, padding=0)   # always anchored at 0
-        ax = self.bias_plot.getAxis("bottom")
         ns = [(b.get(d) or {}).get("n", 0) for d in dirs]
-        ax.setTicks([[(i, f"{d}\n({n} flicks)") for i, (d, n) in enumerate(zip(dirs, ns))]])
+        self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns])
 
-    def _draw_heat(self) -> None:
-        if self.trace is None or len(self.trace) < 2:
-            self.heat_img.clear()
-            return
-        heat, xe, ye = movement_heatmap(self.trace)
-        img = np.log1p(heat.T)  # transpose: histogram2d x/y -> row-major image
-        self.heat_img.setImage(img, autoLevels=True)
-        self.heat_img.setRect(float(xe[0]), float(ye[0]),
-                              float(xe[-1] - xe[0]), float(ye[-1] - ye[0]))
+    def _draw_heat(self, rep: RunReport | None = None) -> None:
+        """Zone heatmap on the Settings.region_cols x region_rows grid:
+        the run's region deficits when the report has them, else the
+        movement heatmap pooled down to the same zones."""
+        cols = self._settings.region_cols if self._settings is not None else 5
+        rows = self._settings.region_rows if self._settings is not None else 5
+        if rep is not None and rep.region_deficits:
+            grid, labels = viz.region_grid(rep.region_deficits, cols, rows)
+            self.heat_map.set_title("weakness by wall region · brighter = weaker")
+            self.heat_map.set_data(grid, labels, fmt="{:+.2f}")
+            self.heat_caption.setText(_DEFICIT_CAPTION)
+        elif self.trace is not None and len(self.trace) >= 2:
+            heat, _xe, _ye = movement_heatmap(self.trace)
+            pooled = viz.pool(np.log1p(heat.T), rows, cols)  # heat.T row 0 = bottom
+            labels = [[f"r{r}c{c}" for c in range(cols)] for r in range(rows)]
+            self.heat_map.set_title("aim travel around engagements")
+            self.heat_map.set_data(pooled, labels, fmt="{:.2f}")
+            self.heat_caption.setText(_TRAVEL_CAPTION)
+        else:
+            self.heat_map.set_title("aim travel around engagements")
+            self.heat_map.set_data(None)
+            self.heat_caption.setText(_TRAVEL_CAPTION)
 
     def _fill_moments(self, rep: RunReport) -> None:
         self.moments.blockSignals(True)
         self.moments.clear()
         for i, m in enumerate(rep.notable):
             it = QListWidgetItem(m["text"])
-            it.setForeground(pg.mkColor(_kind_color(m["kind"])))
+            it.setForeground(QColor(_kind_color(m["kind"])))
             it.setData(Qt.UserRole, i)
             self.moments.addItem(it)
         self.moments.blockSignals(False)

@@ -47,7 +47,14 @@ def settings(tmp_path):
     )
 
 
-_SECTIONS = ["Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
+def _expected_sections() -> list[str]:
+    """5 base sections, +'How it learns' once gui/ml_page.py exists."""
+    names = ["Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
+    try:
+        import kovadapt.gui.ml_page  # noqa: F401
+    except ImportError:
+        return names
+    return names + ["How it learns"]
 
 
 def test_main_window_constructs_and_closes(qapp, settings):
@@ -56,11 +63,37 @@ def test_main_window_constructs_and_closes(qapp, settings):
 
     themes = ThemeManager(qapp, settings)
     win = MainWindow(settings, themes)
-    assert win.space.count() == 5
-    assert win.space.names() == _SECTIONS
+    expected = _expected_sections()
+    assert len(expected) in (5, 6)
+    assert win.space.count() == len(expected)
+    assert win.space.names() == expected
     # one nav link per section, in order — these are the scroll targets
-    assert [b.text() for b in win.nav.links()] == _SECTIONS
+    assert [b.text() for b in win.nav.links()] == expected
     assert win.dashboard.worker is None
+    win.close()
+
+
+def test_editorial_column_caps_content_width(qapp, settings):
+    """Every section flows in one centered column: content capped near
+    ~950px at the 1360 default window, whitespace rails both sides."""
+    from PySide6.QtTest import QTest
+
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.theme import ThemeManager
+
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    win.resize(1360, 900)
+    win.show()
+    QTest.qWait(50)
+    for i in range(win.space.count()):
+        sec = win.space.section_at(i)
+        page = sec.page
+        assert page.width() <= 1000                       # column cap
+        x = page.mapTo(sec, page.rect().topLeft()).x()
+        left, right = x, sec.width() - (x + page.width())
+        assert left >= 80 and right >= 80                 # backdrop rails
+        assert abs(left - right) <= 60                    # centered
     win.close()
 
 
@@ -186,6 +219,25 @@ def test_scenario_browser_lists_and_filters(qapp, settings):
     assert len(fired) == 1
 
 
+def test_config_sensitivity_group_computes_cm360(qapp, settings):
+    """Mouse & sensitivity group: DPI/sens spins drive the live cm/360
+    readout (KovaaK's yaw 0.022°/count) and save onto Settings."""
+    from kovadapt.gui.config_view import ConfigView
+
+    view = ConfigView(settings)
+    view.dpi.setValue(800)
+    view.sens.setValue(1.0)
+    expected = 2.54 * 360.0 / (800 * 1.0 * 0.022)
+    assert f"{expected:.1f}" in view.cm360.text()
+    view.sens.setValue(2.0)                    # live: either spin updates it
+    expected = 2.54 * 360.0 / (800 * 2.0 * 0.022)
+    assert f"{expected:.1f}" in view.cm360.text()
+    view._save()                               # wired like every other field
+    assert getattr(settings, "mouse_dpi", None) == 800
+    assert getattr(settings, "game_sens", None) == 2.0
+    view.deleteLater()
+
+
 def test_hint_bars_tuck_away(qapp, settings):
     from kovadapt.gui.onboarding import HintBar, set_hints_visible
 
@@ -223,8 +275,11 @@ def test_welcome_dialog_dismissed_early_shows_again(qapp, settings):
 
 
 def test_analysis_view_captions_toggles_and_clip_story(qapp, settings):
+    import pyqtgraph as pg
+
     from kovadapt.analysis.report import RunReport
     from kovadapt.gui.analysis_view import AnalysisView
+    from kovadapt.gui.viz import AsciiBars, AsciiHeatmap, AsciiTrend
 
     view = AnalysisView(settings)
     rep = RunReport(
@@ -235,8 +290,16 @@ def test_analysis_view_captions_toggles_and_clip_story(qapp, settings):
         summary_text="30 kills at 61% accuracy.")
     view.show_report(rep)                # no trace: heatmap/replay stay empty
 
+    # the charts are ASCII-art widgets (gui/viz.py); pyqtgraph survives ONLY
+    # as the TrajectoryReplay canvas
+    assert isinstance(view.bias_bars, AsciiBars)
+    assert isinstance(view.heat_map, AsciiHeatmap)
+    assert isinstance(view.trend_spark, AsciiTrend)
+    assert view.findChildren(pg.PlotWidget) == [view.replay.plot]
+    assert view.trend_w.isHidden()       # no profile history yet -> no sparkline
+
     # captions: plain-language, dim, word-wrapped, non-empty
-    for cap in (view.bias_caption, view.heat_caption):
+    for cap in (view.bias_caption, view.heat_caption, view.trend_caption):
         assert cap.text()
         assert cap.wordWrap()
         assert cap.property("dim") is True

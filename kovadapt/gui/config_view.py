@@ -1,9 +1,12 @@
 """Adaptability configuration tab: the full Settings surface, saved to
 ~/.kovadapt/settings.json. More knobs than KovaaK's official offering.
 
-Sections: the everyday controls first, then the advanced engine internals
+Sections: mouse & sensitivity first (feeds the model's per-task sensitivity
+reasoning), then the everyday controls, the advanced engine internals
 (exposed for power users; defaults reproduce the shipped behavior), the
-trace-informed dodge/fatigue features, and per-archetype overrides.
+trace-informed dodge/fatigue features, and per-archetype overrides. The
+group boxes stack in one editorial column and flow in the page-space —
+no nested scroll of their own.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -45,6 +47,7 @@ def _dspin(val: float, lo: float, hi: float, step: float = 0.05, dec: int = 2,
     w.setSingleStep(step)
     w.setDecimals(dec)
     w.setValue(val)
+    w.setMinimumWidth(160)      # wide inputs for the editorial column
     if tip:
         w.setToolTip(tip)
     return w
@@ -54,9 +57,19 @@ def _ispin(val: int, lo: int, hi: int, tip: str = "") -> QSpinBox:
     w = QSpinBox()
     w.setRange(lo, hi)
     w.setValue(val)
+    w.setMinimumWidth(160)
     if tip:
         w.setToolTip(tip)
     return w
+
+
+def _form(box: QGroupBox) -> QFormLayout:
+    """Single-column form with the column's generous padding."""
+    f = QFormLayout(box)
+    f.setContentsMargins(16, 12, 16, 16)
+    f.setHorizontalSpacing(28)
+    f.setVerticalSpacing(12)
+    return f
 
 
 class ConfigView(QWidget):
@@ -67,6 +80,31 @@ class ConfigView(QWidget):
         self.s = settings
         s = settings
 
+        # mouse & sensitivity — feeds the model's per-task sensitivity
+        # reasoning. getattr-guarded: the fields may land in a later build.
+        self.dpi = _dspin(
+            float(getattr(s, "mouse_dpi", 0) or 800.0), 100.0, 32000.0, 50.0, 0,
+            "Your mouse's hardware DPI (CPI) as set in its software.")
+        self.sens = _dspin(
+            float(getattr(s, "game_sens", 0) or 1.0), 0.01, 20.0, 0.01, 2,
+            "Your in-game sensitivity in KovaaK's.")
+        self.cm360 = QLabel("")
+        self.cm360.setProperty("stat", True)
+        cm_cap = QLabel(
+            "The adaptive model uses this to reason about per-task sensitivity "
+            "— cm/360 is derived from KovaaK's yaw of 0.022° per count.")
+        cm_cap.setProperty("dim", True)
+        cm_cap.setWordWrap(True)
+        mouse = QGroupBox("Mouse & sensitivity")
+        f = _form(mouse)
+        f.addRow("Mouse DPI", self.dpi)
+        f.addRow("In-game sensitivity", self.sens)
+        f.addRow("cm per 360°", self.cm360)
+        f.addRow(cm_cap)
+        self.dpi.valueChanged.connect(self._update_cm360)
+        self.sens.valueChanged.connect(self._update_cm360)
+        self._update_cm360()
+
         # difficulty
         self.acc_lo = _dspin(s.target_accuracy_low, 0.1, 0.95)
         self.acc_hi = _dspin(s.target_accuracy_high, 0.15, 0.99)
@@ -74,7 +112,7 @@ class ConfigView(QWidget):
         self.scale_min = _dspin(s.min_target_scale, 0.1, 1.0)
         self.scale_max = _dspin(s.max_target_scale, 1.0, 5.0)
         diff = QGroupBox("Difficulty controller")
-        f = QFormLayout(diff)
+        f = _form(diff)
         f.addRow("Accuracy sweet spot — low", self.acc_lo)
         f.addRow("Accuracy sweet spot — high", self.acc_hi)
         f.addRow("Size learning rate", self.lr)
@@ -87,7 +125,7 @@ class ConfigView(QWidget):
         self.focus = _dspin(s.focus_weight, 0.0, 0.9)
         self.blend = _dspin(s.telemetry_blend, 0.0, 1.0)
         reg = QGroupBox("Weak-region targeting (bandit)")
-        f = QFormLayout(reg)
+        f = _form(reg)
         f.addRow("Grid columns", self.cols)
         f.addRow("Grid rows", self.rows)
         f.addRow("Focus weight (spawn mass on weak region)", self.focus)
@@ -99,13 +137,16 @@ class ConfigView(QWidget):
         self.mov_min = _dspin(s.min_movement, 0.0, 1.0)
         self.mov_max = _dspin(s.max_movement, 0.0, 1.0)
         mov = QGroupBox("Anti-autopilot movement (Ornstein-Uhlenbeck)")
-        f = QFormLayout(mov)
+        f = _form(mov)
         f.addRow("Mean reversion θ", self.theta)
         f.addRow("Diffusion σ", self.sigma)
         f.addRow("Min movement intensity", self.mov_min)
         f.addRow("Max movement intensity", self.mov_max)
 
         # telemetry / clips
+        self.skip_splash_cb = QCheckBox(
+            "Skip the loading screen (jump straight to the window)")
+        self.skip_splash_cb.setChecked(bool(getattr(s, "skip_splash", False)))
         self.telemetry = QCheckBox("Record raw mouse telemetry while watching")
         self.telemetry.setChecked(s.telemetry_enabled)
         self.clips = QCheckBox("Capture video clips of notable moments (needs kovadapt[clips])")
@@ -113,7 +154,8 @@ class ConfigView(QWidget):
         self.clip_fps = _ispin(s.clip_fps, 10, 60)
         self.clip_buf = _dspin(s.clip_buffer_seconds, 30.0, 300.0, 10.0, 0)
         tel = QGroupBox("Telemetry & clips")
-        f = QFormLayout(tel)
+        f = _form(tel)
+        f.addRow(self.skip_splash_cb)
         f.addRow(self.telemetry)
         f.addRow(self.clips)
         f.addRow("Clip FPS", self.clip_fps)
@@ -142,7 +184,7 @@ class ConfigView(QWidget):
             s.bandit_posterior_decay, 0.0, 0.5, 0.01, 2,
             "Per-run forgetting toward the prior so fixed weaknesses re-open (0 = never forget).")
         adv = QGroupBox("Advanced engine internals")
-        f = QFormLayout(adv)
+        f = _form(adv)
         f.addRow("EWMA half-life (runs)", self.half_life)
         f.addRow("Size–speed coupling", self.coupling)
         f.addRow("Pace coupling gain", self.pace_gain)
@@ -158,7 +200,7 @@ class ConfigView(QWidget):
             s.dodge_bias_gain, 0.0, 2.0, 0.1, 1,
             "Scales measured left/right bias into strafe asymmetry.")
         dodge = QGroupBox("Trace-informed dodge direction")
-        f = QFormLayout(dodge)
+        f = _form(dodge)
         f.addRow(self.dodge_en)
         f.addRow("Bias gain", self.dodge_gain)
 
@@ -174,7 +216,7 @@ class ConfigView(QWidget):
             s.fatigue_min_runs, 2, 20,
             "Runs with telemetry needed before the trend is trusted.")
         fat = QGroupBox("Session fatigue")
-        f = QFormLayout(fat)
+        f = _form(fat)
         f.addRow(self.fat_en)
         f.addRow(self.fat_ease)
         f.addRow("Sensitivity", self.fat_sens)
@@ -187,18 +229,19 @@ class ConfigView(QWidget):
         self.arch_spins: dict[str, dict[str, QDoubleSpinBox]] = {}
         arch = QGroupBox("Per-archetype overrides (clicking is the baseline)")
         av = QVBoxLayout(arch)
+        av.setContentsMargins(16, 12, 16, 16)
+        av.setSpacing(14)
         av.addWidget(self.arch_en)
         for name in _ARCH_EDITABLE:
             ov = (s.archetype_overrides or {}).get(name) or {}
-            row = QFormLayout()
             spins: dict[str, QDoubleSpinBox] = {}
             for key, cap in _ARCH_KEYS:
                 spins[key] = _dspin(float(ov.get(key, getattr(s, key))), 0.0, 3.0)
             self.arch_spins[name] = spins
             box = QGroupBox(name)
+            row = _form(box)
             for key, cap in _ARCH_KEYS:
                 row.addRow(cap, spins[key])
-            box.setLayout(row)
             av.addWidget(box)
 
         save = QPushButton("Save settings")
@@ -211,32 +254,40 @@ class ConfigView(QWidget):
         self.status = QLabel("")
         self.status.setProperty("dim", True)
         bar = QHBoxLayout()
+        bar.setSpacing(12)
         bar.addWidget(save)
         bar.addWidget(reset)
         bar.addWidget(self.status)
         bar.addStretch(1)
 
-        inner = QWidget()
-        col = QVBoxLayout(inner)
-        for box in (diff, reg, mov, tel, adv, dodge, fat, arch):
-            col.addWidget(box)
-        col.addLayout(bar)
-        col.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidget(inner)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
+        # group boxes stack in one column and flow in the page-space —
+        # the outer shell scrolls, so no nested scroll area here.
         lay = QVBoxLayout(self)
+        lay.setSpacing(18)
         lay.addWidget(HintBar(settings, (
             "Every knob has a tooltip — hover it. The defaults reproduce the "
             "shipped behavior, <b>Reset to defaults</b> gets you back, and "
             "nothing applies until <b>Save settings</b>.")))
-        lay.addWidget(scroll)
+        for box in (mouse, diff, reg, mov, tel, adv, dodge, fat, arch):
+            lay.addWidget(box)
+        lay.addLayout(bar)
+        lay.addStretch(1)
 
     # ------------------------------------------------------------------
+    def _update_cm360(self) -> None:
+        """Live cm/360 readout (KovaaK's/Quake yaw: 0.022° per count)."""
+        counts_per_deg = self.dpi.value() * self.sens.value() * 0.022
+        if counts_per_deg <= 0:
+            self.cm360.setText("—")
+            return
+        cm = 2.54 * 360.0 / counts_per_deg
+        self.cm360.setText(f"{cm:.1f} cm / 360°")
+
     def _reset(self) -> None:
         """Load shipped defaults into every widget (Save still required)."""
         d = Settings(kovaaks_root=self.s.kovaaks_root, profile_dir=self.s.profile_dir)
+        self.dpi.setValue(float(getattr(d, "mouse_dpi", 0) or 800.0))
+        self.sens.setValue(float(getattr(d, "game_sens", 0) or 1.0))
         self.acc_lo.setValue(d.target_accuracy_low)
         self.acc_hi.setValue(d.target_accuracy_high)
         self.lr.setValue(d.size_learning_rate)
@@ -250,6 +301,7 @@ class ConfigView(QWidget):
         self.sigma.setValue(d.ou_sigma)
         self.mov_min.setValue(d.min_movement)
         self.mov_max.setValue(d.max_movement)
+        self.skip_splash_cb.setChecked(bool(getattr(d, "skip_splash", False)))
         self.telemetry.setChecked(d.telemetry_enabled)
         self.clips.setChecked(d.clips_enabled)
         self.clip_fps.setValue(d.clip_fps)
@@ -276,6 +328,9 @@ class ConfigView(QWidget):
 
     def _save(self) -> None:
         s = self.s
+        # plain attribute set is safe even before the fields land on Settings
+        s.mouse_dpi = self.dpi.value()
+        s.game_sens = self.sens.value()
         s.target_accuracy_low = min(self.acc_lo.value(), self.acc_hi.value() - 0.01)
         s.target_accuracy_high = self.acc_hi.value()
         s.size_learning_rate = self.lr.value()
@@ -289,6 +344,7 @@ class ConfigView(QWidget):
         s.ou_sigma = self.sigma.value()
         s.min_movement = min(self.mov_min.value(), self.mov_max.value())
         s.max_movement = self.mov_max.value()
+        s.skip_splash = self.skip_splash_cb.isChecked()
         s.telemetry_enabled = self.telemetry.isChecked()
         s.clips_enabled = self.clips.isChecked()
         s.clip_fps = self.clip_fps.value()

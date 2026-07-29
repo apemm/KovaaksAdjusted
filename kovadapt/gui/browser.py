@@ -76,12 +76,15 @@ class ScenarioBrowser(QWidget):
         refresh.clicked.connect(self.refresh)
 
         top = QHBoxLayout()
+        top.setSpacing(10)
         top.addWidget(self.search, 1)
         top.addWidget(self.arch_filter)
         top.addWidget(self.sort_by)
         top.addWidget(refresh)
 
+        # full-width, tall table: the section's centerpiece
         self.table = QTableWidget(0, len(_COLS))
+        self.table.setMinimumHeight(420)
         self.table.setHorizontalHeaderLabels(_COLS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -113,12 +116,15 @@ class ScenarioBrowser(QWidget):
         self.gen_btn.clicked.connect(self._generate)
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 6, 0, 0)
+        actions.setSpacing(12)
         actions.addWidget(self.detail, 1)
         actions.addWidget(self.gen_btn)
         actions.addWidget(self.watch_btn)
         actions.addWidget(self.play_btn)
 
         lay = QVBoxLayout(self)
+        lay.setSpacing(14)
         lay.addWidget(hint)
         lay.addLayout(top)
         lay.addWidget(self.table, 1)

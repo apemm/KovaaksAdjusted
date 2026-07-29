@@ -139,6 +139,14 @@ class Settings:
     clip_fps: int = 30
     clip_buffer_seconds: float = 90.0
     clip_scale: float = 0.5              # downscale factor for buffered frames
+    # --- Sensitivity context: analysis input only ---
+    # kovadapt never changes your sens; these feed the both-sided per-task
+    # cm/360 reasoning in analysis/sens.py. cm/360 = 2.54*360/(dpi*sens*0.022)
+    # — KovaaK's (Quake-lineage) yaw is 0.022 deg per mouse count at sens 1.0.
+    # Defaults are the common 800 dpi / 1.0; set either to 0 to mark
+    # sensitivity as not configured (disables the sensitivity card).
+    mouse_dpi: float = 800.0
+    game_sens: float = 1.0
     # --- App shell (v0.4+): theme, overlay, onboarding ---
     theme: str = "auto"                  # auto | dark | light ("auto" follows Windows)
     accent: str = "indigo"               # accent preset (gui/theme.py ACCENTS)
@@ -149,6 +157,7 @@ class Settings:
     overlay_y: int = -1
     show_hints: bool = True              # contextual hint bars across the app
     onboarding_done: bool = False        # startup guide shown once until dismissed
+    skip_splash: bool = False            # jump straight to the window (no LED opening)
     profile_dir: str = str(Path.home() / ".kovadapt")
 
     root: Path = field(init=False, repr=False)

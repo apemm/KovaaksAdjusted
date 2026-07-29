@@ -9,6 +9,7 @@
     kovadapt replay "<scenario>"     rebuild profile from historical stats
     kovadapt watchdog                headless: auto-tune the game on every launch
     kovadapt checkup                 print the system optimization checkup
+    kovadapt train                   train the neural flick model on recorded traces
 """
 
 from __future__ import annotations
@@ -183,6 +184,42 @@ def cmd_checkup(args) -> None:
             print(f"    fix available in the GUI: {r.fix_label}")
 
 
+def cmd_train(args) -> None:
+    """Train the FlickEncoder on the trace library under ~/.kovadapt.
+
+    Uses Settings.load() rather than _settings(): training reads only
+    <profile_dir>/traces and needs no KovaaK's install.
+    """
+    from . import ml
+
+    if not ml.ML_AVAILABLE:
+        sys.exit(
+            "PyTorch is not installed — the neural workstream needs it.\n"
+            "Install it with: pip install kovadapt[ml]"
+        )
+    from .ml.train import train as train_model
+
+    s = Settings.load()
+    try:
+        result = train_model(
+            s.profile_path / "traces", s.profile_path / "ml",
+            epochs=args.epochs, seed=args.seed,
+        )
+    except RuntimeError as exc:  # not enough flick data
+        sys.exit(str(exc))
+    if result is None:  # unreachable with ML_AVAILABLE, kept for safety
+        sys.exit("training unavailable (torch import failed)")
+    heads = " | ".join(f"{k} {v:.4f}" for k, v in result.val_loss_per_head.items())
+    print(f"dataset:     {result.train_size + result.val_size} flicks from "
+          f"{result.n_traces} traces (train {result.train_size} / val {result.val_size})")
+    print(f"device:      {result.device}")
+    print(f"model:       {result.params:,} parameters")
+    print(f"epochs:      {result.epochs_run} run (best val at epoch {result.best_epoch})")
+    print(f"train loss:  {result.train_loss:.4f}  (MSE, standardized targets)")
+    print(f"val loss:    {result.val_loss:.4f}  [{heads}]")
+    print(f"checkpoint:  {result.checkpoint}")
+
+
 def cmd_gui(args) -> None:
     try:
         from .gui.app import main as gui_main
@@ -223,6 +260,11 @@ def main(argv: list[str] | None = None) -> None:
 
     ck = sub.add_parser("checkup", help="print the system optimization checkup")
     ck.set_defaults(fn=cmd_checkup)
+
+    tr = sub.add_parser("train", help="train the neural flick model on recorded traces")
+    tr.add_argument("--epochs", type=int, default=60, help="max training epochs (default 60)")
+    tr.add_argument("--seed", type=int, default=0, help="training seed (default 0)")
+    tr.set_defaults(fn=cmd_train)
 
     for name, fn, hlp in (
         ("play", cmd_play, "jump KovaaK's into the adaptive variant (Steam deep link)"),

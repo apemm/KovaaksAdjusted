@@ -59,6 +59,10 @@ class TrajectoryReplay(QWidget):
         self.plot.setAspectLocked(True)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
+        # chrome-min: the canvas is pure trajectory — no context menu, no
+        # autorange button (the surrounding ASCII viz has no chrome either)
+        self.plot.setMenuEnabled(False)
+        self.plot.hideButtons()
         self._full = self.plot.plot([], [])
         self._good = self.plot.plot([], [], connect="finite")
         self._bad = self.plot.plot([], [], connect="finite")

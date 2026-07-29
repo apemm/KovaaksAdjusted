@@ -1,6 +1,8 @@
 """Live backdrop loop tests (offscreen QPA): the per-cell loop colors are
-exactly periodic in LOOP_T, the blink wedges match the almond geometry and
-cover the iris at peak blink, and a composed frame at phase LOOP_T is
+exactly periodic in LOOP_T, the blink erase-wedges match the almond
+geometry, the shared CHARACTER lids (blink_cells — lid-skin rows + lash
+silhouettes, used by both the opening and the backdrop) cover the iris at
+peak blink and are pure in k, and a composed frame at phase LOOP_T is
 byte-identical to the frame at phase 0. Skipped wholesale without PySide6."""
 
 from __future__ import annotations
@@ -141,6 +143,34 @@ def test_blink_wedges_cover_iris_at_peak():
     half_wedges, _ = ascii_art.blink_lid_paths(rect, 0.5)
     part = sum(half_wedges.contains(pt) for pt in centers)
     assert 0 < part < len(centers)
+
+
+def test_blink_cells_character_lids_cover_live_cells():
+    """The shared character-lid helper (opening + backdrop blink): at full
+    closure every live iris/glint cell position is replaced by a lid
+    glyph; mid-blink only part of them; an open eye has no lid cells."""
+    live = {(c.col, c.row) for c in _live_cells()}
+    assert ascii_art.blink_cells(0.0) == []
+
+    shut = ascii_art.blink_cells(1.0)
+    shut_pos = {(c, r) for c, r, _ch, _kind, _sh in shut}
+    assert live <= shut_pos                    # full coverage when shut
+    assert {kind for _c, _r, _ch, kind, _sh in shut} == {"skin", "lash"}
+
+    half_pos = {(c, r) for c, r, _ch, _kind, _sh in ascii_art.blink_cells(0.5)}
+    covered = live & half_pos
+    assert 0 < len(covered) < len(live)        # the lids sweep, not switch
+
+
+def test_blink_cells_lash_silhouettes_and_purity():
+    """Mid-blink the moving margin carries directional lash strokes, the
+    shades are sane alphas, and the helper is pure in k — the backdrop's
+    byte-identical loop depends on that determinism."""
+    mid = ascii_art.blink_cells(0.6)
+    assert mid == ascii_art.blink_cells(0.6)
+    lash_chars = {ch for _c, _r, ch, kind, _sh in mid if kind == "lash"}
+    assert lash_chars & set("/|\\")            # lash silhouettes, not a wipe
+    assert all(0.0 <= sh <= 1.0 for _c, _r, _ch, _k, sh in mid)
 
 
 # ----------------------------------------------- composed frame identity

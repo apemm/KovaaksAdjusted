@@ -128,8 +128,13 @@ class AdaptationEngine:
             err = acc - mid
             if abs(err) > band:  # outside sweet spot: act on the excess only
                 excess = err - math.copysign(band, err)
-                # accuracy too high -> excess > 0 -> shrink targets, and vice versa
-                scale *= math.exp(-s.size_learning_rate * excess)
+                # accuracy too high -> excess > 0 -> shrink targets, and vice versa.
+                # Deliberately accuracy-biased (Arjun's design call: accuracy
+                # builds better habits for real gameplay): falling BELOW the
+                # band grows targets 1.4x harder than sitting above it shrinks
+                # them, so the model recovers accuracy before it chases speed.
+                gain = s.size_learning_rate * (1.4 if excess < 0 else 0.8)
+                scale *= math.exp(-gain * excess)
             elif (s.fitts_control_gain > 0 and profile.fitts_obs >= 5
                   and profile.ewma_fitts_ms >= profile.slow_fitts_ms):
                 # Fitts throughput sub-controller: comfortable in the band but

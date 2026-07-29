@@ -8,7 +8,7 @@ and keeps running when hidden.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..config import Settings
 
@@ -36,11 +36,15 @@ class OptimizerView(QWidget):
         open_btn = QPushButton("Open optimizer window")
         open_btn.setProperty("accent", True)
         open_btn.clicked.connect(self.open_window)
+        btn_row = QHBoxLayout()          # natural-width CTA, not a 950px slab
+        btn_row.addWidget(open_btn)
+        btn_row.addStretch(1)
 
         lay = QVBoxLayout(self)
+        lay.setSpacing(16)
         lay.addWidget(head)
         lay.addWidget(blurb)
-        lay.addWidget(open_btn)
+        lay.addLayout(btn_row)
         lay.addStretch(1)
 
     def open_window(self) -> None:
