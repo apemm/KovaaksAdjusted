@@ -1,15 +1,22 @@
 """The kovadapt opening: the ASCII eye wakes, blinks, and catches the light.
 
-SplashScreen is a near-fullscreen dark stage (~80% of the primary screen)
+SplashScreen is a near-fullscreen dark stage (~94% of the primary screen's
+AVAILABLE geometry, so the taskbar is excluded)
 running a high-resolution build of gui/ascii_art.py's character stencil.
-Choreography: darkness — a heartbeat gathering at the pupil — lightning
-ignition along seeded iris fibers — the glow escapes the rim into lids,
-lashes and shading — the completed eye blinks once, slow and deliberate —
-on reopen a specular flash — a slanted reflection streak — glances
-across the whole eye, and the twin glints shimmer in behind it before
-settling into a live twinkle while the eye breathes. There is no
-crosshair in the opening (the reticle cells stay in the stencil for
-static renders, excluded here by role).
+Choreography: a heartbeat gathering at the pupil almost from the first
+frame — lightning ignition along seeded iris fibers — the glow escapes
+the rim into lids, lashes and shading — the completed eye blinks once,
+slow and deliberate — on reopen a specular flash — a slanted reflection
+streak — glances across the whole eye, and the twin glints shimmer in
+behind it before settling into a live twinkle while the eye breathes.
+There is no crosshair in the opening (the reticle cells stay in the
+stencil for static renders, excluded here by role).
+
+The whole show runs ~5 s of wall clock. ascii_art owns the beat times and
+the live backdrop shares that module, so the tightening is done here, on a
+warped clock (_choreo_time) whose knots ARE those beats — every beat still
+fires, in order; only the air between them is squeezed. Any key or click
+skips (SplashScreen.skip): the eye snaps to its settled pose and fades.
 
 Two crafts inform the blink. Blink dynamics: real blinks are temporally
 asymmetric — a fast close, held full closure, then a slower cushioned
@@ -22,9 +29,24 @@ lid-skin glyphs with a heavy lash-silhouette row riding the moving margin
 
 Per-frame math is vectorized (numpy) and glyphs go through a per-character
 QStaticText cache — the same trick the live backdrop uses — which is what
-lets a 255x121 stencil hold ~30 fps. The boot worker narrates real startup
-work in a status line; finish() only fades once both the choreography and
-the boot work are done.
+holds ~30 fps.
+
+Which tier _configure actually selects depends on AVAILABLE height, so the
+taskbar decides it. Measured against the real ladder: 1080p and 1440p with a
+48 px taskbar both land on 255x121 (3.2 / 4.3 px glyphs); 4K lands on
+381x181 at 4.3 px; only a 1440p stage with no taskbar reaches 381x181, and
+then at 2.96 px, which is under the ~3 px floor where the density ramp stops
+discriminating. The gate is 5.8 px per row for exactly that reason — it is a
+legibility limit, not a performance one.
+
+At 381x181 (25.7k eye cells, offscreen raster) a dark heartbeat frame is
+~2.5 ms, the fill averages ~12 ms, and an all-lit frame is ~27-35 ms against
+a 33 ms budget; the floor is the drawStaticText count, not the pacing. The
+choreography reads its time off QElapsedTimer, so a late frame costs
+smoothness, never timing.
+
+The boot worker narrates real startup work in a status line; finish() only
+fades once both the choreography and the boot work are done.
 
 make_icon() renders the same character art for the window icon.
 """
@@ -35,7 +57,8 @@ import math
 import time
 
 import numpy as np
-from PySide6.QtCore import QElapsedTimer, QPointF, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import (QElapsedTimer, QEvent, QPointF, QRect, QRectF, Qt,
+                            QTimer)
 from PySide6.QtGui import (QColor, QFont, QGuiApplication, QIcon, QPainter,
                            QPen, QStaticText)
 from PySide6.QtWidgets import QWidget
@@ -47,6 +70,68 @@ _BG = QColor("#0a0a0e")
 _INK = QColor("#d8dae2")
 _BG_F = np.array([_BG.redF(), _BG.greenF(), _BG.blueF()])
 _INK_F = np.array([_INK.redF(), _INK.greenF(), _INK.blueF()])
+
+_BLINK_END = (ascii_art.BLINK_T + ascii_art.BLINK_CLOSE
+              + ascii_art.BLINK_HOLD + ascii_art.BLINK_OPEN)      # 5.85
+_GLEAM_END = ascii_art.GLEAM_T + ascii_art.GLEAM_LEN + 0.30       # 7.00
+
+# ---- the opening clock: wall seconds -> choreography seconds --------------
+# ascii_art owns every beat time (_SPARK, PUPIL_T0/T1, BLINK_T, GLEAM_T,
+# BREATHE_T, TOTAL) and the live backdrop shares that module, so tightening
+# the opening cannot mean moving those constants. The splash instead drives
+# the field on a WARPED clock: a piecewise-linear map whose knots are the
+# beats themselves. Every beat still fires, in order, keeping its own
+# internal shape — only the air between them is squeezed, and each beat gets
+# its own rate, so the blink and the reflection flash surrender less of their
+# length than the fill does. The tail runs at 1:1 (the breathing is a loop,
+# not a beat, and warping it would leave a visible speed seam at the knot).
+_WARP: tuple[tuple[float, float], ...] = (
+    (0.00, 0.00),
+    (0.95, ascii_art._SPARK),          # 1.15  heartbeat gathers, pupil ignites
+    (1.85, ascii_art.PUPIL_T0),        # 2.60  bolts have raced the fibers
+    (2.90, ascii_art.BLINK_T),         # 4.55  fill escapes the rim, echo, pupil
+    (3.77, _BLINK_END),                # 5.85  the deliberate blink
+    (3.87, ascii_art.GLEAM_T),         # 6.00  reflection flash starts
+    (4.67, _GLEAM_END),                # 7.00  flash + glints in, eye settles
+)
+
+# The heartbeat is the opening's FIRST beat and it plays alone on a
+# near-fullscreen black stage, so it has to actually read. It now starts
+# essentially with the window (first glow ~0.12 s of wall clock, the pulse
+# topping out ~0.36 s); at the old 0.25 s start and 0.14 amplitude the pupil
+# glow reached ~15% of the way from bg to ink and the opening read as a black
+# slab right up to the spark a second later.
+_HEART_T0 = 0.06        # choreography seconds
+_HEART_A = 0.22         # scales a lub-dub whose own peak is ~1.38
+
+
+def _choreo_time(wall: float) -> float:
+    """Choreography time for a wall-clock instant. Monotonic and continuous:
+    _WARP is sorted in both columns, and past the last knot the show simply
+    runs in real time."""
+    if wall <= 0.0:
+        return 0.0
+    pw, pc = _WARP[0]
+    for w, c in _WARP[1:]:
+        if wall < w:
+            return pc + (c - pc) * (wall - pw) / (w - pw)
+        pw, pc = w, c
+    return pc + (wall - pw)
+
+
+def _heartbeat(t: float) -> float:
+    """Lub-dub amplitude at the pupil center at choreography time t; 0 outside
+    the heartbeat window. Two systoles a beat (the second offset by 1.1 rad
+    and two-thirds the height), ramped in so the eye does not simply switch
+    on. The ramp is 0.35 s, not the half second it was: a 0.5 s ramp still had
+    the lub at 60% height when it peaked, which handed the dub the accent and
+    pushed the beat the viewer actually reads past 0.45 s of wall clock."""
+    if not _HEART_T0 < t < ascii_art._SPARK + 0.6:
+        return 0.0
+    u = t - _HEART_T0
+    beat = (max(0.0, math.sin(u * 5.2))
+            + 0.6 * max(0.0, math.sin(u * 5.2 - 1.1))) * min(u / 0.35, 1.0)
+    return _HEART_A * beat
 
 
 def make_icon() -> QIcon:
@@ -109,6 +194,10 @@ class _EyeField:
             np.clip(self._x, -ascii_art._W, ascii_art._W))
 
         # ---- ignition schedule (mirrors ascii_art.led_state) -------------
+        # Still a mirror for the IGNITION; the heartbeat deliberately is not
+        # (see _heartbeat). led_state's copy is only reachable through
+        # paint_grid(t)/AsciiEye.set_time, which nothing drives with a real
+        # time — the splash is the only animated consumer of the stencil.
         ang = hue * 2.0 * math.pi
         d_bolt = np.min(np.stack(
             [np.abs(np.remainder(ang - b + math.pi, 2.0 * math.pi) - math.pi)
@@ -136,6 +225,13 @@ class _EyeField:
             * np.clip(alpha, 0.0, 1.0)[:, None]
         self._rgb = np.where(self._iris[:, None], rgb, mono)
         self._chs = [c.ch for c in eye]
+        # per-cell darkening once the pupil has fully resolved; folded into
+        # each frame's brightness so the spark/heartbeat stay lit through
+        # the ignition (see ascii_art.pupil_mix)
+        pdim = ascii_art.pupil_dim(rad)
+        self._pupil_v = np.where(
+            self._iris,
+            ascii_art._PUPIL_V + (1.0 - ascii_art._PUPIL_V) * pdim, 1.0)
 
         # ---- the twin glints: born from the gleam sweep ------------------
         m = len(gls)
@@ -161,6 +257,13 @@ class _EyeField:
         self._gpts: list[QPointF] = []
         self._gsts: list[QStaticText] = []
         self._lid_qc: dict[tuple[str, int], QColor] = {}
+        # Every cell's origin, flat (r * cols + c). The lids can cover most of
+        # a 381x181 grid, and building ~21k QPointF per blink frame cost more
+        # than the drawing did — the blink was the only phase over the 33 ms
+        # frame budget (~38 ms; ~28 ms with this). It is built in prepare(),
+        # not lazily on the first blink frame: 69k QPointF is ~50 ms and 4 MB,
+        # which is free before show() and a dropped frame mid-blink after.
+        self._all_pts: list[QPointF] = []
 
     def _st_of(self, ch: str) -> QStaticText:
         st = self._st.get(ch)
@@ -172,6 +275,8 @@ class _EyeField:
 
     def prepare(self, cell_w: float, cell_h: float) -> None:
         self._cw, self._ch = cell_w, cell_h
+        self._all_pts = [QPointF(c * cell_w, r * cell_h)
+                         for r in range(self.rows) for c in range(self.cols)]
         self._pts = [QPointF(c * cell_w, r * cell_h)
                      for c, r in zip(self._col, self._row)]
         self._sts = [self._st_of(ch) for ch in self._chs]
@@ -194,14 +299,11 @@ class _EyeField:
             if strobe.any():
                 flick = np.floor(age * 26.0) % 3 != 0
                 b = np.where(strobe, np.where(flick, 1.55, 0.25), b)
-        if 0.25 < t < ascii_art._SPARK + 0.6:
+        hbv = _heartbeat(t)
+        if hbv > 0.0:
             # the lub-dub heartbeat gathering at the pupil before the spark
-            u = t - 0.25
-            beat = (max(0.0, math.sin(u * 5.2))
-                    + 0.6 * max(0.0, math.sin(u * 5.2 - 1.1))) \
-                * min(u / 0.5, 1.0)
             hb = self._iris & (b <= 0.0) & (rad < 0.30)
-            b = np.where(hb, 0.14 * beat * (1.0 - rad / 0.30), b)
+            b = np.where(hb, hbv * (1.0 - rad / 0.30), b)
         if 3.0 < t < 3.9:                       # echo pulse across the iris
             b = b + np.where(
                 self._iris,
@@ -213,7 +315,13 @@ class _EyeField:
             b = b * (1.0 - 0.35 * k)
         np.clip(b, 0.0, 1.6, out=b)
 
-        bb = np.minimum(b, 1.0)[:, None]
+        # the pupil contracts out of the light as the eye focuses: darkening
+        # toward bg is the same operation as dimming, so it folds into bb
+        p_mix = ascii_art.pupil_mix(t)
+        bb = np.minimum(b, 1.0)
+        if p_mix > 0.0:
+            bb = bb * (1.0 - p_mix * (1.0 - self._pupil_v))
+        bb = bb[:, None]
         rgb = _BG_F[None, :] + (self._rgb - _BG_F[None, :]) * bb
         over = np.clip(b - 1.0, 0.0, 0.5)[:, None]
         rgb = rgb + (1.0 - rgb) * over
@@ -268,19 +376,24 @@ class _EyeField:
             p.drawStaticText(pts[i], sts[i])
 
         if k > 0.0:      # the character lids over the covered eye
+            # locals: this loop runs up to ~21k times per blink frame
+            pts_all, qcs, sts_all = self._all_pts, self._lid_qc, self._st
+            cols = self.cols
             for cc, rr, ch, kind, shade in ascii_art.blink_cells(
-                    k, self.cols, self.rows):
+                    k, cols, self.rows):
                 key = (kind, int(shade * 31.9))
-                qc = self._lid_qc.get(key)
+                qc = qcs.get(key)
                 if qc is None:
                     a = 0.26 + 0.45 * shade if kind == "skin" \
                         else 0.40 + 0.50 * shade
                     qc = QColor.fromRgbF(
                         *(_BG_F + (_INK_F - _BG_F) * min(a, 1.0)))
-                    self._lid_qc[key] = qc
+                    qcs[key] = qc
+                st = sts_all.get(ch)
+                if st is None:
+                    st = self._st_of(ch)
                 p.setPen(qc)
-                p.drawStaticText(
-                    QPointF(cc * self._cw, rr * self._ch), self._st_of(ch))
+                p.drawStaticText(pts_all[rr * cols + cc], st)
 
         if inten is not None:                   # the glints, on top
             for j in np.nonzero(inten > 0.05)[0].tolist():
@@ -293,16 +406,23 @@ class SplashScreen(QWidget):
     """Frameless near-fullscreen ASCII stage. start() begins the show;
     finish(callback) lets it fade once the animation has played out."""
 
-    MIN_SECONDS = 8.4     # darkness, spark, fill, blink, gleam, a breath
+    # Wall clock, not choreography time: _WARP fits the whole show (heartbeat,
+    # spark, fill, blink, gleam) into 4.67 s and the eye then breathes settled
+    # for the remainder before the fade.
+    MIN_SECONDS = 5.0
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                          | Qt.SplashScreen)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self._t = 0.0
+        self.setFocusPolicy(Qt.StrongFocus)     # so a key press can skip
+        self._t = 0.0               # wall seconds since start()
+        self._ct = 0.0              # choreography seconds (warped)
         self._fade = 1.0
         self._done_cb = None
         self._status = ""
+        self._skipped = False
+        self._filtering = False
         self._frame_ms = 0.0        # rolling paint cost, for diagnostics
         self._timer = QTimer(self)
         self._timer.setInterval(33)             # the field targets ~30 fps
@@ -311,21 +431,30 @@ class SplashScreen(QWidget):
         screen = QGuiApplication.primaryScreen()
         geo = screen.availableGeometry() if screen is not None \
             else QRect(0, 0, 1280, 800)
-        self._configure(int(geo.width() * 0.8), int(geo.height() * 0.8))
+        # near-fullscreen: the stage is the art, and a bigger stage is also
+        # what buys the denser stencil tier its physical glyph size
+        self._configure(int(geo.width() * 0.94), int(geo.height() * 0.94))
         self.move(geo.center().x() - self.width() // 2,
                   geo.center().y() - self.height() // 2)
 
     def _configure(self, w: int, h: int) -> None:
         """Size the dark stage and build the eye field at the densest
-        stencil the stage height supports (ladder tuned to hold ~30 fps
-        with the QStaticText path; small screens fall back to the shared
-        141x67 stencil, which is already cached)."""
+        stencil the stage height supports (small screens fall back to the
+        shared 141x67 stencil, which is already cached).
+
+        The gate is physical glyph size, not cell count: _ASPECT is 2, so a
+        row pitch of R px makes each character R/2 px wide, and below ~3 px
+        the density ramp stops discriminating — the art turns to dither
+        rather than getting finer (measured across tiers; 2.2 px glyphs
+        also lose ~25% luminance). 5.8 px/row keeps the densest tier just
+        above that floor on a 1440p stage and comfortably above it on 4K.
+        """
         self.setFixedSize(w, h)
         band = max(int(h * 0.16), 130)          # wordmark / status strip
         self._band_top = h - band
         eye_h = h - band - int(h * 0.05)
-        rows = next((r for r in (121, 95, 67) if eye_h / r >= 6.0), 67)
-        cols = {121: 255, 95: 199, 67: 141}[rows]
+        rows = next((r for r in (181, 121, 95, 67) if eye_h / r >= 5.8), 67)
+        cols = {181: 381, 121: 255, 95: 199, 67: 141}[rows]
         eye_w = int(eye_h * cols / (rows * ascii_art._ASPECT))
         if eye_w > int(w * 0.94):
             eye_w = int(w * 0.94)
@@ -340,6 +469,16 @@ class SplashScreen(QWidget):
 
     def start(self) -> None:
         self.show()
+        self.raise_()
+        self.activateWindow()       # a SplashScreen window is not activated
+        self.setFocus(Qt.OtherFocusReason)
+        app = QGuiApplication.instance()
+        if app is not None:
+            # Belt and braces: activation is a request the window manager may
+            # refuse for a splash-flagged window, and a key press delivered
+            # anywhere in the app must still skip.
+            app.installEventFilter(self)
+            self._filtering = True
         self._clock.start()
         self._timer.start()
 
@@ -350,11 +489,63 @@ class SplashScreen(QWidget):
     def finish(self, callback) -> None:
         self._done_cb = callback
 
+    # ---------------------------------------------------------------- skip
+    def skip(self) -> None:
+        """End the opening now — the escape hatch for someone who has seen it.
+
+        (Settings.skip_splash is the other lever: that one never shows the
+        splash at all.) The clock jumps to the settled pose rather than
+        cutting to black mid-blink, and the fade runs ~3x faster. If the boot
+        worker has not called finish() yet the app cannot be revealed, so the
+        settled eye simply holds until it does.
+        """
+        if self._skipped:
+            return
+        self._skipped = True
+        self._t = max(self._t, self.MIN_SECONDS)
+        self._ct = _choreo_time(self._t)
+        self.update()
+
+    def keyPressEvent(self, event) -> None:
+        self.skip()
+
+    def mousePressEvent(self, event) -> None:
+        self.skip()
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() in (QEvent.KeyPress, QEvent.MouseButtonPress):
+            self.skip()
+        return False            # never swallow: the splash owns no input
+
+    def closeEvent(self, event) -> None:
+        app = QGuiApplication.instance()
+        if self._filtering and app is not None:
+            app.removeEventFilter(self)
+        self._filtering = False
+        # The normal fade-out stops the timer, but closing or hiding the
+        # splash by any other route left a 33 ms timer repainting an
+        # invisible near-fullscreen widget — the one thing the motion budget
+        # forbids outright.
+        self._timer.stop()
+        super().closeEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._done_cb is not None or self._t < self.MIN_SECONDS:
+            self._timer.start()      # re-shown mid-show: resume, never restart
+
     def _tick(self) -> None:
-        self._t = self._clock.elapsed() / 1000.0 if self._clock.isValid() \
+        wall = self._clock.elapsed() / 1000.0 if self._clock.isValid() \
             else self._t + 0.033
+        # once skipped the clock never walks back to an unfinished pose
+        self._t = max(wall, self.MIN_SECONDS) if self._skipped else wall
+        self._ct = _choreo_time(self._t)
         if self._done_cb is not None and self._t >= self.MIN_SECONDS:
-            self._fade -= 0.12
+            self._fade -= 0.34 if self._skipped else 0.12
             if self._fade <= 0.0:
                 self._timer.stop()
                 cb, self._done_cb = self._done_cb, None
@@ -366,7 +557,11 @@ class SplashScreen(QWidget):
     def paintEvent(self, event) -> None:
         # The splash is ALWAYS darkness — the eye is born out of black,
         # whatever theme the app itself uses.
-        t = self._t
+        # Everything below is on the CHOREOGRAPHY clock, so the wordmark and
+        # the tagline stay pinned to the beats they were cued against (the
+        # word types over the fill, the tagline lands after the reopen)
+        # instead of drifting when the pacing changes.
+        t = self._ct
         t0 = time.perf_counter()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)

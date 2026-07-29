@@ -30,6 +30,8 @@ from . import ascii_art, theme
 
 _GLYPHS = ".:*+#@"
 _LIVE_ROLES = ("iris", "glint")
+# height / width of the rendered stencil, from its grid and cell aspect
+_EYE_ASPECT = ascii_art.ROWS * ascii_art._ASPECT / ascii_art.COLS
 
 
 def _seed(i: int, salt: float) -> float:
@@ -75,6 +77,7 @@ class Backdrop:
         self._frame: QPixmap | None = None     # base + live cells, per frame
         self._live: list[tuple[QPointF, QStaticText, ascii_art.Cell]] = []
         self._blink_st: dict[str, QStaticText] = {}   # lid glyphs, by char
+        self._blink_cache: dict[int, list] = {}       # blink_cells by quantized k
         self._font: QFont | None = None
         self._ink = QColor("#ffffff")
         self._iris_hue: float | None = None
@@ -102,7 +105,14 @@ class Backdrop:
         self._iris_hue = None if pal.rgb else max(QColor(pal.accent).hueF(), 0.0)
         self._is_dark = pal.is_dark
         self._ink = QColor(pal.fg)
-        eye_w = int(w * 0.62)
+        # Size the eye to fit BOTH axes. A flat 0.62*w was drawn from a
+        # top-left at 0.50*w, so 12% of it always hung off the right edge —
+        # and at 1600x1000 its 0.95 aspect also ran 160px past the bottom.
+        # The art was clipped through the outer lash on two sides at every
+        # window size, which reads as a rendering fault rather than a crop.
+        eye_w = int(min(w * 0.66, h * 0.80 / _EYE_ASPECT))
+        self._eye_w = eye_w
+        self._eye_h = eye_w * _EYE_ASPECT
         self._base = ascii_art.render_pixmap(
             eye_w, iris_hue=self._iris_hue,
             exclude_roles=_LIVE_ROLES + ("reticle", "hub"))
@@ -138,6 +148,22 @@ class Backdrop:
         self._frame = None
 
     # ------------------------------------------------------------------
+    def _blink_cells(self, k: float):
+        """blink_cells(k) memoized on a quantized closure amount.
+
+        It rebuilds the whole lid geometry from scratch, which measured
+        7-8.6 ms — on a 240 Hz panel that is a dropped frame every time the
+        eye blinks, once per 8 s loop, forever. The blink lasts 0.45 s at
+        ~15 fps, so ~7 distinct frames; quantizing to 64 steps makes the
+        second loop onward free while staying finer than the eye can see.
+        """
+        key = int(min(max(k, 0.0), 1.0) * 63.0 + 0.5)
+        cells = self._blink_cache.get(key)
+        if cells is None:
+            cells = ascii_art.blink_cells(key / 63.0)
+            self._blink_cache[key] = cells
+        return cells
+
     def _render_frame(self) -> None:
         """Compose one live frame at the current loop phase: base blit, the
         live iris/glint glyphs, the reticle overlay, the blink wedges."""
@@ -168,7 +194,7 @@ class Backdrop:
             cw = pm.width() / ascii_art.COLS
             ch = pm.height() / ascii_art.ROWS
             lid = QColor(self._ink)
-            for col, row, chr_, kind, shade in ascii_art.blink_cells(k):
+            for col, row, chr_, kind, shade in self._blink_cells(k):
                 st = self._blink_st.get(chr_)
                 if st is None:
                     st = QStaticText(chr_)
@@ -224,10 +250,12 @@ class Backdrop:
         p.drawPixmap(QPointF(-40 + self._off[1].x(), -40 + self._off[1].y()),
                      self._dust_far)
 
-        # the eye sits right-of-center, faint enough to read text over
+        # The eye sits right-of-center, faint enough to read text over —
+        # anchored off its RIGHT edge with a margin wide enough to swallow
+        # the parallax drift, so the whole eye stays on screen.
         p.setOpacity(0.16 if pal.is_dark else 0.12)
-        ex = w * 0.50 + self._off[0].x()
-        ey = h * 0.22 + self._off[0].y()
+        ex = w - self._eye_w - w * 0.04 + self._off[0].x()
+        ey = (h - self._eye_h) * 0.42 + self._off[0].y()
         p.drawPixmap(QPointF(ex, ey), self._frame)
         p.setOpacity(1.0)
 

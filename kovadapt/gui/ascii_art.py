@@ -46,7 +46,49 @@ _W = 0.88                    # almond half-width (world x in [-1, 1])
 _H = 0.52                    # almond apex height
 _RI = 0.315                  # iris radius
 _CY = 0.02                   # iris center y
-_PUPIL = 0.21                # pupil radius (fraction of iris)
+_PUPIL = 0.30                # pupil radius (fraction of iris)
+_PUPIL_EDGE = 0.020          # pupillary margin softness, in the same units
+
+# How far value/saturation fall at the pupil's center (0 = black, 1 = no dim).
+_PUPIL_V = 0.07
+_PUPIL_S = 0.25
+
+# The pupil RESOLVES rather than existing from the first frame: the opening's
+# spark and its lub-dub heartbeat both originate at the pupil, so a core that
+# is dark from t=0 would swallow them. It stays lit through the ignition and
+# contracts out of the light once the iris has filled — the eye focusing.
+PUPIL_T0, PUPIL_T1 = 2.60, 3.90
+
+
+def pupil_dim(rad):
+    """1 outside the pupil, ~0 inside it, soft across the pupillary margin.
+
+    The pupil is the darkest part of an eye, but ink here drives character
+    density, not brightness — iris cells all render near full value. The
+    dense glyphs `_field` already lays over the pupil therefore lit at FULL
+    brightness in rainbow, so the eye had a bright core and read as having
+    no pupil at all. Every color path — paint_grid, loop_cell_color and
+    logo._EyeField — scales iris value/saturation by this, which turns the
+    iris into a ring around a dark core without touching the stencil, the
+    roles, or the ignition choreography.
+
+    Accepts a scalar or an array; returns the same shape.
+    """
+    x = np.clip((np.asarray(rad, dtype=float) - _PUPIL) / _PUPIL_EDGE,
+                -60.0, 60.0)
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def pupil_mix(t: float | None) -> float:
+    """How much of the pupil has resolved at opening time t: 0 during the
+    ignition, 1 once focused. Static renders and the backdrop loop pass
+    None and get a fully formed pupil."""
+    if t is None or t >= PUPIL_T1:
+        return 1.0
+    if t <= PUPIL_T0:
+        return 0.0
+    s = (t - PUPIL_T0) / (PUPIL_T1 - PUPIL_T0)
+    return s * s * (3.0 - 2.0 * s)
 
 
 @dataclass(frozen=True)
@@ -81,22 +123,45 @@ def _grid(cols: int, rows: int, ss: int) -> tuple[np.ndarray, np.ndarray]:
     return np.meshgrid(xs.astype(np.float32), ys.astype(np.float32))
 
 
+# exp(-CUTOFF**2) == 2e-16, i.e. below the float epsilon of the peak: a point
+# farther than CUTOFF widths from a cell cannot measurably ink it.
+_STROKE_CUTOFF = 6.0
+
+
 def _stroke(ink: np.ndarray, X: np.ndarray, Y: np.ndarray,
             pts: np.ndarray, width: float | np.ndarray,
             strength: float | np.ndarray) -> None:
-    """Add a stroke (dense point cloud) to the ink field, gaussian falloff."""
+    """Add a stroke (dense point cloud) to the ink field, gaussian falloff.
+
+    Nearest point wins. Each point is evaluated only over the sub-window it
+    can measurably affect, which turns an O(points x whole grid) sweep into
+    an O(points x footprint) one — the difference between a 1 s and a 4 s
+    stencil build at the dense splash tiers. The window radius is CUTOFF x
+    the stroke's WIDEST point (not each point's own width), so every cell
+    that any point can reach still sees every competing point and the
+    nearest-wins result is identical to the brute-force sweep.
+    """
+    xs, ys = X[0, :], Y[:, 0]          # _grid's axes: both monotonic
     d2 = np.full_like(X, np.inf)
     w = np.broadcast_to(np.asarray(width, dtype=float), (len(pts),))
     s = np.broadcast_to(np.asarray(strength, dtype=float), (len(pts),))
     best_w = np.full_like(X, w[0])
     best_s = np.full_like(X, s[0])
+    reach = _STROKE_CUTOFF * float(np.max(w))
     for (px, py), wi, si in zip(pts, w, s):
-        di = (X - px) ** 2 + (Y - py) ** 2
-        closer = di < d2
-        d2 = np.where(closer, di, d2)
-        best_w = np.where(closer, wi, best_w)
-        best_s = np.where(closer, si, best_s)
-    np.maximum(ink, best_s * np.exp(-d2 / np.maximum(best_w, 1e-9) ** 2), out=ink)
+        i0, i1 = np.searchsorted(xs, (px - reach, px + reach))
+        j0, j1 = np.searchsorted(ys, (py - reach, py + reach))
+        if i0 >= i1 or j0 >= j1:
+            continue
+        win = (slice(j0, j1), slice(i0, i1))
+        di = (X[win] - px) ** 2 + (Y[win] - py) ** 2
+        closer = di < d2[win]
+        d2[win] = np.where(closer, di, d2[win])
+        best_w[win] = np.where(closer, wi, best_w[win])
+        best_s[win] = np.where(closer, si, best_s[win])
+    with np.errstate(over="ignore"):   # untouched cells: exp(-inf) -> 0
+        np.maximum(ink, best_s * np.exp(-d2 / np.maximum(best_w, 1e-9) ** 2),
+                   out=ink)
 
 
 def _lash_points(frac: float, curl: float, length: float) -> np.ndarray:
@@ -459,6 +524,7 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
     sat, val = (0.80, 0.95) if not is_dark else (0.72, 1.0)
 
     excl = frozenset(exclude_roles)
+    p_mix = pupil_mix(t)                 # the core is lit until the eye focuses
     overlay: list[tuple[Cell, float]] = []
     for cell in stencil():
         if cell.role in excl:
@@ -480,6 +546,11 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
             if cell.fleck >= 0.0:
                 hue = (hue + cell.fleck) % 1.0
                 s_mod = min(s_mod * 1.15, 1.0)
+            # the dark core: the rainbow is a ring, not a disc
+            if p_mix > 0.0:
+                dim = float(pupil_dim(cell.rad))
+                s_mod *= 1.0 - p_mix * (1.0 - (_PUPIL_S + (1.0 - _PUPIL_S) * dim))
+                v_mod *= 1.0 - p_mix * (1.0 - (_PUPIL_V + (1.0 - _PUPIL_V) * dim))
             col = QColor.fromHsvF(hue, s_mod, v_mod)
         elif cell.role == "glint":
             col = QColor("#ffffff") if is_dark else QColor(ink)
@@ -609,6 +680,9 @@ def loop_cell_color(cell: Cell, phase: float, *, is_dark: bool,
         breathe = 1.0 + 0.08 * math.sin(2.0 * w - cell.rad * 3.5)
         s_mod = min(max(sat * (0.72 + 0.28 * cell.ink) * breathe, 0.0), 1.0)
         v_mod = min(max(val * (0.88 + 0.10 * sh), 0.0), 1.0)
+        dim = float(pupil_dim(cell.rad))         # dark core, same as static
+        s_mod *= _PUPIL_S + (1.0 - _PUPIL_S) * dim
+        v_mod *= _PUPIL_V + (1.0 - _PUPIL_V) * dim
         return QColor.fromHsvF(hue, s_mod, v_mod)
     if cell.role == "glint":
         # the two glints (specular left of center, catchlight right)
@@ -798,14 +872,13 @@ _CAT_COATS = {
 
 
 def _cat_coat(pal) -> tuple[QColor, QColor, QColor]:
-    """(body, edge, eyes) for the current accent; black cat by default."""
-    from .theme import ACCENTS
+    """(body, edge, eyes) for the current accent; black cat by default.
 
-    key = "indigo"
-    for name, spec in ACCENTS.items():
-        if pal.accent in (spec["light"][0], spec["dark"][0]):
-            key = name
-            break
+    Reads the preset NAME off the palette — matching pal.accent against hex
+    literals stopped working the moment accent colors became derived rather
+    than hand-picked.
+    """
+    key = getattr(pal, "accent_name", "indigo")
     body, edge, eye = _CAT_COATS.get(key, _CAT_COATS["indigo"])
     return QColor(body), QColor(edge), QColor(eye)
 
