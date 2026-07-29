@@ -42,17 +42,45 @@ def cpus_to_free() -> list[int]:
     return [0, 1] if logical > physical else [0]
 
 
+# UE4 ships the game as a two-executable pair, and BOTH contain
+# GAME_PROCESS as a substring.
+_RENDERER_HINT = "-win64-shipping"
+
+
+def find_game_process(psutil):
+    """The game's RENDERER process — never Steam's launcher stub.
+
+    KovaaK's installs as a ~512 KB `FPSAimTrainer.exe` bootstrap (what
+    Steam launches) plus the real ~88 MB
+    `FPSAimTrainer-Win64-Shipping.exe` it spawns. Both match the
+    GAME_PROCESS substring and process_iter yields roughly in PID order, so
+    taking the first match always found the stub — which starts first.
+    Priority and affinity then landed on a process that renders nothing and
+    handles no input, making the entire watchdog a silent no-op: it
+    reported success, and nothing was tuned.
+
+    Falls back to any match if the renderer is not found, so a future
+    rename degrades to the old behaviour rather than to "game not running".
+    """
+    fallback = None
+    for p in psutil.process_iter(["name"]):
+        name = (p.info["name"] or "").lower()
+        if GAME_PROCESS.lower() not in name:
+            continue
+        if _RENDERER_HINT in name:
+            return p
+        if fallback is None:
+            fallback = p
+    return fallback
+
+
 def apply_game_tuning() -> tuple[str, bool]:
     """Set High priority + free the input core(s) on the running game."""
     try:
         import psutil
     except ImportError:
         return "psutil not installed — pip install kovadapt[gui]", False
-    proc = None
-    for p in psutil.process_iter(["name"]):
-        if GAME_PROCESS.lower() in (p.info["name"] or "").lower():
-            proc = p
-            break
+    proc = find_game_process(psutil)
     if proc is None:
         return "game not running", False
     try:
@@ -112,10 +140,11 @@ class GameWatchdog:
     def _find_pid(self) -> int | None:
         import psutil  # ImportError surfaces in _run — never swallow it here
 
-        for p in psutil.process_iter(["name"]):
-            if GAME_PROCESS.lower() in (p.info["name"] or "").lower():
-                return p.pid
-        return None
+        # Must resolve the SAME process apply_game_tuning() will tune, or the
+        # once-per-PID latch arms on the stub's pid and the renderer is
+        # never tuned at all.
+        proc = find_game_process(psutil)
+        return proc.pid if proc is not None else None
 
     def _run(self) -> None:
         while not self._stop.wait(self.poll_interval):

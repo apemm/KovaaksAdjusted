@@ -408,3 +408,39 @@ def test_timer_resolution_status_mapping(monkeypatch):
 
     monkeypatch.setattr(ck, "_query_timer_resolution", lambda: None)
     assert win11._c_timer().status == "unknown"
+
+
+def test_find_game_process_prefers_the_renderer_over_the_steam_stub():
+    """KovaaK's is a UE4 two-exe pair and BOTH match the name substring.
+
+    Steam launches a ~512 KB FPSAimTrainer.exe bootstrap which spawns the
+    real ~88 MB FPSAimTrainer-Win64-Shipping.exe. process_iter yields
+    roughly in PID order, so 'first match wins' always picked the stub —
+    priority and affinity landed on a process that renders nothing and
+    handles no input, and the watchdog reported success having tuned
+    nothing.
+    """
+    from kovadapt.optimize.watchdog import find_game_process
+
+    class FakeProc:
+        def __init__(self, pid, name):
+            self.pid = pid
+            self.info = {"name": name}
+
+    class FakePsutil:
+        def __init__(self, procs):
+            self._procs = procs
+
+        def process_iter(self, _attrs):
+            return iter(self._procs)
+
+    stub = FakeProc(1000, "FPSAimTrainer.exe")          # starts first
+    renderer = FakeProc(2000, "FPSAimTrainer-Win64-Shipping.exe")
+
+    assert find_game_process(FakePsutil([stub, renderer])) is renderer
+    # order must not matter
+    assert find_game_process(FakePsutil([renderer, stub])) is renderer
+    # a rename degrades to the old behaviour, not to "game not running"
+    assert find_game_process(FakePsutil([stub])) is stub
+    assert find_game_process(FakePsutil([FakeProc(3, "chrome.exe")])) is None
+    assert find_game_process(FakePsutil([])) is None

@@ -299,6 +299,16 @@ class MainWindow(QMainWindow):
                 # save is atomic, so no file is left torn.
                 w.terminate()
                 w.wait(2000)
+        # The boot worker is PARENTED to this window, so it is destroyed with
+        # it — and the same Qt 6 fatal abort applies. It only reads report
+        # JSON and fits curves, so it finishes quickly; closing the window
+        # during a long history fit was enough to reproduce
+        # "QThread: Destroyed while thread is still running".
+        boot = getattr(self, "boot", None)
+        if boot is not None and boot.isRunning():
+            if not boot.wait(5000):
+                boot.terminate()
+                boot.wait(1000)
         self.dashboard.shutdown()  # overlay window
         self.optimizer.shutdown()  # optimizer window + in-flight scan QThread
         super().closeEvent(event)
@@ -321,6 +331,7 @@ def main() -> int:
     from .boot import BootWorker
 
     boot = BootWorker(settings, parent=win)
+    win.boot = boot                 # closeEvent must be able to wait on it
     if splash is not None:
         boot.status.connect(splash.set_status)
     boot.trends_ready.connect(win.set_trends)

@@ -654,11 +654,12 @@ class SystemCheckup:
         except ImportError:
             return CheckResult(cid, title, "unknown",
                                "psutil not installed (pip install kovadapt[gui])")
-        proc = None
-        for p in psutil.process_iter(["name"]):
-            if GAME_PROCESS.lower() in (p.info["name"] or "").lower():
-                proc = p
-                break
+        # Same resolver the watchdog tunes through: probing the Steam stub
+        # while the watchdog tunes the renderer would report on the wrong
+        # process either way round.
+        from .watchdog import find_game_process
+
+        proc = find_game_process(psutil)
         if proc is None:
             return CheckResult(cid, title, "info",
                                "Game not running — the watchdog applies this "

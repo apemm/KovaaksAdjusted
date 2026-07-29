@@ -72,13 +72,20 @@ class SessionWatcher:
             from .capture.clips import CLIPS_AVAILABLE, ClipRecorder
 
             if CLIPS_AVAILABLE:
-                self.clip_recorder = ClipRecorder(
-                    fps=self.s.clip_fps,
-                    buffer_seconds=self.s.clip_buffer_seconds,
-                    scale=self.s.clip_scale,
-                )
-                self.clip_recorder.start()
-                self.log("clip capture: recording (ring buffer)")
+                # Clips are a nice-to-have; dxcam raises plain Exceptions on
+                # unsupported GPUs/outputs. Losing the ring buffer must not
+                # cost the run its adaptation or its mouse telemetry.
+                try:
+                    self.clip_recorder = ClipRecorder(
+                        fps=self.s.clip_fps,
+                        buffer_seconds=self.s.clip_buffer_seconds,
+                        scale=self.s.clip_scale,
+                    )
+                    self.clip_recorder.start()
+                    self.log("clip capture: recording (ring buffer)")
+                except Exception as exc:
+                    self.clip_recorder = None
+                    self.log(f"clip capture: unavailable ({exc}) — continuing without clips")
             else:
                 self.log("clip capture: dxcam/opencv missing — pip install kovadapt[clips]")
 
@@ -296,11 +303,18 @@ class SessionWatcher:
         self._seen = {p.name for p in self.s.stats_dir.glob("*.csv")}
         if not self.adaptive_sce_path().is_file():
             self.bootstrap()
-        self._start_capture()
         # Never reset stop_requested here: a request_stop() that lands while
         # watch() is still starting up (GUI Stop right after Start) must win.
         self.log(f"watching {self.s.stats_dir} for '{self.base}' runs (ctrl-c to stop)")
         try:
+            # INSIDE the try: capture start is what most often fails (dxcam
+            # raises on unsupported hardware), and if the mouse recorder is
+            # already up when the clip recorder throws, only the finally
+            # below can stop its Raw Input pump. Starting outside meant the
+            # pump leaked, and the next watch() overwrote self.recorder and
+            # orphaned the thread — with it, the message-only window and its
+            # registered window class.
+            self._start_capture()
             while not self.stop_requested:
                 for p in self._pending_files():
                     try:

@@ -270,3 +270,55 @@ def test_watch_survives_process_run_error(env: Settings):
     # the failed run never reached profile.save; only the second run persisted
     prof = PlayerProfile.load(w.adaptive_name, env.profile_path)
     assert prof.run_count == 1
+
+
+# ------------------------------------------------------------------- capture
+def test_watch_stops_a_partially_started_capture(env: Settings):
+    """A capture start that fails halfway must still be torn down.
+
+    _start_capture() used to run BEFORE watch()'s try/finally, so a clip
+    recorder blowing up after the mouse recorder was already running left
+    the Raw Input pump thread alive with no owner — and the next watch()
+    overwrote self.recorder and orphaned it, along with its message-only
+    window and registered window class.
+    """
+    stopped: list[str] = []
+
+    class FakeRecorder:
+        def stop(self) -> None:
+            stopped.append("mouse")
+
+    w = SessionWatcher(env, BASE)
+    w.bootstrap()          # variant exists, so watch() goes straight to capture
+
+    def half_started_then_boom() -> None:
+        w.recorder = FakeRecorder()              # mouse telemetry came up...
+        raise RuntimeError("dxcam: no supported output")   # ...clips did not
+
+    w._start_capture = half_started_then_boom
+    with pytest.raises(RuntimeError):
+        w.watch(poll_interval=0.02, settle=0.02)
+
+    assert stopped == ["mouse"], "the started recorder was never stopped"
+    assert w.recorder is None
+
+
+def test_clip_recorder_failure_does_not_kill_the_session(env: Settings, monkeypatch):
+    """Clips are optional: dxcam raising must cost the clips, not the run."""
+    import dataclasses
+
+    from kovadapt.capture import clips as clips_mod
+
+    class Boom:
+        def __init__(self, **kwargs):
+            raise RuntimeError("no supported output")
+
+    monkeypatch.setattr(clips_mod, "CLIPS_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(clips_mod, "ClipRecorder", Boom, raising=False)
+
+    logs: list[str] = []
+    w = SessionWatcher(dataclasses.replace(env, clips_enabled=True), BASE,
+                       on_update=logs.append)
+    w._start_capture()                      # must not raise
+    assert w.clip_recorder is None
+    assert any("clip capture: unavailable" in m for m in logs)

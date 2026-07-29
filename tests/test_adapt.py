@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from kovadapt.adapt.archetype import detect_archetype
 from kovadapt.adapt.stochastic import OrnsteinUhlenbeck, sample_dodge_params, squash
@@ -199,6 +200,31 @@ def test_archetype_detection(fixtures):
     assert detect_archetype("unnamed task", run) == "clicking"
 
 
+def test_invincible_target_tracking_is_not_stamped_clicking():
+    """Pure-tracking scenarios kill nothing, so shots-per-kill is undefined.
+
+    Guarding the ratio on kill_count > 0 skipped the heuristic for exactly
+    the scenarios it exists to catch: on the maintainer's real stats folder
+    23 of 95 scenarios (the whole Whisphere/cloverRawControl/PGTI family)
+    were stamped "clicking" and then scored against the clicking accuracy
+    band they can never reach, growing targets every single run.
+    """
+    from kovadapt.stats.models import Run
+
+    def run(kills: int, hits: int, misses: int) -> Run:
+        return Run(scenario="x", started=None, kills=[],
+                   summary={"Kills:": float(kills), "Hit Count:": float(hits),
+                            "Miss Count:": float(misses)})
+
+    # invincible targets: thousands of damage ticks, nothing ever dies
+    assert detect_archetype("Whisphere", run(0, 2500, 3000)) == "tracking"
+    assert detect_archetype("PGTI Voltaic Easy", run(0, 1140, 4832)) == "tracking"
+    # a genuine no-shot (AFK) run carries no evidence -> stays the safe default
+    assert detect_archetype("unnamed task", run(0, 0, 0)) == "clicking"
+    # and a clicking run is still clicking: a hit kills, so hits stay low
+    assert detect_archetype("unnamed task", run(6, 6, 3)) == "clicking"
+
+
 def test_size_controller_is_accuracy_biased(fixtures):
     """Below-band recovery outweighs above-band pushing: the same excess
     grows targets more than it shrinks them (accuracy-first design)."""
@@ -308,3 +334,59 @@ def test_settings_load_survives_corrupt_file(tmp_path):
     p.write_text('["a", "list"]', encoding="utf-8")  # valid JSON, wrong shape
     assert Settings.load(p).theme == Settings().theme
     assert not p.exists()
+
+def test_zero_shot_run_is_dropped_whole():
+    """An AFK run carries no evidence and must not reach the EWMA or bandit.
+
+    Run.accuracy is 0.0 for zero shots (a guard, not a measurement), so
+    folding one in dragged the accuracy EWMA down AND, since
+    credit_focus_region scores `ewma_accuracy - run.accuracy`, booked the
+    whole baseline as a deficit against the last focus region — inventing a
+    strong weakness the bandit would then chase.
+    """
+    from kovadapt.stats.models import Run
+
+    s = _settings()
+    eng = AdaptationEngine(s, rng=np.random.default_rng(1))
+    prof = PlayerProfile(scenario="x")
+
+    import datetime as _dt
+
+    def run(kills, hits, misses):
+        return Run(scenario="x", started=_dt.datetime(2026, 7, 29, 12, 0, 0),
+                   kills=[],
+                   summary={"Kills:": float(kills), "Hit Count:": float(hits),
+                            "Miss Count:": float(misses)})
+
+    eng.observe(prof, run(10, 90, 10))          # a real run: 90% accuracy
+    prof.last_focus = "r1c1"
+    before_acc, before_runs = prof.ewma_accuracy, prof.run_count
+    before_region = prof.region("r1c1").mean
+
+    eng.observe(prof, run(0, 0, 0))             # the alt-tab
+
+    assert prof.ewma_accuracy == before_acc, "zero-shot run moved the EWMA"
+    assert prof.run_count == before_runs, "zero-shot run counted as training"
+    assert prof.region("r1c1").mean == before_region, "fabricated a weakness"
+
+
+def test_hitting_the_size_ceiling_does_not_give_back_earned_scale():
+    """plan() must persist the UN-coupled base scale.
+
+    Dividing the clipped value back out only round-trips while nothing
+    clips; at max_target_scale it wrote back a strictly smaller base, so
+    touching the ceiling permanently shrank targets for the very player the
+    size controller had been growing them for.
+    """
+    s = _settings()
+    s.size_speed_coupling = 0.35
+    s.max_target_scale = 2.50
+    eng = AdaptationEngine(s, rng=np.random.default_rng(3))
+
+    prof = PlayerProfile(scenario="x")
+    prof.target_scale = s.max_target_scale       # already earned the ceiling
+    prof.run_count = 5
+    eng.plan(prof, None)
+
+    assert prof.target_scale == pytest.approx(s.max_target_scale), (
+        f"earned scale ratcheted down to {prof.target_scale}")

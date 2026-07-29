@@ -87,7 +87,19 @@ class AdaptationEngine:
         run-level focus attribution is the fallback without telemetry.
         bias_score (analysis.directional_bias convention: + = left weaker)
         drives the trace-informed dodge direction.
+
+        A run in which nothing was fired carries no evidence and is dropped
+        whole. Run.accuracy is 0.0 for zero shots (a guard, not a
+        measurement), so folding one in would drag the accuracy EWMA toward
+        zero AND — because credit_focus_region scores `ewma_accuracy -
+        run.accuracy` — book the player's entire baseline as a deficit
+        against whichever region the bandit last focused, inventing a strong
+        weakness there. One alt-tab during a timed scenario was enough. The
+        size controller already gates on min_shots_for_size; this is the
+        same guard for the EWMAs and the bandit.
         """
+        if run.hit_count + run.miss_count <= 0:
+            return
         s = self._effective(profile)
         if s.bandit_posterior_decay > 0:
             profile.decay_regions(s.bandit_posterior_decay, s.bandit_prior_var)
@@ -176,9 +188,17 @@ class AdaptationEngine:
         # -- 3. speed-coupled sizing: faster targets get a size floor -------
         # Keeps effective difficulty smooth: size *= (1 + coupling * movement).
         coupling = s.size_speed_coupling
-        scale = float(np.clip(scale * (1.0 + coupling * movement),
+        # Persist the UN-coupled base, then couple + clip for the emitted plan.
+        # Dividing the clipped value back out (the old order) only round-trips
+        # while nothing clips: at the ceiling it wrote back
+        # max_target_scale / (1 + coupling * movement) — strictly less than the
+        # base that reached the ceiling — so touching the cap permanently gave
+        # away earned scale, shrinking targets on a player the size controller
+        # had been growing them for.
+        profile.target_scale = float(
+            np.clip(scale, s.min_target_scale, s.max_target_scale))
+        scale = float(np.clip(profile.target_scale * (1.0 + coupling * movement),
                               s.min_target_scale, s.max_target_scale))
-        profile.target_scale = scale / (1.0 + coupling * movement)  # persist base scale
 
         # -- 4. region bandit ------------------------------------------------
         bandit = ThompsonRegionBandit(
