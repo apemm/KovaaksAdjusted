@@ -84,7 +84,7 @@ class ScenarioBrowser(QWidget):
 
         # full-width, tall table: the section's centerpiece
         self.table = QTableWidget(0, len(_COLS))
-        self.table.setMinimumHeight(420)
+        self.table.setMinimumHeight(150)   # height follows row count
         self.table.setHorizontalHeaderLabels(_COLS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -95,6 +95,15 @@ class ScenarioBrowser(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, len(_COLS)):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        # A header centred over a left-aligned column reads as a misprint;
+        # each label sits over its own data's alignment.
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for i in (2, 3, 4):
+            self.table.horizontalHeaderItem(i).setTextAlignment(
+                Qt.AlignRight | Qt.AlignVCenter)
+        header.setHighlightSections(False)   # no bold-on-select native tic
+        self.table.setAlternatingRowColors(False)
+        self.table.setCornerButtonEnabled(False)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.itemDoubleClicked.connect(lambda _it: self._emit_play())
 
@@ -127,8 +136,13 @@ class ScenarioBrowser(QWidget):
         lay.setSpacing(14)
         lay.addWidget(hint)
         lay.addLayout(top)
-        lay.addWidget(self.table, 1)
+        # No stretch on the table — its height follows the row count now. The
+        # slack has to be given an explicit home at the bottom, or Qt hands it
+        # to whichever widget will take it (the hint bar grew to fill the
+        # whole section).
+        lay.addWidget(self.table)
         lay.addLayout(actions)
+        lay.addStretch(1)
 
         self.refresh()
 
@@ -184,13 +198,35 @@ class ScenarioBrowser(QWidget):
             cal = QTableWidgetItem(f"{row.calibration:.0%}" if row.runs else "—")
             last = QTableWidgetItem(
                 row.last_played.replace("T", " ")[:16] if row.last_played else "never")
+            # Numeric columns are data: they get the mono face so digits sit
+            # on one grid and the column scans vertically. In a proportional
+            # face "27" and "115" are different widths and a long list stops
+            # being comparable at a glance.
+            num_font = theme.mono(13)
             for col, item in enumerate((name, arch, runs, acc, cal, last)):
                 if col:
                     item.setForeground(theme_color(pal.fg_dim if col in (1, 5)
                                                    else pal.fg))
+                if col in (2, 3, 4):
+                    item.setFont(num_font)
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(i, col, item)
         self._apply_filter()
         self._selection_changed()
+
+    def _fit_table_height(self) -> None:
+        """Height the table to its visible rows, within sane bounds.
+
+        The table used to take all the section's stretch, so four scenarios
+        left ~500px of empty ruled box below them; a full library still needs
+        room to scroll, hence the ceiling rather than a pure fit.
+        """
+        visible = sum(1 for r in range(self.table.rowCount())
+                      if not self.table.isRowHidden(r))
+        row_h = self.table.verticalHeader().defaultSectionSize()
+        header_h = self.table.horizontalHeader().height()
+        wanted = header_h + row_h * max(visible, 1) + 8
+        self.table.setMaximumHeight(max(150, min(wanted, 620)))
 
     def _apply_filter(self) -> None:
         text = self.search.text().strip().lower()
@@ -201,6 +237,7 @@ class ScenarioBrowser(QWidget):
             hide = (text and text not in name) or \
                 (arch != "All types" and row_arch != arch)
             self.table.setRowHidden(i, hide)
+        self._fit_table_height()
 
     # -------------------------------------------------------------- actions
     def selected(self) -> str:

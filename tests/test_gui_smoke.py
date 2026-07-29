@@ -89,11 +89,33 @@ def test_editorial_column_caps_content_width(qapp, settings):
     for i in range(win.space.count()):
         sec = win.space.section_at(i)
         page = sec.page
-        assert page.width() <= 1000                       # column cap
+        # Each section caps at the measure its CONTENT needs (shell.py
+        # COLUMN_WIDTHS): prose narrow enough to read, charts and tables wide
+        # enough to be legible. One global 950 made prose run ~146 characters
+        # a line while squeezing the charts.
+        assert page.width() <= sec.max_width + 50         # column cap
         x = page.mapTo(sec, page.rect().topLeft()).x()
         left, right = x, sec.width() - (x + page.width())
-        assert left >= 80 and right >= 80                 # backdrop rails
+        assert left >= 20 and right >= 20                 # backdrop rails
         assert abs(left - right) <= 60                    # centered
+    win.close()
+
+
+def test_sections_use_their_content_measure(qapp, settings):
+    """Prose must stay narrower than the data sections."""
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.shell import COLUMN_WIDTHS
+    from kovadapt.gui.theme import ThemeManager
+
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    widths = {win.space.names()[i]: win.space.section_at(i).max_width
+              for i in range(win.space.count())}
+    assert widths["Analysis"] == COLUMN_WIDTHS["wide"]
+    assert widths["Dashboard"] == COLUMN_WIDTHS["default"]
+    if "How it learns" in widths:
+        assert widths["How it learns"] == COLUMN_WIDTHS["prose"]
+        assert widths["How it learns"] < widths["Analysis"]
     win.close()
 
 
@@ -322,3 +344,41 @@ def test_analysis_view_captions_toggles_and_clip_story(qapp, settings):
     assert not view.clip_hint.isHidden()
     assert view.clip_hint.text() == view.clip_btn.toolTip()
     view.deleteLater()
+
+
+def test_theme_switch_does_not_resurrect_a_previous_runs_coach_cards(qapp, settings):
+    """restyle() refills the Coach box from a cached (rep, profile) pair.
+
+    The early-return path hid the box but left that cache populated, so
+    after opening a report with no usable profile, ANY theme or accent
+    change (or the OS scheme flipping while mode=='auto') re-rendered the
+    PREVIOUS run's insights underneath the current run's header — stale
+    coaching presented as live analysis.
+    """
+    from kovadapt.analysis.report import RunReport
+    from kovadapt.gui.analysis_view import AnalysisView
+    from kovadapt.profile.player import PlayerProfile
+
+    def report(name: str) -> RunReport:
+        return RunReport(
+            scenario=name, started_iso="2026-07-28T10:00:00",
+            score=420.0, accuracy=0.61, avg_ttk=0.9, kills=30, kps=1.4,
+            summary_text=f"{name}: 30 kills at 61% accuracy.")
+
+    view = AnalysisView(settings)
+
+    # 1) a run WITH a profile that has history -> cards render, cache fills
+    prof = PlayerProfile(scenario="First Run")
+    prof.run_count = 5
+    prof.history = [{"accuracy": 0.6, "kps": 1.2}] * 5
+    view.show_report(report("First Run"), profile=prof)
+    assert view._last_insights is not None
+
+    # 2) a run whose profile carries no history -> the box must stay empty
+    view.show_report(report("Second Run"), profile=PlayerProfile(scenario="Second Run"))
+    assert view.coach_box.isHidden()
+
+    # 3) a theme switch must not bring run #1's cards back
+    view.restyle()
+    assert view.coach_box.isHidden(), "theme switch resurrected stale Coach cards"
+    assert view.coach_lay.count() == 0

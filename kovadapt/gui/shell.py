@@ -40,6 +40,25 @@ from PySide6.QtWidgets import (
 _SCROLL_MS = 350
 _COLUMN_MAX = 950   # editorial column width; the rails either side show backdrop
 
+# Per-section column caps. One width for everything meant prose ran to ~146
+# characters a line (roughly double the 50-75 readability ceiling) while the
+# charts and the scenario table were squeezed into the same 950px and left
+# ~800px of empty rail on a 1440p display. Content decides its own measure:
+# prose stays narrow to be readable, data goes wide to be legible.
+COLUMN_WIDTHS = {
+    "prose": 720,       # reading measure
+    "default": 950,     # forms, dashboard — the editorial column
+    "wide": 1400,       # charts, tables, replay
+}
+_SECTION_WIDTH = {
+    "Dashboard": "default",
+    "Scenarios": "wide",
+    "Analysis": "wide",
+    "Adaptability": "default",
+    "Optimizer": "default",
+    "How it learns": "prose",
+}
+
 
 class WheelGuard(QObject):
     """Everything is clickable first: inner scrollables (plots, logs, tables,
@@ -77,28 +96,35 @@ class WheelGuard(QObject):
 
 
 class _Section(QWidget):
-    """One full-height section: a single centered editorial column (max
-    ~950px) holding the header (title + divider) over the page, whitespace
-    rails either side where the parallax backdrop shows through."""
+    """One full-height section: a single centered editorial column holding
+    the header (title + divider) over the page, whitespace rails either
+    side where the parallax backdrop shows through. The column's max width
+    comes from the section's content type (COLUMN_WIDTHS), not one global
+    number."""
 
-    def __init__(self, title: str, page: QWidget, parent=None) -> None:
+    def __init__(self, title: str, page: QWidget, parent=None,
+                 max_width: int | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("tabPage")       # transparent per theme.py contract
         self.page = page
         page.setObjectName("tabPage")
+        if max_width is None:
+            max_width = COLUMN_WIDTHS[_SECTION_WIDTH.get(title, "default")]
+        self.max_width = max_width
 
         head = QLabel(title)
         head.setProperty("sectionTitle", True)
         # editorial scale: a widget-level sheet outranks the app QSS baseline
         head.setStyleSheet(
-            "font-size: 30px; font-weight: 700; letter-spacing: 0.5px;")
+            # negative tracking at display size — see theme.py's headline rule
+            "font-size: 30px; font-weight: 700; letter-spacing: -0.6px;")
         divider = QFrame()
         divider.setProperty("sectionDivider", True)
         divider.setFixedHeight(1)
 
         column = QWidget()
         column.setObjectName("tabPage")     # transparent, backdrop shows through
-        column.setMaximumWidth(_COLUMN_MAX)
+        column.setMaximumWidth(max_width)
         col = QVBoxLayout(column)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(16)
@@ -174,8 +200,9 @@ class PageSpace(QScrollArea):
         event.accept()
 
     # ------------------------------------------------------------ sections
-    def add_section(self, name: str, page: QWidget) -> QWidget:
-        sec = _Section(name, page)
+    def add_section(self, name: str, page: QWidget,
+                    max_width: int | None = None) -> QWidget:
+        sec = _Section(name, page, max_width=max_width)
         self._col.addWidget(sec)
         self._sections.append(sec)
         self._names.append(name)

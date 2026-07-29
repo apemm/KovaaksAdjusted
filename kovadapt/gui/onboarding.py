@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -52,9 +53,13 @@ class HintBar(QFrame):
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 6, 6, 6)
-        lay.addWidget(tag)
+        lay.addWidget(tag, 0, Qt.AlignTop)
         lay.addWidget(body, 1)
         lay.addWidget(close, 0, Qt.AlignTop)
+        # A tip is one or two lines: never let it absorb a layout's spare
+        # vertical space just because it is the only greedy widget present.
+        self.setSizePolicy(self.sizePolicy().horizontalPolicy(),
+                           QSizePolicy.Maximum)
 
         _hint_bars.add(self)
         self.setVisible(settings.show_hints)
