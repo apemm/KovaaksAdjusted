@@ -1,13 +1,17 @@
 """kovadapt GUI: the KovaaK's hub.
 
     Dashboard    play adaptive tasks, launch the game, live session + overlay
+    Scenarios    every installed scenario, training state, one click to play
     Analysis     post-run report: bias, heatmap, notable moments, replays/clips
     Adaptability full configuration surface
     Optimizer    free Process Lasso basics + tuning checklist
 
-Themes follow the Windows light/dark setting ("auto") or can be pinned; the
-first launch opens a short startup guide, and dismissible TIP bars carry the
-instructions after that. Run with `kovadapt gui` (pip install kovadapt[gui]).
+One continuous scrollable page-space (gui/shell.py) instead of tabs: the
+sections stack over the parallax backdrop and the slim top nav bar
+smooth-scrolls between them. Themes follow the Windows light/dark setting
+("auto") or can be pinned; the first launch opens a short startup guide, and
+dismissible TIP bars carry the instructions after that. Run with
+`kovadapt gui` (pip install kovadapt[gui]).
 """
 
 from __future__ import annotations
@@ -15,9 +19,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QVariantAnimation
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -25,7 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
-    QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -40,6 +43,7 @@ from .config_view import ConfigView
 from .dashboard import Dashboard
 from .onboarding import WelcomeDialog, set_hints_visible
 from .optimizer_view import OptimizerView
+from .shell import NavBar, PageSpace
 from .theme import ACCENTS, ThemeManager
 
 
@@ -103,34 +107,43 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("kovadapt — adaptive KovaaK's")
         self.resize(1300, 860)
 
-        tabs = QTabWidget()
         self.dashboard = Dashboard(settings)
         self.browser = ScenarioBrowser(settings)
         self.analysis = AnalysisView(settings)
         self.config = ConfigView(settings)
         self.optimizer = OptimizerView(settings)
-        tabs.addTab(self.dashboard, "Dashboard")
-        tabs.addTab(self.browser, "Scenarios")
-        tabs.addTab(self.analysis, "Analysis")
-        tabs.addTab(self.config, "Adaptability")
-        tabs.addTab(self.optimizer, "Optimizer")
-        # transparent pages let the parallax backdrop show through the gaps
-        for page in (self.dashboard, self.browser, self.analysis,
-                     self.config, self.optimizer):
-            page.setObjectName("tabPage")
-        self.setCentralWidget(tabs)
-        self._tabs = tabs
-        tabs.setCornerWidget(self._corner(), Qt.TopRightCorner)
+        # one continuous scroll of transparent sections over the backdrop
+        self.space = PageSpace()
+        for name, page in (("Dashboard", self.dashboard),
+                           ("Scenarios", self.browser),
+                           ("Analysis", self.analysis),
+                           ("Adaptability", self.config),
+                           ("Optimizer", self.optimizer)):
+            self.space.add_section(name, page)
+        self.nav = NavBar(self.space, corner=self._corner())
+
+        central = QWidget()
+        central.setObjectName("tabPage")   # transparent: backdrop shows through
+        col = QVBoxLayout(central)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.nav)
+        col.addWidget(self.space, 1)
+        self.setCentralWidget(central)
         self.backdrop = Backdrop(self)
+
+        # Ctrl+1..5 jump straight to a section
+        for i in range(self.space.count()):
+            sc = QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self)
+            sc.activated.connect(lambda i=i: self.space.scroll_to(i))
 
         # browser actions land on the dashboard (session owner)
         self.browser.play_requested.connect(self._browser_play)
         self.browser.watch_requested.connect(self._browser_watch)
 
-        # new run report -> refresh analysis tab and flag it
+        # new run report -> refresh analysis section and badge its nav link
         self.dashboard.report_ready.connect(self._on_report)
-        tabs.currentChanged.connect(self._clear_unread)
-        tabs.currentChanged.connect(self._fade_tab)
+        self.space.current_changed.connect(self._section_changed)
         themes.changed.connect(self._restyle)
 
         sb = self.statusBar()
@@ -219,11 +232,11 @@ class MainWindow(QMainWindow):
             self.dashboard.append_log(f"skill model: {summary}")
 
     def _browser_play(self, name: str) -> None:
-        self._tabs.setCurrentWidget(self.dashboard)
+        self.space.scroll_to(self.space.index_of(self.dashboard))
         self.dashboard.play_scenario(name)
 
     def _browser_watch(self, name: str) -> None:
-        self._tabs.setCurrentWidget(self.dashboard)
+        self.space.scroll_to(self.space.index_of(self.dashboard))
         self.dashboard.watch_scenario(name)
 
     # ------------------------------------------------------------------
@@ -241,34 +254,19 @@ class MainWindow(QMainWindow):
     def _restyle(self, pal) -> None:
         for view in (self.dashboard, self.browser, self.analysis, self.optimizer):
             view.restyle(pal)
+        self.nav.restyle(pal)
         self.backdrop.notify_theme()
 
     def _on_report(self, rep) -> None:
         self.analysis.show_report(rep, profile=self.dashboard.last_profile)
         self.optimizer.note_report(rep)
-        idx = self._tabs.indexOf(self.analysis)
-        self._tabs.setTabText(idx, "Analysis •")
+        idx = self.space.index_of(self.analysis)
+        if self.space.current_index() != idx:   # unread only if not in view
+            self.nav.set_badge(idx, True)
 
-    def _clear_unread(self, i: int) -> None:
-        idx = self._tabs.indexOf(self.analysis)
-        if i == idx:
-            self._tabs.setTabText(idx, "Analysis")
-
-    def _fade_tab(self, _i: int) -> None:
-        """Floaty 150 ms fade-in on tab switch; the effect is removed after
-        so it can't interfere with plot repaints."""
-        w = self._tabs.currentWidget()
-        if w is None or not self.isVisible():
-            return
-        eff = QGraphicsOpacityEffect(w)
-        w.setGraphicsEffect(eff)
-        anim = QVariantAnimation(w)
-        anim.setDuration(150)
-        anim.setStartValue(0.35)
-        anim.setEndValue(1.0)
-        anim.valueChanged.connect(eff.setOpacity)
-        anim.finished.connect(lambda: w.setGraphicsEffect(None))
-        anim.start(QVariantAnimation.DeleteWhenStopped)
+    def _section_changed(self, i: int) -> None:
+        if i == self.space.index_of(self.analysis):
+            self.nav.set_badge(i, False)        # scrolled into view: seen
 
     def closeEvent(self, event) -> None:  # stop worker threads cleanly
         w = self.dashboard.worker

@@ -47,16 +47,93 @@ def settings(tmp_path):
     )
 
 
+_SECTIONS = ["Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
+
+
 def test_main_window_constructs_and_closes(qapp, settings):
     from kovadapt.gui.app import MainWindow
     from kovadapt.gui.theme import ThemeManager
 
     themes = ThemeManager(qapp, settings)
     win = MainWindow(settings, themes)
-    assert win._tabs.count() == 5
-    assert [win._tabs.tabText(i) for i in range(5)] == [
-        "Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
+    assert win.space.count() == 5
+    assert win.space.names() == _SECTIONS
+    # one nav link per section, in order — these are the scroll targets
+    assert [b.text() for b in win.nav.links()] == _SECTIONS
     assert win.dashboard.worker is None
+    win.close()
+
+
+def test_shell_sections_lay_out_and_nav_scrolls(qapp, settings):
+    from PySide6.QtTest import QTest
+
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.theme import ThemeManager
+
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    win.resize(1100, 720)
+    win.show()
+    QTest.qWait(50)          # let the min-height relayout settle
+    # every section is laid out at least one viewport tall
+    viewport_h = win.space.viewport().height()
+    assert viewport_h > 0
+    for i in range(win.space.count()):
+        assert win.space.section_at(i).height() >= viewport_h
+    # a nav jump lands the section's top at the scroll position
+    bar = win.space.verticalScrollBar()
+    assert bar.value() == 0
+    win.space.scroll_to(3, animated=False)
+    assert bar.value() == min(win.space.section_at(3).y(), bar.maximum())
+    assert bar.value() > 0
+    assert win.space.current_index() == 3
+    win.close()
+
+
+def test_browser_play_scrolls_home_and_reaches_dashboard(qapp, settings):
+    from PySide6.QtTest import QTest
+
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.theme import ThemeManager
+
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    win.resize(1100, 720)
+    win.show()
+    QTest.qWait(50)
+    win.space.scroll_to(1, animated=False)          # start at Scenarios
+    assert win.space.current_index() == 1
+    played: list[str] = []
+    win.dashboard.play_scenario = played.append     # never launch the game
+    win.browser.play_requested.emit("Alpha Track Long")
+    assert played == ["Alpha Track Long"]           # signal reached dashboard
+    QTest.qWait(600)                                # smooth-scroll home plays out
+    assert win.space.current_index() == 0
+    win.close()
+
+
+def test_report_badges_analysis_nav_link(qapp, settings):
+    from PySide6.QtTest import QTest
+
+    from kovadapt.analysis.report import RunReport
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.theme import ThemeManager
+
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    win.resize(1100, 720)
+    win.show()
+    QTest.qWait(50)
+    rep = RunReport(
+        scenario="Beta 1wall Click", started_iso="2026-07-28T10:00:00",
+        score=420.0, accuracy=0.61, avg_ttk=0.9, kills=30, kps=1.4,
+        summary_text="30 kills at 61% accuracy.")
+    idx = win.space.index_of(win.analysis)
+    win.dashboard.report_ready.emit(rep)            # full _on_report path
+    assert win.nav.links()[idx].text() == "Analysis •"
+    win.space.scroll_to(idx, animated=False)        # into view clears the dot
+    assert win.space.current_index() == idx
+    assert win.nav.links()[idx].text() == "Analysis"
     win.close()
 
 

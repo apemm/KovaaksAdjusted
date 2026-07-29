@@ -141,6 +141,25 @@ QTabBar::tab {{
 QTabBar::tab:hover {{ color: {p.fg}; }}
 QTabBar::tab:selected {{ color: {p.fg}; border-bottom: 2px solid {p.accent}; }}
 
+/* single-page shell (gui/shell.py): nav bar + stacked sections */
+QFrame#navBar {{
+    background: transparent; border: none;
+    border-bottom: 1px solid {p.border};
+}}
+QPushButton[navLink="true"] {{
+    background: transparent; border: none; border-radius: 0;
+    padding: 8px 14px; color: {p.fg_dim}; font-weight: 600;
+}}
+QPushButton[navLink="true"]:hover {{ background: transparent; color: {p.fg}; }}
+QPushButton[navLink="true"]:pressed {{ background: transparent; color: {p.accent}; }}
+QPushButton[navLink="true"][active="true"] {{
+    color: {p.fg}; border-bottom: 2px solid {p.accent};
+}}
+QLabel[sectionTitle="true"] {{
+    font-size: 21px; font-weight: 700; letter-spacing: 0.5px;
+}}
+QFrame[sectionDivider="true"] {{ background: {p.border}; border: none; }}
+
 QGroupBox {{
     border: 1px solid {p.border}; border-radius: 8px;
     margin-top: 14px; padding-top: 12px; background: {_rgba(p.bg_alt, 214)};

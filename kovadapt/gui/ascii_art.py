@@ -23,7 +23,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPixmap
+from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter,
+                           QPainterPath, QPixmap)
 from PySide6.QtWidgets import QWidget
 
 from . import theme
@@ -357,12 +358,15 @@ def _mono() -> QFont:
 
 def paint_grid(p: QPainter, rect: QRectF, t: float | None,
                ink: QColor, bg: QColor, is_dark: bool,
-               iris_hue: float | None = None) -> None:
+               iris_hue: float | None = None,
+               exclude_roles: frozenset[str] | tuple[str, ...] = ()) -> None:
     """Draw the stencil into rect at time t (None = fully lit, static).
     Two passes: the eye, then the reticle overlay with a soft backing so
     the crosshair reads against the iris detail. `iris_hue` locks the iris
     to one hue (the theme accent drives the backdrop's iris); None keeps
-    the full rainbow."""
+    the full rainbow. `exclude_roles` skips whole roles — the live
+    backdrop renders its base without the iris/glint cells and redraws
+    only those each frame."""
     cw = rect.width() / COLS
     ch = rect.height() / ROWS
     font = _mono()
@@ -370,8 +374,11 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
     p.setFont(font)
     sat, val = (0.80, 0.95) if not is_dark else (0.72, 1.0)
 
+    excl = frozenset(exclude_roles)
     overlay: list[tuple[Cell, float]] = []
     for cell in stencil():
+        if cell.role in excl:
+            continue
         b = 1.0 if t is None else led_state(cell, t)
         if b <= 0.01:
             continue
@@ -484,7 +491,8 @@ class AsciiEye(QWidget):
 
 def render_pixmap(width: int, *, is_dark: bool | None = None,
                   transparent: bool = True,
-                  iris_hue: float | None = None) -> QPixmap:
+                  iris_hue: float | None = None,
+                  exclude_roles: frozenset[str] | tuple[str, ...] = ()) -> QPixmap:
     """Static, fully-lit render (window icon, watermarks, docs)."""
     pal = theme.current()
     dark = pal.is_dark if is_dark is None else is_dark
@@ -495,9 +503,121 @@ def render_pixmap(width: int, *, is_dark: bool | None = None,
     p = QPainter(pm)
     p.setRenderHint(QPainter.TextAntialiasing)
     paint_grid(p, QRectF(0, 0, width, height), None, QColor(pal.fg), bg, dark,
-               iris_hue=iris_hue)
+               iris_hue=iris_hue, exclude_roles=exclude_roles)
     p.end()
     return pm
+
+
+# ------------------------------------------------------ live backdrop loop
+# The backdrop animates the iris/glints on a perfect loop. Every temporal
+# term below is built from integer multiples of 2*pi*phase/LOOP_T, and each
+# helper reduces phase mod LOOP_T first — so state at phase LOOP_T is
+# bit-identical to state at phase 0 (T % T == 0.0 exactly in IEEE floats).
+LOOP_T = 8.0            # loop period, seconds
+BLINK_PHASE = 5.8       # loop phase (s) at which the blink begins
+BLINK_LEN = 0.45        # lids close and reopen inside this window
+
+
+def loop_cell_color(cell: Cell, phase: float, *, is_dark: bool,
+                    iris_hue: float | None, ink: QColor) -> QColor:
+    """Pure per-cell color for the live backdrop at loop `phase` seconds.
+
+    Mirrors paint_grid's static colors, animated: a brightness ripple
+    travelling around the iris, a radial saturation breath, the two glints
+    swelling out of phase — and, when `iris_hue` is None (Gamer/rgb mode),
+    the full rainbow rotated by exactly one hue cycle per loop. Roles other
+    than iris/glint get their static ink color. Exactly periodic:
+    loop_cell_color(c, 0) == loop_cell_color(c, LOOP_T)."""
+    phase = phase % LOOP_T
+    w = 2.0 * math.pi * phase / LOOP_T           # one turn per loop
+    sat, val = (0.80, 0.95) if not is_dark else (0.72, 1.0)
+    if cell.role == "iris":
+        base_hue = cell.hue if iris_hue is None else iris_hue
+        if iris_hue is None:                     # Gamer rainbow: one full
+            base_hue = (base_hue + phase / LOOP_T) % 1.0   # cycle per loop
+        hue = (base_hue + 0.05 * math.sin(cell.rad * 6.0)) % 1.0
+        ang = cell.hue * 2.0 * math.pi           # angle around the iris
+        # shimmer: a soft three-armed ripple orbiting once per loop, plus a
+        # single-armed counter-ripple at double speed for organic motion
+        sh = 0.7 * math.sin(3.0 * ang - w) + 0.3 * math.sin(ang + 2.0 * w)
+        breathe = 1.0 + 0.08 * math.sin(2.0 * w - cell.rad * 3.5)
+        s_mod = min(max(sat * (0.72 + 0.28 * cell.ink) * breathe, 0.0), 1.0)
+        v_mod = min(max(val * (0.88 + 0.10 * sh), 0.0), 1.0)
+        return QColor.fromHsvF(hue, s_mod, v_mod)
+    if cell.role == "glint":
+        # the two glints (specular left of center, catchlight right)
+        # twinkle out of phase: two gentle swells per loop each
+        left = cell.col < (COLS - 1) / 2.0
+        tw = math.sin(2.0 * w + (0.0 if left else math.pi))
+        col = QColor("#ffffff") if is_dark else QColor(ink)
+        col.setAlphaF((0.9 if is_dark else 0.35) * (0.82 + 0.18 * tw))
+        return col
+    col = QColor(ink)                            # non-live roles: static
+    col.setAlphaF(0.35 + 0.65 * cell.ink)
+    return col
+
+
+def blink_amount(phase: float) -> float:
+    """0 (open) .. 1 (fully shut): one smooth close-and-reopen bump per
+    loop starting at BLINK_PHASE, lasting BLINK_LEN. Periodic in LOOP_T."""
+    u = ((phase % LOOP_T) - BLINK_PHASE) / BLINK_LEN
+    if u <= 0.0 or u >= 1.0:
+        return 0.0
+    return math.sin(math.pi * u) ** 2
+
+
+def blink_lid_paths(rect: QRectF,
+                    k: float) -> tuple[QPainterPath, QPainterPath] | None:
+    """Eyelid geometry for the backdrop blink at amount k (0 open, 1 shut)
+    in the pixel space paint_grid uses for `rect` (cell centers).
+
+    Returns (wedges, edges). `wedges` holds two closed regions, one per
+    lid, each spanning from just inside the resting lid parabola (inset so
+    the almond outline and lid margin survive the blink) down/up to the
+    moving lid edge — the same parabola eased toward the iris centerline
+    y=_CY, so the sweep keeps the almond's curvature instead of reading as
+    a rectangle wipe. `edges` holds the two moving lid-margin polylines
+    for stroking. None when k <= 0."""
+    if k <= 0.0:
+        return None
+    half = COLS / 2.0
+    cw = rect.width() / COLS
+    ch = rect.height() / ROWS
+
+    def px(wx: float) -> float:
+        return rect.x() + (wx * half + (COLS - 1) / 2.0 + 0.5) * cw
+
+    def py(wy: float) -> float:
+        return rect.y() + (wy * half / _ASPECT + (ROWS - 1) / 2.0 + 0.5) * ch
+
+    inset = 0.03            # leave the outline / lid margin un-erased
+    pad = 0.025 * k         # push the wedges past the meeting line when shut
+    xs = np.linspace(-_W, _W, 49)
+    rest_u = _upper(xs) + inset
+    rest_l = -_upper(xs) - inset
+    seam_u = (1.0 - k) * _upper(xs) + k * _CY      # the visible lid margins:
+    seam_l = (1.0 - k) * -_upper(xs) + k * _CY     # meet at y=_CY when shut
+    edge_u = np.maximum(seam_u + pad, rest_u)
+    edge_l = np.minimum(seam_l - pad, rest_l)
+
+    wedges = QPainterPath()
+    # both wedges wind the same way (top boundary L->R, bottom R->L), and the
+    # winding rule keeps the band where the shut lids overlap at y=_CY inside
+    # (odd-even would punch it back out)
+    wedges.setFillRule(Qt.WindingFill)
+    edges = QPainterPath()
+    for top, bottom, edge in ((rest_u, edge_u, seam_u),
+                              (edge_l, rest_l, seam_l)):
+        wedges.moveTo(px(float(xs[0])), py(float(top[0])))
+        for x, y in zip(xs[1:], top[1:]):
+            wedges.lineTo(px(float(x)), py(float(y)))
+        for x, y in zip(xs[::-1], bottom[::-1]):
+            wedges.lineTo(px(float(x)), py(float(y)))
+        wedges.closeSubpath()
+        edges.moveTo(px(float(xs[0])), py(float(edge[0])))
+        for x, y in zip(xs[1:], edge[1:]):
+            edges.lineTo(px(float(x)), py(float(y)))
+    return wedges, edges
 
 
 # ------------------------------------------------------- eye progress bar
