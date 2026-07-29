@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -24,6 +23,7 @@ from .. import launcher
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
 from . import theme
+from .ascii_art import AsciiProgress
 from .onboarding import HintBar
 from .overlay import OverlayWindow
 from .workers import WatcherWorker
@@ -38,6 +38,8 @@ class Dashboard(QWidget):
         self.worker: WatcherWorker | None = None
         self._watching: str = ""
         self._stopping = False
+        self._pending: tuple[str, str] | None = None   # (scenario, "play"|"watch")
+        self._last_log = ""
         self._last_profile: PlayerProfile | None = None
         self._install: launcher.InstallStatus | None = None
         self.overlay = OverlayWindow(settings)
@@ -45,8 +47,10 @@ class Dashboard(QWidget):
         hint = HintBar(settings, (
             "Pick a scenario, then <b>Play adaptive task</b> — kovadapt watches "
             "your runs and regenerates the <b>[Adaptive]</b> variant between "
-            "them. <b>Start adapting</b> does the same without launching the "
-            "game. The overlay shows only in Borderless/Windowed mode."))
+            "them. Mouse telemetry records automatically while a session runs "
+            "(the <b>REC</b> dot). <b>Start adapting</b> does the same without "
+            "launching the game. The overlay shows only in Borderless/Windowed "
+            "mode."))
 
         # ---------------------------------------------------- play controls
         self.install_lbl = QLabel("checking install…")
@@ -72,8 +76,11 @@ class Dashboard(QWidget):
         row1.addWidget(self.scenario, 1)
         row1.addWidget(self.refresh_btn)
         row1.addWidget(self.start_btn)
+        self.rec_lbl = QLabel("")
+        self.rec_lbl.setTextFormat(Qt.RichText)
         row2 = QHBoxLayout()
         row2.addWidget(self.install_lbl, 1)
+        row2.addWidget(self.rec_lbl)
         row2.addWidget(self.launch_btn)
         row2.addWidget(self.play_btn)
         play_box = QGroupBox("Play")
@@ -132,12 +139,9 @@ class Dashboard(QWidget):
             grid.addWidget(lab, i // 3, (i % 3) * 2 + 1)
             self.stat_labels[key] = lab
 
-        # calibration readiness: how much baseline data adaptation still wants
-        self.readiness = QProgressBar()
-        self.readiness.setRange(0, 100)
-        self.readiness.setValue(0)
-        self.readiness.setTextVisible(True)
-        self.readiness.setFormat("calibration %p%")
+        # calibration readiness: the iris motif filling through the rainbow
+        self.readiness = AsciiProgress()
+        self.readiness.set_progress(0.0, "calibration 0%")
         self.readiness_msg = QLabel("play runs to calibrate the adaptive model")
         self.readiness_msg.setProperty("dim", True)
         self.readiness_msg.setWordWrap(True)
@@ -176,7 +180,11 @@ class Dashboard(QWidget):
     # ------------------------------------------------------------- theming
     def restyle(self, pal=None) -> None:
         pal = pal or theme.current()
-        self.trend.setBackground(pal.bg_alt)
+        from PySide6.QtGui import QColor
+
+        trend_bg = QColor(pal.bg_alt)
+        trend_bg.setAlpha(205)          # the backdrop eye ghosts through
+        self.trend.setBackground(trend_bg)
         self.trend_curve.setPen(pg.mkPen(pal.accent, width=2))
         self.trend_curve.setSymbolBrush(pal.accent)
         self._render_install()
@@ -186,6 +194,26 @@ class Dashboard(QWidget):
     def _refresh_install(self) -> None:
         self._install = launcher.check_install(self.s)
         self._render_install()
+
+    def _render_rec(self, watching: bool) -> None:
+        """Make the automatic telemetry recorder visible: it starts with
+        every session — nobody should have to wonder how to turn it on."""
+        pal = theme.current()
+        if not watching:
+            self.rec_lbl.setText("")
+            return
+        if self.s.telemetry_enabled:
+            self.rec_lbl.setText(
+                f"<span style='color:{pal.bad}'>●</span> REC mouse telemetry")
+            self.rec_lbl.setToolTip(
+                "Raw Input recording started automatically with this session; "
+                "flick analysis appears with each run's report")
+        else:
+            self.rec_lbl.setText(
+                f"<span style='color:{pal.warn}'>○</span> telemetry off")
+            self.rec_lbl.setToolTip(
+                "Enable 'Record raw mouse telemetry' in Adaptability to get "
+                "flick analysis and region evidence")
 
     def _render_install(self) -> None:
         st = self._install
@@ -216,25 +244,32 @@ class Dashboard(QWidget):
         self.play()
 
     def watch_scenario(self, name: str) -> None:
-        if self.worker is not None:
-            self.append_log(f"already adapting {self._watching!r} — stop it first")
+        if self.worker is not None and self._watching != name:
+            self._switch_to(name, "watch")
             return
         self.scenario.setCurrentText(name)
-        self.toggle()
+        if self.worker is None:
+            self.toggle()
+
+    def _switch_to(self, name: str, kind: str) -> None:
+        """Stop the running session and start `name` once it is down —
+        changing scenarios must never require a manual stop first."""
+        self._pending = (name, kind)
+        self.append_log(f"switching from {self._watching!r} to {name!r}…")
+        if not self._stopping:
+            self.toggle()               # the stop branch
 
     def play(self) -> None:
         """Watch + queue playlist + deep-link into the adaptive scenario."""
-        if self._stopping:
-            # Deep-linking now would start a run no watcher records.
-            self.append_log("still stopping — play again in a second")
-            return
         name = self._picked_scenario()
         if not name:
             self.append_log("pick a scenario first")
             return
+        if self._stopping:
+            self._pending = (name, "play")   # start this once the stop lands
+            return
         if self.worker is not None and self._watching != name:
-            self.append_log(
-                f"already adapting {self._watching!r} — stop it first")
+            self._switch_to(name, "play")
             return
         if self.worker is None and not self._start_watch(name):
             return
@@ -282,6 +317,7 @@ class Dashboard(QWidget):
         w.start()
         self.start_btn.setText("Stop")
         self.scenario.setEnabled(False)
+        self._render_rec(True)
         self.refresh_profile(name)
         self.overlay.start_session(name + ADAPTIVE_SUFFIX)
         if self.s.overlay_autoshow and not self.ov_toggle.isChecked():
@@ -296,8 +332,17 @@ class Dashboard(QWidget):
         self.start_btn.setText("Start adapting")
         self.scenario.setEnabled(True)
         self._render_install()          # re-enable Play per install status
+        self._render_rec(False)
         self.overlay.stop_session()
         self.append_log("stopped")
+        if self._pending is not None:
+            name, kind = self._pending
+            self._pending = None
+            self.scenario.setCurrentText(name)
+            if kind == "play":
+                self.play()
+            else:
+                self.toggle()
 
     def _on_report(self, rep) -> None:
         self.refresh_profile(self._watching or self._picked_scenario())
@@ -351,6 +396,9 @@ class Dashboard(QWidget):
             self.scenario.setCurrentText(cur)
 
     def append_log(self, line: str) -> None:
+        if line == self._last_log:      # never spam identical lines
+            return
+        self._last_log = line
         self.log.appendPlainText(line)
 
     @staticmethod
@@ -363,8 +411,9 @@ class Dashboard(QWidget):
         self._last_profile = prof
         sl = self.stat_labels
         ready = prof.readiness(self.s.region_cols * self.s.region_rows)
-        self.readiness.setValue(int(ready["score"] * 100))
-        self.readiness.setFormat(f"calibration %p% — {ready.get('stage', '')}")
+        self.readiness.set_progress(
+            ready["score"],
+            f"calibration {ready['score']:.0%} — {ready.get('stage', '')}")
         parts = ready.get("detail", [])
         fracs = (ready["baseline"], ready["regions"], ready["bias"])
         bars = "   ".join(f"{self._ascii_bar(f)} {txt}"

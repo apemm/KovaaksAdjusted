@@ -33,7 +33,7 @@ class SplashScreen(QWidget):
     """Frameless ASCII LED splash. start() begins the show; finish(callback)
     lets it fade once the animation has played out."""
 
-    MIN_SECONDS = 5.0
+    MIN_SECONDS = 6.2     # the LED show plus a couple of breaths
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint

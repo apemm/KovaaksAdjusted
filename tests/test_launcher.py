@@ -87,6 +87,22 @@ def test_play_adaptive_requires_variant(tmp_path):
     assert "start adapting" in msg
 
 
+def test_stage_playlist_in_progress_backs_up_then_replaces(tmp_path):
+    s, root = make_settings(tmp_path)
+    launcher.write_playlist(s, [("X [Adaptive]", 2)])
+    target = root / "Saved" / "SaveGames" / "PlaylistInProgress.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"playlistName": "THEIRS"}')
+    assert launcher._stage_playlist_in_progress(s)
+    assert "kovadapt adaptive" in target.read_text(encoding="utf-8")
+    bak = target.with_suffix(".json.kovadapt.bak")
+    assert bak.is_file() and "THEIRS" in bak.read_text()
+    # a second staging must not clobber the original backup
+    target.write_text('{"playlistName": "THEIRS2"}')
+    assert launcher._stage_playlist_in_progress(s)
+    assert "THEIRS" in bak.read_text()
+
+
 def test_play_adaptive_writes_playlist_and_fires_deep_link(tmp_path, monkeypatch):
     s, _root = make_settings(tmp_path)
     adaptive = "Foo" + ADAPTIVE_SUFFIX

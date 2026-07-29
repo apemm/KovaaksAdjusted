@@ -61,6 +61,13 @@ def recommended_settings(hw: HardwareInfo) -> list[Recommendation]:
         "KovaaK's visual settings don't affect target visibility; Low keeps "
         "GPU frame times flat. Resolution scale 100% — never below.",
         "video", 1))
+    recs.append(Recommendation(
+        "Max the workshop cache lifetime (KovaaK's Settings > Main, set 168)",
+        "The 'loading workshop scenario data' stall on every boot can't be "
+        "disabled, but the cache refresh can be stretched to weekly — the "
+        "game then starts near-instantly between refreshes. kovadapt's own "
+        "adaptive scenarios are local files and never wait on this.",
+        "video", 1))
 
     # --- driver ----------------------------------------------------------
     if hw.supports_reflex:

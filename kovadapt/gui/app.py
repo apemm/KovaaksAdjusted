@@ -29,8 +29,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from PySide6.QtGui import QPainter
+
 from ..config import Settings
 from . import logo, transition
+from .backdrop import Backdrop
 from .analysis_view import AnalysisView
 from .browser import ScenarioBrowser
 from .config_view import ConfigView
@@ -59,9 +62,14 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.analysis, "Analysis")
         tabs.addTab(self.config, "Adaptability")
         tabs.addTab(self.optimizer, "Optimizer")
+        # transparent pages let the parallax backdrop show through the gaps
+        for page in (self.dashboard, self.browser, self.analysis,
+                     self.config, self.optimizer):
+            page.setObjectName("tabPage")
         self.setCentralWidget(tabs)
         self._tabs = tabs
         tabs.setCornerWidget(self._corner(), Qt.TopRightCorner)
+        self.backdrop = Backdrop(self)
 
         # browser actions land on the dashboard (session owner)
         self.browser.play_requested.connect(self._browser_play)
@@ -161,9 +169,21 @@ class MainWindow(QMainWindow):
         self.dashboard.watch_scenario(name)
 
     # ------------------------------------------------------------------
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        p = QPainter(self)
+        self.backdrop.paint(p)
+        p.end()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "backdrop"):
+            self.backdrop.notify_resize()
+
     def _restyle(self, pal) -> None:
         for view in (self.dashboard, self.browser, self.analysis, self.optimizer):
             view.restyle(pal)
+        self.backdrop.notify_theme()
 
     def _on_report(self, rep) -> None:
         self.analysis.show_report(rep, profile=self.dashboard.last_profile)

@@ -107,7 +107,9 @@ QMainWindow {{
         stop: 0.45 {p.bg}, stop: 1 {p.bg});
 }}
 
-QTabWidget::pane {{ border: none; border-top: 1px solid {p.border}; }}
+QTabWidget {{ background: transparent; }}
+QTabWidget::pane {{ border: none; border-top: 1px solid {p.border}; background: transparent; }}
+QWidget#tabPage {{ background: transparent; }}
 QTabBar {{ background: transparent; }}
 QTabBar::tab {{
     background: transparent; color: {p.fg_dim};
@@ -119,7 +121,7 @@ QTabBar::tab:selected {{ color: {p.fg}; border-bottom: 2px solid {p.accent}; }}
 
 QGroupBox {{
     border: 1px solid {p.border}; border-radius: 8px;
-    margin-top: 14px; padding-top: 12px; background: {p.bg_alt};
+    margin-top: 14px; padding-top: 12px; background: {_rgba(p.bg_alt, 214)};
 }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 12px; color: {p.fg_dim}; }}
 
@@ -146,6 +148,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QListWidget {{
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus {{ border-color: {p.accent}; }}
+QPlainTextEdit {{ background: {_rgba(p.bg_alt, 208)}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox::down-arrow {{
     image: none; width: 0; height: 0;

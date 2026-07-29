@@ -221,11 +221,39 @@ def play_adaptive(settings: Settings, base_scenario: str, runs: int = 5) -> tupl
         )
     except OSError as exc:
         return f"could not write playlist: {exc}", False
+    autoloaded = False
+    if not game_is_running():
+        autoloaded = _stage_playlist_in_progress(settings)
     # Deep links cannot open locally-generated scenarios (verified in-game),
     # so the playlist is the primary path; the deep-link URL still boots the
     # game and would start working if KovaaK's ever resolves local names.
     err, ok = _open_steam_url(scenario_url(adaptive))
     if not ok:
         return err, False
-    return ("KovaaK's launching — in-game, open Playlists → kovadapt adaptive "
-            "(or browse local scenarios) to start the task", True)
+    where = ("KovaaK's launching — the kovadapt playlist is staged to resume "
+             "automatically (experimental); fallback: Playlists → kovadapt adaptive"
+             if autoloaded else
+             "KovaaK's launching — in-game, open Playlists → kovadapt adaptive "
+             "(or browse local scenarios) to start the task")
+    return where, True
+
+
+def _stage_playlist_in_progress(settings: Settings) -> bool:
+    """Experimental: the game tracks its resumable playlist in
+    SaveGames/PlaylistInProgress.json. Staging ours there before a cold boot
+    may make the game resume it without any menu clicks. The original file
+    is backed up once (.kovadapt.bak) and this never runs while the game is
+    open (it rewrites the file at runtime)."""
+    target = settings.root / "Saved" / "SaveGames" / "PlaylistInProgress.json"
+    source = _playlist_path(settings)
+    if not source.is_file():
+        return False
+    try:
+        if target.is_file():
+            bak = target.with_suffix(".json.kovadapt.bak")
+            if not bak.is_file():
+                bak.write_bytes(target.read_bytes())
+        target.write_bytes(source.read_bytes())
+        return True
+    except OSError:
+        return False
