@@ -273,8 +273,10 @@ def _pop(age: float) -> float:
 
 
 _SPARK = 0.85          # when the pupil ignites
+_BOLTS = (0.35, 1.45, 2.30, 3.55, 4.40, 5.60)   # lightning angles (rad, cw)
 _SWEEP_START = 4.65    # the reticle's rotating sweep
 _SWEEP_LEN = 0.6
+_RETICLE_RED = "#ff3b30"
 
 
 def led_state(cell: Cell, t: float) -> float:
@@ -286,9 +288,19 @@ def led_state(cell: Cell, t: float) -> float:
     s = cell.seed
 
     if cell.role == "iris":
-        # vein-ragged wavefront: fingers of the pulse run ahead along fibers
-        finger = 0.22 * math.sin(cell.hue * 2 * math.pi * 13.0 + s * 4.0)
-        lit_at = _SPARK + cell.rad * 1.35 + max(finger, -cell.rad)
+        # LIGHTNING ignition: discrete bolts streak outward along seeded
+        # fiber angles almost instantly (with strobe flicker), then the glow
+        # spreads angularly outward from each bolt
+        ang = cell.hue * 2 * math.pi
+        d_bolt = min(abs(math.remainder(ang - b, 2 * math.pi)) for b in _BOLTS)
+        near_bolt = d_bolt < 0.13
+        if near_bolt:
+            lit_at = _SPARK + cell.rad * 0.22 + (d_bolt / 0.13) * 0.05
+            age = t - lit_at
+            if 0.0 < age < 0.38:        # lightning strobe before settling
+                return 1.55 if int(age * 26) % 3 != 0 else 0.25
+        else:
+            lit_at = _SPARK + 0.35 + cell.rad * 0.95 + d_bolt * 0.5
     elif cell.role == "glint":
         lit_at = 3.9
     elif cell.role in ("outline", "lash", "shade"):
@@ -351,7 +363,6 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
     the crosshair reads against the iris detail. `iris_hue` locks the iris
     to one hue (the theme accent drives the backdrop's iris); None keeps
     the full rainbow."""
-    pal = theme.current()
     cw = rect.width() / COLS
     ch = rect.height() / ROWS
     font = _mono()
@@ -410,7 +421,7 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
         p.setPen(Qt.NoPen)
         p.setBrush(back)
         p.drawRoundedRect(QRectF(x - cw * 0.15, y, cw * 1.3, ch * 1.05), 2, 2)
-        col = QColor(pal.accent)
+        col = QColor(_RETICLE_RED)          # the crosshair is always red
         if b > 1.0:
             k = min(b - 1.0, 0.6)
             col = QColor.fromRgbF(col.redF() + (1 - col.redF()) * k,
@@ -421,7 +432,10 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
         f2 = QFont(p.font())
         f2.setBold(True)
         p.setFont(f2)
+        # double-strike with a sub-pixel offset: a touch thicker than bold
         p.drawText(QRectF(x, y, cw * 1.8, ch * 1.25),
+                   Qt.AlignLeft | Qt.AlignTop, cell.ch)
+        p.drawText(QRectF(x + 0.7, y, cw * 1.8, ch * 1.25),
                    Qt.AlignLeft | Qt.AlignTop, cell.ch)
         p.setFont(font)
 
@@ -440,7 +454,7 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
             a = prog * 2 * math.pi - k * 0.11
             if a < 0:
                 continue
-            col = QColor(pal.accent)
+            col = QColor(_RETICLE_RED)
             col.setAlphaF(max(0.65 - k * 0.09, 0.0))
             p.setPen(QPen(col, 2.0))
             p.drawLine(

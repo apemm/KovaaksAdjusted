@@ -43,6 +43,58 @@ from .optimizer_view import OptimizerView
 from .theme import ACCENTS, ThemeManager
 
 
+class _ThemeCombo(QComboBox):
+    """Theme picker whose 'Gamer' entry wears its own cycling RGB letters."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._advance)
+        self.currentIndexChanged.connect(lambda _i: self._sync_timer())
+
+    def _sync_timer(self) -> None:
+        if self.currentData() == "rgb":
+            self._timer.start()
+        else:
+            self._timer.stop()
+            self.update()
+
+    def _advance(self) -> None:
+        from PySide6.QtGui import QBrush, QColor
+
+        self._phase += 1
+        # the popup entry cycles too
+        idx = self.findData("rgb")
+        if idx >= 0:
+            self.setItemData(idx, QBrush(QColor.fromHsvF(
+                (self._phase * 0.045) % 1.0, 0.85, 1.0)), Qt.ForegroundRole)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self.currentData() != "rgb":
+            super().paintEvent(event)
+            return
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
+
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = ""
+        sp = QStylePainter(self)
+        sp.drawComplexControl(QStyle.CC_ComboBox, opt)
+        rect = self.style().subControlRect(
+            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self)
+        x = rect.x() + 6
+        for i, chq in enumerate("Gamer"):
+            sp.setPen(QColor.fromHsvF(
+                ((self._phase * 0.045) + i * 0.14) % 1.0, 0.85, 1.0))
+            sp.drawText(x, rect.y(), rect.width(), rect.height(),
+                        Qt.AlignVCenter, chq)
+            x += sp.fontMetrics().horizontalAdvance(chq)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, themes: ThemeManager) -> None:
         super().__init__()
@@ -88,11 +140,14 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------------- corner bar
     def _corner(self) -> QWidget:
-        self.theme_pick = QComboBox()
-        self.theme_pick.addItems(["Auto theme", "Light", "Dark", "Midnight", "RGB"])
+        self.theme_pick = _ThemeCombo()
+        for label, mode in (("Auto theme", "auto"), ("Light", "light"),
+                            ("Dark", "dark"), ("Midnight", "midnight"),
+                            ("Gamer", "rgb")):
+            self.theme_pick.addItem(label, mode)
         self.theme_pick.setToolTip(
-            "Auto follows Windows · Midnight is near-black · RGB is midnight "
-            "with rainbow accents (and a certain cat)")
+            "Auto follows Windows · Midnight is near-black · Gamer is "
+            "midnight with cycling RGB (and a certain cat)")
         self.theme_pick.setCurrentIndex(
             {"auto": 0, "light": 1, "dark": 2, "midnight": 3, "rgb": 4}
             .get(self.themes.mode, 0))
@@ -134,7 +189,7 @@ class MainWindow(QMainWindow):
 
     def _pick_mode(self, i: int) -> None:
         transition.ascii_wipe(self)   # capture the old look, then restyle
-        self.themes.set_mode(("auto", "light", "dark", "midnight", "rgb")[i])
+        self.themes.set_mode(self.theme_pick.itemData(i))
 
     def _pick_accent(self, i: int) -> None:
         transition.ascii_wipe(self)
