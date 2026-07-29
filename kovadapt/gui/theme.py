@@ -269,15 +269,21 @@ QFrame[sectionDivider="true"] {{ background: {p.border}; border: none; }}
 
 QGroupBox {{
     border: 1px solid {p.border}; border-radius: 8px;
-    margin-top: 16px; padding-top: 14px; background: {_rgba(p.bg_alt, 214)};
+    /* The title lives in this margin (subcontrol-origin: margin), so the
+       margin IS the clearance between the label and the box's top border.
+       At 16px an 11px label sat right on the line. */
+    margin-top: 26px; padding-top: 12px; background: {_rgba(p.bg_alt, 214)};
 }}
 /* A panel's label outranks its contents: it was set in the DIM role, which
-   inverted the hierarchy on every section of the app. Small uppercase with
-   positive tracking is the one place tracking should open up. */
+   inverted the hierarchy on every section of the app. Small and tracked is
+   the one place letter-spacing should open up rather than tighten.
+   NOTE: no text-transform here — Qt Style Sheets do not implement it, so the
+   rule silently did nothing; titles are uppercased at the call site instead. */
 QGroupBox::title {{
-    subcontrol-origin: margin; left: 12px; padding: 0 4px;
+    subcontrol-origin: margin; subcontrol-position: top left;
+    left: 12px; padding: 0 6px 8px 6px;
     color: {p.fg}; font-size: 11px; font-weight: 700;
-    letter-spacing: 0.8px; text-transform: uppercase;
+    letter-spacing: 0.8px;
 }}
 
 QPushButton {{

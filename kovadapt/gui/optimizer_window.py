@@ -7,9 +7,10 @@ A separate top-level window (dark, simple) with four sections:
     Watchdog      auto-tune every game launch; optional start with Windows
     Advice        hardware-matched launch options and settings
 
-Scans run on a QThread (the GPU probe shells out to PowerShell, ~1s);
-fixes are individually fast and run inline on click. Watchdog events
-arrive on its polling thread and are bridged into Qt via a signal.
+Scans run on a QThread (the GPU probe shells out to PowerShell, ~1s) and so
+do fixes — several shell out too, and the power-plan one chains four
+powercfg calls with a 15 s timeout each. Watchdog events arrive on its
+polling thread and are bridged into Qt via a signal.
 """
 
 from __future__ import annotations
@@ -70,6 +71,37 @@ class _ScanWorker(QThread):
         self.done.emit(hw, results)
 
 
+class _FixWorker(QThread):
+    """Checkup fixes off the UI thread, one after another.
+
+    A fix is not "individually fast": most shell out or hit the registry, and
+    _f_power alone chains four powercfg calls whose subprocess timeout is 15 s
+    apiece — run inline on click that froze the window for up to a minute.
+    SystemCheckup.fix() converts its own exceptions into a message, so this
+    loop cannot die half way through a batch.
+    """
+
+    one_done = Signal(str, str)     # (check_id, outcome message)
+
+    def __init__(self, checkup: SystemCheckup, check_ids: list[str],
+                 parent=None) -> None:
+        super().__init__(parent)
+        self.checkup = checkup
+        self.check_ids = list(check_ids)
+
+    def run(self) -> None:
+        for cid in self.check_ids:
+            self.one_done.emit(cid, self.checkup.fix(cid))
+
+
+# Worker threads that were still running at shutdown(). Qt 6 aborts the
+# process when a running QThread is destroyed, and a fix can be mid registry
+# write, so parking one here (out of the window's child tree, with a live
+# Python reference) is safer than terminate()ing it: the interpreter is on
+# its way out anyway.
+_PARKED: list[QThread] = []
+
+
 class _WatchdogBridge(QObject):
     event = Signal(str)
 
@@ -106,6 +138,13 @@ class _CheckRow(QFrame):
         self._dot.setStyleSheet(
             f"color: {_status_color(self.result.status)}; font-size: 15px;")
 
+    def mark_pending(self) -> None:
+        """Queued for the fix worker: the button can't be clicked twice, and
+        the row says why nothing has happened yet."""
+        if hasattr(self, "fix_btn"):
+            self.fix_btn.setEnabled(False)
+            self.fix_btn.setText("Applying…")
+
     def show_outcome(self, msg: str) -> None:
         self.detail.setText(msg)
         if hasattr(self, "fix_btn"):
@@ -124,6 +163,8 @@ class OptimizerWindow(QWidget):
         self.hw: HardwareInfo | None = None
         self.checkup: SystemCheckup | None = None
         self._scan: _ScanWorker | None = None
+        self._fix: _FixWorker | None = None
+        self._suspended: list[_CheckRow] = []   # buttons parked during a batch
 
         # --- hardware summary -------------------------------------------
         self.hw_label = QLabel("Scanning hardware…")
@@ -241,10 +282,8 @@ class OptimizerWindow(QWidget):
         pal = theme.current()
         self.launch_label.setStyleSheet(
             f"font-family: Consolas, monospace; color: {pal.accent};")
-        for i in range(self.rows_layout.count() - 1):
-            w = self.rows_layout.itemAt(i).widget()
-            if isinstance(w, _CheckRow):
-                w.restyle()
+        for row in self._rows():
+            row.restyle()
 
     # ------------------------------------------------- input-health evidence
     def note_input_health(self, ih: dict) -> None:
@@ -283,6 +322,8 @@ class OptimizerWindow(QWidget):
     def rescan(self) -> None:
         if self._scan is not None and self._scan.isRunning():
             return
+        if self._fix is not None and self._fix.isRunning():
+            return   # rebuilding the rows now would orphan the pending fixes
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("Scanning…")
         self._scan = _ScanWorker(self.s.kovaaks_root, parent=self)
@@ -316,16 +357,10 @@ class OptimizerWindow(QWidget):
             item = self.rows_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        fixable_safe = 0
         for r in results:
             self.rows_layout.insertWidget(self.rows_layout.count() - 1,
                                           _CheckRow(r, self._fix_row))
-            if r.can_fix and r.safe:
-                fixable_safe += 1
-        self.fix_safe_btn.setEnabled(fixable_safe > 0)
-        self.fix_safe_btn.setText(
-            f"Fix all safe items ({fixable_safe})" if fixable_safe
-            else "Fix all safe items")
+        self._refresh_fix_all()
 
         # advice
         self.launch_label.setText(steam_launch_options(hw))
@@ -345,17 +380,77 @@ class OptimizerWindow(QWidget):
         self.recs_label.setText(html)
 
     # --------------------------------------------------------------- fixes
-    def _fix_row(self, row: _CheckRow) -> None:
-        if self.checkup is None:
-            return
-        row.show_outcome(self.checkup.fix(row.result.check_id))
-
-    def fix_all_safe(self) -> None:
+    def _rows(self) -> list[_CheckRow]:
+        out = []
         for i in range(self.rows_layout.count() - 1):
             w = self.rows_layout.itemAt(i).widget()
-            if (isinstance(w, _CheckRow) and w.result.can_fix and w.result.safe
-                    and hasattr(w, "fix_btn") and w.fix_btn.isEnabled()):
-                self._fix_row(w)
+            if isinstance(w, _CheckRow):
+                out.append(w)
+        return out
+
+    def _pending_safe(self) -> list[_CheckRow]:
+        """Safe rows whose fix has not been applied (or queued) yet."""
+        return [w for w in self._rows()
+                if w.result.can_fix and w.result.safe
+                and hasattr(w, "fix_btn") and w.fix_btn.isEnabled()]
+
+    def _refresh_fix_all(self) -> None:
+        n = len(self._pending_safe())
+        self.fix_safe_btn.setEnabled(n > 0)
+        self.fix_safe_btn.setText(
+            f"Fix all safe items ({n})" if n else "Fix all safe items")
+
+    def _fix_row(self, row: _CheckRow) -> None:
+        self._start_fixes([row])
+
+    def fix_all_safe(self) -> None:
+        self._start_fixes(self._pending_safe())
+
+    def _start_fixes(self, rows: list[_CheckRow]) -> None:
+        """Hand a batch to the fix worker. Never runs on the UI thread: the
+        power-plan fix can take the better part of a minute."""
+        if self.checkup is None or not rows:
+            return
+        if self._fix is not None and self._fix.isRunning():
+            return
+        for row in rows:
+            row.mark_pending()
+        # Only one batch runs at a time, so every other Fix button goes quiet
+        # for the duration — clicking one would otherwise be a silent no-op.
+        self._suspended = [r for r in self._rows() if r not in rows
+                           and hasattr(r, "fix_btn") and r.fix_btn.isEnabled()]
+        for r in self._suspended:
+            r.fix_btn.setEnabled(False)
+        self.scan_btn.setEnabled(False)      # a re-scan would replace the rows
+        self.fix_safe_btn.setEnabled(False)
+        self._fix = _FixWorker(self.checkup, [r.result.check_id for r in rows],
+                               parent=self)
+        self._fix.one_done.connect(self._on_fixed)
+        self._fix.finished.connect(self._on_fixes_done)
+        self._fix.start()
+
+    def _on_fixed(self, check_id: str, msg: str) -> None:
+        # The row can be gone (a scan rebuilt them) — then there is nothing to
+        # report the outcome on, and dropping it is the right answer.
+        for row in self._rows():
+            if row.result.check_id == check_id:
+                row.show_outcome(msg)
+                return
+
+    def _on_fixes_done(self) -> None:
+        # Re-derive the live rows rather than trusting the list captured when
+        # the batch started. _on_scan takes every row out of the layout and
+        # deleteLater()s it, so a scan landing mid-batch leaves these as freed
+        # C++ objects and touching one raises "Internal C++ object already
+        # deleted" — the same reason _on_fixed above re-queries instead of
+        # holding a reference.
+        live = set(self._rows())
+        for row in self._suspended:
+            if row in live:
+                row.fix_btn.setEnabled(True)
+        self._suspended = []
+        self.scan_btn.setEnabled(True)
+        self._refresh_fix_all()
 
     # ------------------------------------------------------------ watchdog
     def _toggle_watchdog(self, on: bool) -> None:
@@ -376,12 +471,19 @@ class OptimizerWindow(QWidget):
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
-        """App is exiting: wait for the scan thread before Qt teardown (a
+        """App is exiting: wait for the worker threads before Qt teardown (a
         QThread destroyed while running is a fatal abort in Qt 6), then close
         for real so this window can't keep the app alive."""
         self._closing = True
-        if self._scan is not None and self._scan.isRunning():
-            self._scan.wait(20000)
+        for th in (self._scan, self._fix):
+            if th is None or not th.isRunning():
+                continue
+            if not th.wait(20000):
+                # Still going (a wedged powercfg is the realistic case). Take
+                # it out of the child tree and park it so Qt cannot destroy it
+                # with this window; see _PARKED.
+                th.setParent(None)
+                _PARKED.append(th)
         self.close()
 
     def closeEvent(self, event) -> None:

@@ -9,11 +9,14 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from kovadapt.adapt.engine import AdaptationEngine
 from kovadapt.analysis.report import RunReport
 from kovadapt.config import ADAPTIVE_SUFFIX, Settings
 from kovadapt.profile.player import PlayerProfile
+from kovadapt.scenario.generator import generate_adaptive_variant
 from kovadapt.scenario.sce import SceFile
 from kovadapt.stats.parser import parse_stats_csv
 from kovadapt.watcher import SessionWatcher
@@ -322,3 +325,75 @@ def test_clip_recorder_failure_does_not_kill_the_session(env: Settings, monkeypa
     w._start_capture()                      # must not raise
     assert w.clip_recorder is None
     assert any("clip capture: unavailable" in m for m in logs)
+
+
+def test_unactionable_focus_is_not_credited_to_the_bandit(env: Settings):
+    """A focus the .sce could not express must not become bandit evidence.
+
+    resample_spawns reuses original spawn coordinates and never invents them,
+    so a focus region holding no candidate spawn cannot be emphasized, and a
+    layout with fewer target spawns than grid cells is left untouched entirely
+    (generator.resample_spawns returns an empty set for both). plan() has
+    already stored the region as last_focus by then, so credit_focus_region()
+    would book the NEXT run's accuracy deficit against an emphasis the player
+    never saw — evidence manufactured from a change that was silently dropped.
+
+    This fixture is the untouched-layout case: 15 target spawns against a 5x5
+    grid, so nothing is ever resampled and NO focus is actionable here.
+    """
+    from kovadapt.scenario.generator import resample_spawns
+
+    w = SessionWatcher(env, BASE)
+    w.bootstrap()
+    prof = PlayerProfile.load(w.adaptive_name, env.profile_path)
+    engine = AdaptationEngine(env, rng=np.random.default_rng(0))
+    plan = engine.plan(prof, None)
+
+    sce = SceFile.read(w.base_sce_path())
+    assert resample_spawns(sce, plan.spawn_weights, env.region_cols,
+                           env.region_rows, plan.seed) == set(),         "fixture is meant to be the too-few-spawns case"
+
+    generate_adaptive_variant(w.base_sce_path(), plan, env, w.adaptive_sce_path())
+    assert plan.focus_applied is False,         "an untouched layout expresses no focus, so the arm must not be credited"
+
+    # and the watcher acts on it: last_focus is cleared before the profile save
+    logs: list[str] = []
+    w2 = SessionWatcher(env, BASE, on_update=logs.append)
+    w2.bootstrap()
+    w2.process_run(write_stats_csv(env.stats_dir, BASE, ts="2026.05.27-21.00.00"))
+    saved = PlayerProfile.load(w2.adaptive_name, env.profile_path)
+    assert saved.last_focus is None, "an unactionable focus was still persisted"
+    assert any("focus not applied" in m for m in logs)
+
+
+def test_an_actionable_focus_is_still_credited(env: Settings):
+    """The guard must not silently disable the bandit on real layouts."""
+    from kovadapt.scenario.generator import resample_spawns
+
+    # A 6x6 wall: 36 target spawns clears the 5x5 grid floor, so resampling
+    # really runs and a focus region CAN be expressed. Built from the same
+    # per-entity block mini_sce_text uses, so the .sce grammar stays identical.
+    block = (
+        "\tentity\n\t\ttype PlayerSpawn\n"
+        "\t\tVector3 position {x}.000000 288.000000 {z}.000000\n"
+        "\t\tVector3 angles 180.000000 0.000000 0.000000\n"
+    )
+    spawns = "".join(
+        block.format(x=x, z=z)
+        for x in (-900, -540, -180, 180, 540, 900)
+        for z in (100, 340, 580, 820, 1060, 1300)
+    )
+    base = mini_sce_text(BASE)
+    head = base[:base.index("\tentity\n\t\ttype PlayerSpawn")]
+    w = SessionWatcher(env, BASE)
+    w.base_sce_path().write_text(head + spawns, encoding="utf-8")
+    w.bootstrap()
+    prof = PlayerProfile.load(w.adaptive_name, env.profile_path)
+    plan = AdaptationEngine(env, rng=np.random.default_rng(0)).plan(prof, None)
+    sce = SceFile.read(w.base_sce_path())
+    used = resample_spawns(sce, plan.spawn_weights, env.region_cols,
+                           env.region_rows, plan.seed)
+    assert used, "dense layout should be reweighted"
+    plan.focus_region = sorted(used)[0]
+    generate_adaptive_variant(w.base_sce_path(), plan, env, w.adaptive_sce_path())
+    assert plan.focus_applied is True

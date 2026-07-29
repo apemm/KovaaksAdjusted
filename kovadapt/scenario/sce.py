@@ -64,8 +64,26 @@ class SceFile:
         return cls(text.split("\n"), bom=bom, newline=newline)
 
     def write(self, path: Path | str) -> None:
+        """Write atomically (tmp + replace), as PlayerProfile.save does.
+
+        The destination is a file in the game's Scenarios folder, and a torn
+        write there is unrecoverable in practice: KovaaK's cannot load a
+        truncated .sce, watch() only bootstraps when the variant is *missing*
+        (a half-written one exists), and the watcher only rewrites it after a
+        completed run of a scenario the player can no longer load. Writing a
+        sibling tmp and renaming means any failure leaves the previous
+        variant whole.
+        """
+        path = Path(path)
         text = ("\ufeff" if self.bom else "") + self.newline.join(self.lines)
-        Path(path).write_bytes(text.encode("utf-8"))
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_bytes(text.encode("utf-8"))
+            tmp.replace(path)
+        finally:
+            # No debris in the user's Scenarios folder if the rename failed
+            # (after a successful replace there is nothing left to remove).
+            tmp.unlink(missing_ok=True)
 
     def _find_map_data(self) -> int:
         for i, ln in enumerate(self.lines):

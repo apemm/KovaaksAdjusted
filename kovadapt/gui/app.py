@@ -325,8 +325,14 @@ def main() -> int:
     if not settings.skip_splash:
         splash = logo.SplashScreen()   # the ASCII eye wakes up while we work
         splash.start()
-        app.processEvents()
+        app.processEvents()            # dark stage on screen before we block
+    # MainWindow construction blocks the event loop for ~0.6 s or more, so the
+    # choreography clock is (re)started AFTER it: otherwise those frames are
+    # never painted and the opening skips its own first beat.
     win = MainWindow(settings, themes)
+    if splash is not None:
+        splash.begin()
+        app.processEvents()
 
     from .boot import BootWorker
 

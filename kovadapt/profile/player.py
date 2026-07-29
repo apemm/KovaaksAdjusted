@@ -56,6 +56,7 @@ class PlayerProfile:
     last_focus: str | None = None    # region arm used for the run in flight
     last_run_ts: str = ""
     ewma_bias: float = 0.0           # directional flick bias (+ = left weaker)
+    bias_obs: int = 0                # runs with a usable bias measurement folded in
     archetype: str = ""              # clicking | tracking | switching ("" = unknown)
     # Fitts throughput trend (ms of flick time per bit of difficulty; lower =
     # better). Two EWMAs at different half-lives form the minimal persisted
@@ -99,11 +100,25 @@ class PlayerProfile:
 
     def observe_bias(self, bias_score: float, half_life: float = 5.0) -> None:
         """Fold one run's directional bias score into its EWMA (same
-        convention as analysis.directional_bias: positive = left weaker)."""
-        if self.run_count <= 1:
+        convention as analysis.directional_bias: positive = left weaker).
+
+        The cold start keys on bias observations, not runs (same shape as
+        observe_fitts/fitts_obs). Bias is measurable far less often than a
+        run happens — the watcher only supplies one when a run produced >= 8
+        flicks with >= 3 per side, and the `replay` backfill never supplies
+        one at all — so the first usable measurement routinely lands at run
+        20+. Keying on run_count folded that first measurement into a 0.0
+        EWMA at the EWMA rate (~13% at the default half-life), so a real
+        0.30 skew registered as 0.04 and stayed under the engine's 0.05
+        dodge gate for another two runs. Legacy profiles predate bias_obs,
+        so a non-zero EWMA also counts as evidence: the migration must
+        blend into it, never overwrite it.
+        """
+        if self.bias_obs == 0 and self.ewma_bias == 0.0:
             self.ewma_bias = float(bias_score)
         else:
             self.ewma_bias += self._alpha(half_life) * (float(bias_score) - self.ewma_bias)
+        self.bias_obs += 1
 
     def observe_fitts(self, fitts_slope_ms: float, half_life: float = 5.0) -> None:
         """Fold one run's Fitts slope (analysis/report.py: ms of flick time

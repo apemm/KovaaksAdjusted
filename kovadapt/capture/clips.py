@@ -145,7 +145,8 @@ class ClipRecorder:
     # ------------------------------------------------------------------
     def save_clip(self, t0: float, t1: float, path: Path | str) -> Path | None:
         """Encode buffered frames with timestamps in [t0, t1] to mp4.
-        Returns the path, or None if the window isn't in the buffer."""
+        Returns the path, or None if the window isn't in the buffer or the
+        encoder refused to open (never a path without a playable file)."""
         if cv2 is None:
             return None
         with self._lock:
@@ -164,6 +165,15 @@ class ClipRecorder:
         vw = cv2.VideoWriter(
             str(path), cv2.VideoWriter_fourcc(*"mp4v"), rate, (w, h)
         )
+        # A writer whose codec failed to open (no mp4v encoder in this opencv
+        # build) silently no-ops every write() and leaves nothing — or a
+        # 0-byte stub — on disk. Returning the path anyway gave the caller a
+        # phantom clip: the report recorded it and the UI offered to play it.
+        if hasattr(vw, "isOpened") and not vw.isOpened():
+            vw.release()
+            if path.is_file() and path.stat().st_size == 0:
+                path.unlink()   # only ever the empty stub we just created
+            return None
         try:
             # Decode one frame at a time so the whole clip is never resident
             # raw; the ring itself only ever holds JPEG bytes.

@@ -16,6 +16,9 @@ its own movement shape predicts (cleaner than usual for that kind of
 motion); negative = worse. The 64-dim embedding rides along for
 downstream clustering/visualization.
 
+Heads whose training target was constant carry no z scale at all and are
+dropped from both the residuals and the mean (see ``_MIN_TRAIN_STD``).
+
 Everything degrades gracefully (CLAUDE.md contract): ``load_scorer``
 returns ``None`` when torch is missing, the checkpoint does not exist, or
 it fails to load — callers need no torch-awareness beyond a None check.
@@ -36,6 +39,16 @@ from .train import CHECKPOINT_NAME
 
 if TYPE_CHECKING:  # torch is optional at runtime ([ml] extra); types only here
     from .model import FlickEncoder
+
+#: train.py standardizes targets with ``std.clamp_min(1e-6)``, so a head that
+#: was *constant* across the train split (every flick undershot -> overshoot
+#: 0.0, every flick clean -> corrections 0) ships a std sitting on that floor.
+#: Dividing a real difference by it yields ~1e5 z-units, which pins every
+#: flick's quality at the -3 clip and writes the nonsense into the report
+#: JSON. Such a head has no calibrated scale, so it is scored as no signal
+#: rather than as catastrophe. NaN stds (a one-sample split) fail this test
+#: too, which is the behaviour we want.
+_MIN_TRAIN_STD = 1e-5
 
 
 @dataclass
@@ -63,6 +76,9 @@ class FlickScorer:
         self.model = model
         self.mean = mean
         self.std = std
+        # Heads with real training variance — the only ones a residual means
+        # anything for (see _MIN_TRAIN_STD).
+        self.scored = np.asarray(std, dtype=np.float64) > _MIN_TRAIN_STD
         self.heads = heads
         self.n_samples = n_samples
         self.rate = rate
@@ -86,6 +102,8 @@ class FlickScorer:
         pred = pred_z.numpy() * self.std + self.mean          # de-normalized
         emb = emb.numpy()
 
+        # Degenerate heads divide by the training clamp, so neutralize them.
+        denom = np.where(self.scored, self.std, 1.0)
         out: list[FlickScore] = []
         for row, i in enumerate(kept_idx):
             f = flicks[i]
@@ -93,8 +111,11 @@ class FlickScorer:
                 [f.overshoot, float(f.corrections), np.log(max(f.duration, 1e-3))],
                 dtype=np.float64,
             )
-            z = (actual - pred[row]) / self.std               # + = worse than predicted
-            quality = float(np.clip(-z.mean(), -3.0, 3.0))
+            # + = worse than predicted; unscored heads report no residual and
+            # are left out of the mean instead of drowning it.
+            z = np.where(self.scored, (actual - pred[row]) / denom, 0.0)
+            live = z[self.scored]
+            quality = float(np.clip(-live.mean(), -3.0, 3.0)) if live.size else 0.0
             out.append(
                 FlickScore(
                     t_click=f.t_click,

@@ -479,6 +479,20 @@ class SplashScreen(QWidget):
             # anywhere in the app must still skip.
             app.installEventFilter(self)
             self._filtering = True
+        self.begin()
+
+    def begin(self) -> None:
+        """Start the choreography clock.
+
+        Split from start() because the caller builds MainWindow between the
+        two, and that BLOCKS the event loop — measured at ~590 ms on an empty
+        scenario tree and longer on a real install. With the clock already
+        running, every one of those frames was simply never painted: the
+        heartbeat (which peaks ~0.36 s in) had come and gone before the first
+        repaint, so the opening appeared to jump straight into the ignition.
+        Showing the dark stage first and starting the clock afterwards costs
+        nothing — the stage IS darkness at t=0 — and the whole beat survives.
+        """
         self._clock.start()
         self._timer.start()
 

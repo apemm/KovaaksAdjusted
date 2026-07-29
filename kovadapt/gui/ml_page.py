@@ -245,10 +245,16 @@ class OUTraceDiagram(_Diagram):
     N, ROWS = 56, 9
     LX, TY, CWD, CHT = 48.0, 8.0, 7.2, 10.0
     SEG = 70              # frames per segment: N reveal + hold
+    CAP_H = 15.0          # line box an 8pt caption actually needs
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedSize(470, 112)
+        # Height must clear the axis CAPTION, not just the trace. At 112 the
+        # caption's own rect ran past the widget and the widget clipped it;
+        # deriving the height from the same terms that place the caption keeps
+        # the two from drifting apart again.
+        self.setFixedSize(
+            470, int(self.TY + self.ROWS * self.CHT + 4 + self.CAP_H + 4))
         path = OrnsteinUhlenbeck(theta=0.35, sigma=0.25).path(0.0, 400, seed=11)
         self._vals = 1.0 / (1.0 + np.exp(-2.0 * path))   # squash into (0, 1)
 
@@ -290,10 +296,14 @@ class OUTraceDiagram(_Diagram):
 
         p.setPen(QColor(pal.fg_dim))
         p.setFont(QFont("Segoe UI", 8))
-        p.drawText(QRectF(2, self.TY, 44, 12), Qt.AlignLeft, "twitchy")
-        p.drawText(QRectF(2, self.TY + (self.ROWS - 1) * self.CHT, 44, 12),
+        # CAP_H, not 12: an 8pt face needs ~14px of line box, so a 12px rect
+        # clipped its own descenders — "twitchy" lost its y and the axis
+        # caption was cut through the middle.
+        p.drawText(QRectF(2, self.TY, 44, self.CAP_H), Qt.AlignLeft, "twitchy")
+        p.drawText(QRectF(2, self.TY + (self.ROWS - 1) * self.CHT, 44, self.CAP_H),
                    Qt.AlignLeft, "calm")
-        p.drawText(QRectF(self.LX, self.TY + self.ROWS * self.CHT + 4, 220, 12),
+        p.drawText(QRectF(self.LX, self.TY + self.ROWS * self.CHT + 4, 220,
+                          self.CAP_H),
                    Qt.AlignLeft, "one step per run →")
 
 

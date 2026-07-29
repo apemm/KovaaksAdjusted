@@ -35,6 +35,7 @@ from .config import ADAPTIVE_SUFFIX, Settings
 STEAM_APP_ID = 824270
 GAME_PROCESS = "FPSAimTrainer"          # matches optimize.watchdog.GAME_PROCESS
 PLAYLIST_NAME = "kovadapt adaptive"     # one well-known playlist, overwritten per task
+STAGE_ENV = "KOVADAPT_STAGE_PLAYLIST"   # opt-in for the experimental resume staging
 
 WINDOWS = sys.platform == "win32"
 
@@ -222,7 +223,7 @@ def play_adaptive(settings: Settings, base_scenario: str, runs: int = 5) -> tupl
     except OSError as exc:
         return f"could not write playlist: {exc}", False
     autoloaded = False
-    if not game_is_running():
+    if _staging_opted_in() and not game_is_running():
         autoloaded = _stage_playlist_in_progress(settings)
     # Deep links cannot open locally-generated scenarios (verified in-game),
     # so the playlist is the primary path; the deep-link URL still boots the
@@ -238,22 +239,59 @@ def play_adaptive(settings: Settings, base_scenario: str, runs: int = 5) -> tupl
     return where, True
 
 
+def _staging_opted_in() -> bool:
+    """Is the experimental PlaylistInProgress staging switched on?
+
+    Off by default: it overwrites a file inside the game's own save folder,
+    and nobody has ever confirmed KovaaK's actually resumes a staged playlist
+    on a cold boot. An unverified convenience does not justify replacing the
+    user's real in-progress playlist on every Play click — the playlist under
+    Playlists/ is the supported path and is written either way. Opt in with
+    KOVADAPT_STAGE_PLAYLIST=1; deliberately an env var rather than a Settings
+    toggle, because a GUI checkbox would advertise a behaviour we cannot
+    demonstrate works.
+    """
+    import os
+
+    return os.environ.get(STAGE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _stage_playlist_in_progress(settings: Settings) -> bool:
-    """Experimental: the game tracks its resumable playlist in
-    SaveGames/PlaylistInProgress.json. Staging ours there before a cold boot
-    may make the game resume it without any menu clicks. The original file
-    is backed up once (.kovadapt.bak) and this never runs while the game is
-    open (it rewrites the file at runtime)."""
+    """Experimental (opt-in, see `_staging_opted_in`): the game tracks its
+    resumable playlist in SaveGames/PlaylistInProgress.json. Staging ours
+    there before a cold boot may make the game resume it without any menu
+    clicks. Never runs while the game is open (it rewrites the file at
+    runtime).
+
+    The backups are the entire safety story, since this replaces a file the
+    game owns, so both of them exist for a reason:
+
+    * ``.kovadapt.bak`` keeps the oldest genuine original — but it only
+      counts as taken once it holds real bytes. The game leaves
+      PlaylistInProgress.json empty between playlists, and a one-shot backup
+      taken then froze 0 bytes in as "the original"; every later staging
+      afterwards destroyed a real in-progress playlist with nothing to
+      restore from. (Observed in the wild: a 0-byte .kovadapt.bak next to a
+      live file.)
+    * ``.kovadapt.prev.bak`` keeps whatever *this* write is replacing, so the
+      bytes about to be destroyed always survive somewhere.
+
+    Content byte-identical to what we are writing is our own staging, so it
+    never rotates over a genuine prev backup.
+    """
     target = settings.root / "Saved" / "SaveGames" / "PlaylistInProgress.json"
     source = _playlist_path(settings)
     if not source.is_file():
         return False
     try:
-        if target.is_file():
-            bak = target.with_suffix(".json.kovadapt.bak")
-            if not bak.is_file():
-                bak.write_bytes(target.read_bytes())
-        target.write_bytes(source.read_bytes())
+        payload = source.read_bytes()
+        existing = target.read_bytes() if target.is_file() else b""
+        if existing.strip() and existing != payload:
+            first = target.with_suffix(".json.kovadapt.bak")
+            if not (first.is_file() and first.stat().st_size):
+                first.write_bytes(existing)
+            target.with_suffix(".json.kovadapt.prev.bak").write_bytes(existing)
+        target.write_bytes(payload)
         return True
     except OSError:
         return False

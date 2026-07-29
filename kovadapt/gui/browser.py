@@ -182,6 +182,11 @@ class ScenarioBrowser(QWidget):
         return sorted(self._rows, key=lambda r: r.name.lower())
 
     def _rebuild(self) -> None:
+        # A rebuild is cosmetic — sort change, Refresh, theme/accent switch —
+        # but it clears the table, and clearing drops the selection. That
+        # disabled Play / Start adapting / Generate variant every time the
+        # theme changed, so the picked scenario is carried across.
+        keep = self.selected()
         pal = theme.current()
         self.table.setRowCount(0)
         for row in self._sorted_rows():
@@ -212,7 +217,20 @@ class ScenarioBrowser(QWidget):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(i, col, item)
         self._apply_filter()
+        if keep:
+            self._reselect(keep)
         self._selection_changed()
+
+    def _reselect(self, name: str) -> None:
+        """Re-select the row for `name` after a rebuild. No-op when the
+        scenario is gone or the current filter hides it — selecting a hidden
+        row would arm the action buttons for something invisible."""
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, 0)
+            if (item is not None and item.data(Qt.UserRole) == name
+                    and not self.table.isRowHidden(i)):
+                self.table.selectRow(i)
+                return
 
     def _fit_table_height(self) -> None:
         """Height the table to its visible rows, within sane bounds.
@@ -292,10 +310,13 @@ class ScenarioBrowser(QWidget):
                 self.s.scenarios_dir / f"{name}.sce", plan, self.s,
                 self.s.scenarios_dir / f"{adaptive}.sce")
             profile.save(self.s.profile_path)
-            self.detail.setText(f"wrote {out.name} — {plan.describe()}")
+            msg = f"wrote {out.name} — {plan.describe()}"
         except OSError as exc:
-            self.detail.setText(f"could not generate: {exc}")
+            msg = f"could not generate: {exc}"
+        # refresh() rewrites the detail line from the (re-)selected row, so
+        # the outcome has to be written after it or it is never seen.
         self.refresh()
+        self.detail.setText(msg)
 
     # ------------------------------------------------------------------
     def restyle(self, *_pal) -> None:

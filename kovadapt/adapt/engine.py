@@ -49,6 +49,14 @@ class AdaptationPlan:
     seed: int = 0
     dodge_bias: float = 0.0    # strafe skew toward the weak side (+ = left)
     fatigue: float = 0.0       # easing applied to this plan (0 = none)
+    # Written by the GENERATOR, not the planner: whether the emitted .sce could
+    # actually express focus_region. A region holding no candidate spawn point
+    # cannot be emphasized — resampling reuses original coordinates and never
+    # invents them — so its weight is absorbed by the others and the scenario
+    # carries no focus at all. The watcher reads this to avoid crediting a
+    # bandit arm for an emphasis the player never actually saw. Defaults True
+    # so a plan that never reaches the generator behaves exactly as before.
+    focus_applied: bool = True
 
     def describe(self) -> str:
         out = (

@@ -234,23 +234,70 @@ class MouseRecorder:
         self._hwnd = None
         self._ready = threading.Event()
         self._lock = threading.Lock()
+        self._orphaned = False      # a pump we failed to shut down
 
     # ------------------------------------------------------------------
     def start(self) -> None:
         if not RAW_INPUT_AVAILABLE:
             raise RuntimeError("Raw Input capture requires Windows")
         if self._thread is not None:
+            if self._orphaned:
+                # A previous start() timed out on a pump that would not die.
+                # Returning "already running" here would be exactly the silent
+                # no-op the re-arm below exists to prevent.
+                raise RuntimeError(
+                    "a previous Raw Input pump did not shut down; "
+                    "restart the app before recording again")
             return
+        # Re-arm before spawning: `_ready` outlives stop(), so a second start()
+        # on the same recorder (GUI Stop -> Start) would otherwise see the
+        # *first* session's flag and return happily even when the new pump died
+        # immediately on the stale-window-class path in _run() — capture dead,
+        # nothing raised.
+        self._ready.clear()
         self._thread = threading.Thread(target=self._run, name="kovadapt-rawinput", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=5.0):
+            # Tear it down BEFORE dropping the reference. Simply clearing
+            # _thread orphaned a pump that was merely slow: once it is
+            # unreachable, stop() can no longer post WM_CLOSE or join it, so
+            # the message-only window and its registered class outlive the
+            # recorder — and a stale class dispatching into a freed WNDPROC
+            # thunk is a native crash that has shipped before.
+            if not self._teardown():
+                self._orphaned = True
+                raise RuntimeError(
+                    "Raw Input window failed to initialize and its pump "
+                    "would not stop")
             raise RuntimeError("Raw Input window failed to initialize")
 
-    def stop(self) -> MouseTrace:
-        if self._thread is not None and self._hwnd:
+    def _teardown(self, timeout: float = 3.0) -> bool:
+        """Ask the pump to close and wait for it. True once it is really gone.
+
+        Shared by stop() and by start()'s timeout path, because both have the
+        same obligation: the window and its class must be destroyed on the
+        pump thread (see _run's finally), so the only safe way to end a pump
+        is to let it end itself. _hwnd may still be unset if the pump has not
+        got that far, in which case there is nothing to post to and the join
+        is all we can do.
+        """
+        thread = self._thread
+        if thread is None:
+            return True
+        if self._hwnd:
             user32.PostMessageW(self._hwnd, WM_CLOSE, 0, 0)
-            self._thread.join(timeout=3.0)
-            self._thread = None
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            return False            # caller decides how loud to be
+        # Cleared even when the pump already exited on its own (its finally
+        # block nulls _hwnd): a lingering handle would make the next start()
+        # a silent no-op.
+        self._thread = None
+        self._orphaned = False
+        return True
+
+    def stop(self) -> MouseTrace:
+        self._teardown()
         with self._lock:
             return self._buf.to_trace()
 

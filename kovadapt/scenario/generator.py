@@ -92,12 +92,19 @@ def _scale_line(line: str, factor: float) -> str:
 
 
 def resample_spawns(sce: SceFile, weights: dict[str, float],
-                    cols: int, rows: int, seed: int) -> None:
+                    cols: int, rows: int, seed: int) -> set[str]:
     """Rebuild the target PlayerSpawn list: same total count, region densities
     proportional to `weights`. Sampling with replacement within regions keeps
     every emitted spawn a physically valid original location. Player-side
     spawns (the side the PlayerTeam header maps to) pass through verbatim —
-    they never enter the resample pool or the region extents."""
+    they never enter the resample pool or the region extents.
+
+    Returns the regions that actually received spawns (empty when the layout
+    was left untouched). A region holding no candidate spawn point cannot be
+    emphasized — we never invent coordinates — so its weight is absorbed by
+    the rest; when that region is the plan's focus, the emitted scenario has
+    no focus at all. Callers that credit a bandit arm for the run this file
+    produces need to know that, hence the return value."""
     pts = sce.spawn_points()
     player_flag = _player_team_flag(sce)
     if player_flag is not None:
@@ -106,7 +113,7 @@ def resample_spawns(sce: SceFile, weights: dict[str, float],
     else:
         player_pts, targets = [], pts
     if len(targets) < cols * rows:
-        return  # too few spawns to meaningfully reweight
+        return set()  # too few spawns to meaningfully reweight
     col_ax, row_ax = _region_grid(targets)
 
     by_region: dict[str, list[SpawnPoint]] = {}
@@ -118,7 +125,7 @@ def resample_spawns(sce: SceFile, weights: dict[str, float],
     # Only regions that actually contain candidate spawns can receive mass.
     valid = {k: w for k, w in weights.items() if k in by_region}
     if not valid:
-        return
+        return set()
     wsum = sum(valid.values())
     alloc = {k: max(1, round(w / wsum * total)) for k, w in valid.items()}
 
@@ -129,6 +136,7 @@ def resample_spawns(sce: SceFile, weights: dict[str, float],
         new_blocks.extend(pool[i].lines for i in idx)
     rng.shuffle(new_blocks)
     sce.replace_spawn_points([p.lines for p in player_pts] + new_blocks)
+    return set(alloc)
 
 
 def _target_profiles(sce: SceFile) -> tuple[list[str], list[str]]:
@@ -206,8 +214,20 @@ def generate_adaptive_variant(
             sce.set_in_section("Dodge Profile", dodge, key, val)
 
     # --- spawn region reweighting ------------------------------------------
-    resample_spawns(sce, plan.spawn_weights, settings.region_cols,
-                    settings.region_rows, plan.seed)
+    # The focus region only exists in the emitted scenario if the layout
+    # actually has spawn points there — we resample originals and never invent
+    # coordinates. `focus_applied` carries that answer out to the caller,
+    # because crediting the bandit arm for a focus the .sce could not express
+    # attributes an effect that never happened.
+    used = resample_spawns(sce, plan.spawn_weights, settings.region_cols,
+                           settings.region_rows, plan.seed)
+    # Membership is the whole test, including when `used` is empty: an empty
+    # set means the layout was left alone entirely (fewer target spawns than
+    # grid cells, or no weighted region holding a candidate), and an untouched
+    # layout expresses no focus at all. Reading empty as "applied" would have
+    # credited the arm on exactly the scenarios where the region bandit has no
+    # causal channel.
+    plan.focus_applied = plan.focus_region in used
 
     if out_path is None:
         out_path = base_sce.parent / f"{base_name}{ADAPTIVE_SUFFIX}.sce"

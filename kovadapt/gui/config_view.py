@@ -95,7 +95,9 @@ class ConfigView(QWidget):
             "— cm/360 is derived from KovaaK's yaw of 0.022° per count.")
         cm_cap.setProperty("dim", True)
         cm_cap.setWordWrap(True)
-        mouse = QGroupBox("Mouse & sensitivity")
+        # "&&" is a literal ampersand. A bare "&" marks the next character as a
+        # keyboard mnemonic, which is why this rendered as "Mouse _sensitivity".
+        mouse = QGroupBox("Mouse && sensitivity")
         f = _form(mouse)
         f.addRow("Mouse DPI", self.dpi)
         f.addRow("In-game sensitivity", self.sens)
@@ -153,7 +155,7 @@ class ConfigView(QWidget):
         self.clips.setChecked(s.clips_enabled)
         self.clip_fps = _ispin(s.clip_fps, 10, 60)
         self.clip_buf = _dspin(s.clip_buffer_seconds, 30.0, 300.0, 10.0, 0)
-        tel = QGroupBox("Telemetry & clips")
+        tel = QGroupBox("Telemetry && clips")
         f = _form(tel)
         f.addRow(self.skip_splash_cb)
         f.addRow(self.telemetry)
@@ -227,6 +229,12 @@ class ConfigView(QWidget):
             "Adapt differently per task type (auto-detected: clicking / tracking / switching)")
         self.arch_en.setChecked(s.archetype_enabled)
         self.arch_spins: dict[str, dict[str, QDoubleSpinBox]] = {}
+        # A spin with no override shows the global value it inherits, which is
+        # indistinguishable from a deliberate per-archetype choice. Remember
+        # which keys were real overrides and what each spin was loaded with, so
+        # _save() can tell "inherited" from "chosen".
+        self._arch_explicit: dict[str, set[str]] = {}
+        self._arch_base: dict[str, dict[str, float]] = {}
         arch = QGroupBox("Per-archetype overrides (clicking is the baseline)")
         av = QVBoxLayout(arch)
         av.setContentsMargins(16, 12, 16, 16)
@@ -238,6 +246,7 @@ class ConfigView(QWidget):
             for key, cap in _ARCH_KEYS:
                 spins[key] = _dspin(float(ov.get(key, getattr(s, key))), 0.0, 3.0)
             self.arch_spins[name] = spins
+            self._remember_arch(name, ov)
             box = QGroupBox(name)
             row = _form(box)
             for key, cap in _ARCH_KEYS:
@@ -274,6 +283,13 @@ class ConfigView(QWidget):
         lay.addStretch(1)
 
     # ------------------------------------------------------------------
+    def _remember_arch(self, name: str, ov: dict) -> None:
+        """Snapshot an archetype's baseline: which knobs are real overrides
+        and what the spins currently read. Anything loaded (init, reset, the
+        readout refresh after a save) is by definition not a user choice."""
+        self._arch_explicit[name] = {k for k, _ in _ARCH_KEYS if k in ov}
+        self._arch_base[name] = {k: self.arch_spins[name][k].value() for k, _ in _ARCH_KEYS}
+
     def _update_cm360(self) -> None:
         """Live cm/360 readout (KovaaK's/Quake yaw: 0.022° per count)."""
         counts_per_deg = self.dpi.value() * self.sens.value() * 0.022
@@ -324,6 +340,7 @@ class ConfigView(QWidget):
             ov = (d.archetype_overrides or {}).get(name) or {}
             for key, _ in _ARCH_KEYS:
                 spins[key].setValue(float(ov.get(key, getattr(d, key))))
+            self._remember_arch(name, ov)
         self.status.setText("defaults loaded — click Save settings to apply")
 
     def _save(self) -> None:
@@ -366,12 +383,31 @@ class ConfigView(QWidget):
         overrides = dict(s.archetype_overrides or {})
         for name, spins in self.arch_spins.items():
             ov = dict(overrides.get(name) or {})
+            base, explicit = self._arch_base[name], self._arch_explicit[name]
             for key, _ in _ARCH_KEYS:
-                ov[key] = round(spins[key].value(), 4)
-            # keep the accuracy band ordered per archetype too
-            ov["target_accuracy_low"] = min(
-                ov["target_accuracy_low"], ov["target_accuracy_high"] - 0.01)
+                val = round(spins[key].value(), 4)
+                glob = round(float(getattr(s, key)), 4)
+                # An override may only exist where the user chose to differ.
+                # Persisting an inherited value would freeze this archetype at
+                # today's global and silently decouple it from every later edit
+                # — and since the spin still holds the pre-edit global, the very
+                # edit made above would never reach tracking/switching.
+                chosen = key in explicit or abs(val - base[key]) > 1e-9
+                if chosen and abs(val - glob) > 1e-9:
+                    ov[key] = val
+                else:
+                    ov.pop(key, None)
+                    spins[key].setValue(glob)   # keep the inherited readout honest
+            # Keep the accuracy band ordered against what the archetype really
+            # resolves to: a bound left inherited falls through to the global.
+            lo = ov.get("target_accuracy_low", s.target_accuracy_low)
+            hi = ov.get("target_accuracy_high", s.target_accuracy_high)
+            if lo > hi - 0.01:
+                lo = round(hi - 0.01, 4)
+                ov["target_accuracy_low"] = lo
+                spins["target_accuracy_low"].setValue(lo)
             overrides[name] = ov
+            self._remember_arch(name, ov)
         s.archetype_overrides = overrides
         path = s.save()
         self.status.setText(

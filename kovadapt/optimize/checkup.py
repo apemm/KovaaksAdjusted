@@ -11,6 +11,7 @@ Windows-only at runtime; importable everywhere.
 
 from __future__ import annotations
 
+import codecs
 import ctypes
 import re
 import subprocess
@@ -164,6 +165,46 @@ def game_config_path() -> Path:
     base = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
     return (Path(base) / "FPSAimTrainer" / "Saved" / "Config" / "WindowsNoEditor"
             / "GameUserSettings.ini")
+
+
+def read_game_config(path: Path) -> str | None:
+    """GameUserSettings.ini as text, None when no plausible encoding fits.
+
+    Path.read_text() with no encoding= decodes with the process ANSI codepage,
+    and that made healthy configs look corrupt — the verdict this file offers a
+    DELETE for. Unreal writes this ini as UTF-8 (with a BOM once a non-ASCII
+    string is stored, UTF-16 on its AutoDetect save path), so on a cp1252
+    machine one accented character in a player/scenario/crosshair name was
+    enough: "A-acute" is C3 81 in UTF-8 and 0x81 is an undefined cp1252 slot,
+    so the read raised UnicodeDecodeError. UTF-16 was worse — it decoded to
+    mojibake full of NULs and tripped the corruption heuristics below.
+
+    Tolerate a BOM the way Settings.load already does for settings.json, and
+    keep a legacy single-byte codepage only as the last candidate, for files
+    Unreal wrote down its pure-ANSI path. None (nothing decodes) is the honest
+    corrupt signal.
+
+    The legacy fallbacks are NAMED, not taken from the locale. Deriving the
+    last candidate from locale.getpreferredencoding() made the outcome depend
+    on the machine: where that is already UTF-8 (Linux/macOS, PYTHONUTF8=1, or
+    Windows' "Use Unicode UTF-8" option) the list collapsed to two UTF-8
+    entries, a genuine legacy-ANSI config decoded under neither, and a healthy
+    file was offered for DELETE again — the exact bug this function exists to
+    kill, reintroduced on a different machine. cp1252 then latin-1 covers it;
+    latin-1 decodes any byte sequence, so this now only returns None for a
+    UTF-16 file whose BOM was stripped, which the corruption heuristics catch.
+    """
+    raw = path.read_bytes()
+    if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        candidates = ("utf-16",)   # the BOM itself picks the endianness
+    else:
+        candidates = ("utf-8-sig", "cp1252", "latin-1")
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
 
 
 def find_game_exes(kovaaks_root: str) -> list[Path]:
@@ -614,8 +655,10 @@ class SystemCheckup:
                                "GameUserSettings.ini not found (fresh install or "
                                "custom location).")
         try:
-            text = ini.read_text(errors="strict")
-        except (UnicodeDecodeError, OSError):
+            text = read_game_config(ini)
+        except OSError:
+            text = None
+        if text is None:
             return CheckResult(
                 cid, title, "bad",
                 f"{ini} is unreadable/corrupt — a documented stutter cause.",

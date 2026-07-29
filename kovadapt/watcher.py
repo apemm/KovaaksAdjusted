@@ -260,6 +260,18 @@ class SessionWatcher:
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
+        if not plan.focus_applied:
+            # The chosen region has no spawn points in this layout, so the
+            # emitted .sce could not emphasize it and the next run will not be
+            # a test of that arm. plan() already stored it as last_focus, and
+            # credit_focus_region() would then book the next run's accuracy
+            # deficit against an emphasis the player never saw — evidence for
+            # or against a region invented from a change that was silently
+            # dropped. Clearing it makes the bandit skip that credit (it
+            # early-returns when last_focus is None).
+            profile.last_focus = None
+            self.log(f"  note: region {plan.focus_region} has no spawns here — "
+                     "focus not applied, arm not credited")
         profile.save(self.s.profile_path)
         self._log_shadow(shadow_state, plan, run)
         self.log(
