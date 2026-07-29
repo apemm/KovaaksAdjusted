@@ -344,10 +344,13 @@ def _mono() -> QFont:
 
 
 def paint_grid(p: QPainter, rect: QRectF, t: float | None,
-               ink: QColor, bg: QColor, is_dark: bool) -> None:
+               ink: QColor, bg: QColor, is_dark: bool,
+               iris_hue: float | None = None) -> None:
     """Draw the stencil into rect at time t (None = fully lit, static).
     Two passes: the eye, then the reticle overlay with a soft backing so
-    the crosshair reads against the iris detail."""
+    the crosshair reads against the iris detail. `iris_hue` locks the iris
+    to one hue (the theme accent drives the backdrop's iris); None keeps
+    the full rainbow."""
     pal = theme.current()
     cw = rect.width() / COLS
     ch = rect.height() / ROWS
@@ -367,7 +370,8 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
         if cell.role == "iris":
             # bright constant value: character density carries the fiber
             # texture; a touch of radial iridescence in the hue
-            hue = (cell.hue + 0.05 * math.sin(cell.rad * 6.0)) % 1.0
+            base_hue = cell.hue if iris_hue is None else iris_hue
+            hue = (base_hue + 0.05 * math.sin(cell.rad * 6.0)) % 1.0
             s_mod = sat * (0.72 + 0.28 * cell.ink)
             col = QColor.fromHsvF(hue, s_mod, val)
         elif cell.role == "glint":
@@ -465,7 +469,8 @@ class AsciiEye(QWidget):
 
 
 def render_pixmap(width: int, *, is_dark: bool | None = None,
-                  transparent: bool = True) -> QPixmap:
+                  transparent: bool = True,
+                  iris_hue: float | None = None) -> QPixmap:
     """Static, fully-lit render (window icon, watermarks, docs)."""
     pal = theme.current()
     dark = pal.is_dark if is_dark is None else is_dark
@@ -475,15 +480,21 @@ def render_pixmap(width: int, *, is_dark: bool | None = None,
     pm.fill(Qt.transparent if transparent else bg)
     p = QPainter(pm)
     p.setRenderHint(QPainter.TextAntialiasing)
-    paint_grid(p, QRectF(0, 0, width, height), None, QColor(pal.fg), bg, dark)
+    paint_grid(p, QRectF(0, 0, width, height), None, QColor(pal.fg), bg, dark,
+               iris_hue=iris_hue)
     p.end()
     return pm
 
 
 # ------------------------------------------------------- eye progress bar
+_NYAN_BANDS = ("#ff3355", "#ff9f2e", "#ffe12e", "#4ddd55", "#3aa0ff", "#9a5cff")
+
+
 class AsciiProgress(QWidget):
     """Progress as the iris motif: a strip of LED characters filling left to
-    right through the rainbow, the tip cell popping — used for calibration."""
+    right through the rainbow, the tip cell popping — used for calibration.
+    In RGB mode it becomes the cat: a pixel cat riding a scrolling rainbow
+    trail (an homage in original pixels)."""
 
     CELLS = 26
 
@@ -491,17 +502,42 @@ class AsciiProgress(QWidget):
         super().__init__(parent)
         self._frac = 0.0
         self._label = ""
-        self.setMinimumHeight(22)
+        self._phase = 0
+        self.setMinimumHeight(24)
+        from PySide6.QtCore import QTimer
+
+        self._anim = QTimer(self)
+        self._anim.setInterval(140)
+        self._anim.timeout.connect(self._advance)
+
+    def _advance(self) -> None:
+        self._phase += 1
+        self.update()
 
     def set_progress(self, frac: float, label: str = "") -> None:
         self._frac = max(0.0, min(1.0, frac))
         self._label = label
         self.update()
 
+    def hideEvent(self, event) -> None:
+        self._anim.stop()
+        super().hideEvent(event)
+
     def paintEvent(self, event) -> None:
         pal = theme.current()
+        if pal.rgb and not self._anim.isActive():
+            self._anim.start()
+        elif not pal.rgb and self._anim.isActive():
+            self._anim.stop()
         p = QPainter(self)
         p.setRenderHint(QPainter.TextAntialiasing)
+        if pal.rgb:
+            self._paint_nyan(p, pal)
+        else:
+            self._paint_leds(p, pal)
+
+    # ------------------------------------------------------------- classic
+    def _paint_leds(self, p: QPainter, pal) -> None:
         font = _mono()
         font.setPixelSize(15)
         p.setFont(font)
@@ -524,8 +560,55 @@ class AsciiProgress(QWidget):
             p.setPen(col)
             p.drawText(QRectF(x0 + i * cw, 1, cw * 2, 20),
                        Qt.AlignLeft | Qt.AlignTop, chn)
+        self._draw_label(p, pal, x0 + n * cw + 10)
+
+    # ----------------------------------------------------------------- cat
+    def _paint_nyan(self, p: QPainter, pal) -> None:
+        track = self.CELLS * 11.0
+        x0 = 2.0
+        filled = max(self._frac * track, 4.0)
+        bh = 3
+        y0 = 3
+        # scrolling rainbow trail: dashed bands moving with the phase
+        for i, hexcol in enumerate(_NYAN_BANDS):
+            col = QColor(hexcol)
+            y = y0 + i * bh
+            x = x0 - (self._phase * 3) % 12
+            while x < filled - 2:
+                w = min(8.0, filled - 2 - x)
+                if x + w > x0 and w > 0:
+                    p.fillRect(QRectF(max(x, x0), y, w, bh - 0.4), col)
+                x += 12
+        # empty remainder of the track
+        p.setPen(QColor(pal.border))
+        p.drawLine(int(x0 + filled + 22), y0 + 3 * bh,
+                   int(x0 + track), y0 + 3 * bh)
+
+        # the cat, riding the tip (2px pixel blocks, gentle bob)
+        cx = x0 + filled - 2
+        cy = 1 + (self._phase % 2)
+        body = QColor("#f2a7c3")
+        body_d = QColor("#cf7ba2")
+        grey = QColor("#8d8d99")
+        dark = QColor("#101014")
+        p.fillRect(QRectF(cx - 4, cy + 8, 6, 4), grey)          # tail
+        p.fillRect(QRectF(cx, cy + 4, 16, 12), body_d)          # body border
+        p.fillRect(QRectF(cx + 1, cy + 5, 14, 10), body)        # pastry body
+        for sx, sy in ((4, 7), (8, 9), (5, 12), (10, 6), (11, 11)):
+            p.fillRect(QRectF(cx + sx, cy + sy, 2, 2), body_d)  # sprinkles
+        p.fillRect(QRectF(cx + 12, cy + 2, 10, 10), grey)       # head
+        p.fillRect(QRectF(cx + 12, cy, 3, 3), grey)             # ears
+        p.fillRect(QRectF(cx + 19, cy, 3, 3), grey)
+        p.fillRect(QRectF(cx + 15, cy + 5, 2, 2), dark)         # eyes
+        p.fillRect(QRectF(cx + 19, cy + 5, 2, 2), dark)
+        p.fillRect(QRectF(cx + 17, cy + 9, 3, 1.6), dark)       # mouth
+        for leg in range(4):
+            p.fillRect(QRectF(cx + 2 + leg * 4, cy + 16, 3, 3), grey)
+        self._draw_label(p, pal, x0 + track + 30)
+
+    def _draw_label(self, p: QPainter, pal, x: float) -> None:
         if self._label:
             p.setPen(QColor(pal.fg_dim))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(QRectF(x0 + n * cw + 10, 0, 260, 22),
+            p.drawText(QRectF(x, 0, 280, self.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, self._label)

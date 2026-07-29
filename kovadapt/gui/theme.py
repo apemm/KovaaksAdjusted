@@ -31,6 +31,7 @@ class Palette:
     good: str
     warn: str
     bad: str
+    rgb: bool = False    # RGB gamer mode: animated rainbow elements opt in
 
 
 # Accent presets: (accent, hover, on-accent text, selection wash) per mode.
@@ -54,9 +55,30 @@ ACCENTS: dict[str, dict[str, tuple[str, str, str, str]]] = {
 }
 
 
-def build_palette(dark: bool, accent: str = "indigo") -> Palette:
+def build_palette(dark: bool, accent: str = "indigo",
+                  midnight: bool = False, rgb: bool = False) -> Palette:
     """Assemble a palette: cream-editorial light / warm-tinted dark base
-    (Colicit-style: paper, ink, one vivid accent) + the chosen accent."""
+    (Colicit-style: paper, ink, one vivid accent) + the chosen accent.
+    `midnight` drops the dark base to near-black; `rgb` is midnight with an
+    electric accent and the animated-rainbow flag set (nyan bar, iris)."""
+    if rgb:
+        return Palette(
+            name="rgb", is_dark=True, rgb=True,
+            bg="#050507", bg_alt="#0a0b0f", bg_raised="#101117",
+            border="#1b1d26", fg="#d5d9e6", fg_dim="#747a8c",
+            accent="#00e5ff", accent_hover="#5df0ff", accent_fg="#03151a",
+            selection="#093d47",
+            good="#39ff8c", warn="#ffd23e", bad="#ff5470",
+        )
+    if midnight:
+        acc, hover, on_acc, sel = ACCENTS.get(accent, ACCENTS["indigo"])["dark"]
+        return Palette(
+            name="midnight", is_dark=True,
+            bg="#050507", bg_alt="#0b0c11", bg_raised="#12131a",
+            border="#1c1e28", fg="#c9cdd9", fg_dim="#767c8d",
+            accent=acc, accent_hover=hover, accent_fg=on_acc, selection=sel,
+            good="#4fc17c", warn="#e0b45f", bad="#e06c5f",
+        )
     acc, hover, on_acc, sel = ACCENTS.get(accent, ACCENTS["indigo"])[
         "dark" if dark else "light"]
     if dark:
@@ -248,7 +270,7 @@ class ThemeManager:
     importable without Qt only when nothing instantiates the manager.
     """
 
-    MODES = ("auto", "dark", "light")
+    MODES = ("auto", "dark", "light", "midnight", "rgb")
 
     def __init__(self, app, settings) -> None:
         from PySide6.QtCore import QObject, Signal
@@ -271,6 +293,10 @@ class ThemeManager:
 
     def _resolve(self) -> Palette:
         accent = getattr(self.s, "accent", "indigo")
+        if self.mode == "rgb":
+            return build_palette(dark=True, accent=accent, rgb=True)
+        if self.mode == "midnight":
+            return build_palette(dark=True, accent=accent, midnight=True)
         if self.mode == "dark":
             return build_palette(dark=True, accent=accent)
         if self.mode == "light":

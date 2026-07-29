@@ -74,7 +74,14 @@ class Backdrop:
             return
         w = max(self._win.width(), 640)
         h = max(self._win.height(), 480)
-        self._eye = ascii_art.render_pixmap(int(w * 0.62))
+        # the theme drives the backdrop's iris: accent-locked hue in normal
+        # modes, the full rainbow in RGB mode
+        pal = theme.current()
+        if pal.rgb:
+            hue = None
+        else:
+            hue = max(QColor(pal.accent).hueF(), 0.0)
+        self._eye = ascii_art.render_pixmap(int(w * 0.62), iris_hue=hue)
         self._dust_far = _dust_pixmap(w + 80, h + 80, count=90, alpha=0.05,
                                       salt=3.7, accent_share=0.12)
         self._dust_near = _dust_pixmap(w + 120, h + 120, count=40, alpha=0.08,

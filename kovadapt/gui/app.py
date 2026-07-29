@@ -89,10 +89,13 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------- corner bar
     def _corner(self) -> QWidget:
         self.theme_pick = QComboBox()
-        self.theme_pick.addItems(["Auto theme", "Dark", "Light"])
-        self.theme_pick.setToolTip("Auto follows the Windows light/dark setting")
+        self.theme_pick.addItems(["Auto theme", "Light", "Dark", "Midnight", "RGB"])
+        self.theme_pick.setToolTip(
+            "Auto follows Windows · Midnight is near-black · RGB is midnight "
+            "with rainbow accents (and a certain cat)")
         self.theme_pick.setCurrentIndex(
-            {"auto": 0, "dark": 1, "light": 2}.get(self.themes.mode, 0))
+            {"auto": 0, "light": 1, "dark": 2, "midnight": 3, "rgb": 4}
+            .get(self.themes.mode, 0))
         self.theme_pick.currentIndexChanged.connect(self._pick_mode)
 
         self.accent_pick = QComboBox()
@@ -131,7 +134,7 @@ class MainWindow(QMainWindow):
 
     def _pick_mode(self, i: int) -> None:
         transition.ascii_wipe(self)   # capture the old look, then restyle
-        self.themes.set_mode(("auto", "dark", "light")[i])
+        self.themes.set_mode(("auto", "light", "dark", "midnight", "rgb")[i])
 
     def _pick_accent(self, i: int) -> None:
         transition.ascii_wipe(self)
