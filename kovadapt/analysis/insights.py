@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from ..config import Settings
 from ..profile.player import PlayerProfile
 from . import kb
-from .report import RunReport
+from .report import (JITTER_BAD_MS, POLLING_LOW_HZ, RunReport,
+                     input_degraded)
 from .sens import SensCase, sens_case
 from .skill import SkillTrends
 
@@ -31,8 +32,10 @@ _CORRECTIONS_CHAIN = 2.0     # mean corrections/flick that reads as a repair cha
 _CORRECTIONS_CLEAN = 1.0
 _BIAS_SUSTAINED = 0.15
 _REGION_DEFICIT = 0.15
-_JITTER_BAD_MS = 2.0
-_POLLING_LOW_HZ = 490.0      # below any competitive polling class
+# The gate itself lives in report.py (the module both this and sens.py
+# import); these aliases exist only so the card text can quote it.
+_JITTER_BAD_MS = JITTER_BAD_MS
+_POLLING_LOW_HZ = POLLING_LOW_HZ
 _MIN_FLICKS = 8              # too few flicks = no microstructure claims
 _CROSS_SESSION_MIN_RUNS = 15  # runs before a cross-session progress claim
 
@@ -81,7 +84,7 @@ def generate_insights(
     # ---- input health gates everything microstructural -------------------
     jitter = float(rep.input_health.get("jitter_ms", 0.0) or 0.0)
     polling = float(rep.input_health.get("polling_hz_est", 0.0) or 0.0)
-    input_bad = jitter > _JITTER_BAD_MS or (0.0 < polling < _POLLING_LOW_HZ)
+    input_bad = input_degraded(rep)
     if input_bad:
         out.append(_from_kb(
             "dx-input-health", "health", "warning", "Input health is degrading the data",
@@ -164,10 +167,16 @@ def generate_insights(
     if worst_key:
         out.append(_from_kb(
             "dx-region-deficit", "diagnosis", "attention",
-            f"Weakest wall region: {_region_words(worst_key, settings)}",
+            # "across runs" is load-bearing: the region chart's own headline
+            # names the weakest zone in THIS run's z-scores, and the two can
+            # legitimately disagree. Unlabelled, they read as one claim
+            # contradicting itself on a single screen.
+            f"Weakest wall region across runs: "
+            f"{_region_words(worst_key, settings)}",
             f"Region {worst_key} posterior deficit {worst_mean:+.2f} "
-            f"(n={profile.regions[worst_key].n}); spawns are already being "
-            "resampled toward it."))
+            f"(n={profile.regions[worst_key].n}) accumulated over your runs, "
+            "which can differ from this single run's map; spawns are already "
+            "being resampled toward it."))
 
     # ---- fatigue ----------------------------------------------------------
     level = (rep.fatigue or {}).get("level", "")

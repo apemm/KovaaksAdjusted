@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from ..config import Settings
 from ..profile.player import PlayerProfile
 from . import kb
-from .report import RunReport
+from .report import RunReport, input_degraded
 from .skill import SkillTrends
 
 # KovaaK's (Quake/Source lineage) yaw: degrees turned per mouse count at
@@ -55,8 +55,6 @@ _OVERSHOOT_LOW = 0.15            # "overshoot low" branch of dx-undershoot-slow
 _FLICK_SLOW_MS = 220.0           # mean flick duration that reads as cautious/slow
 _FITTS_SLOW_MS_PER_BIT = 150.0   # ms/bit that reads as a positive Fitts residual
 _TRAVEL_CM_PER_KILL = 12.0       # hand travel per kill that reads as excursion/clutch risk
-_JITTER_BAD_MS = 2.0             # input-health gate (mirrors insights.py)
-_POLLING_LOW_HZ = 490.0
 
 
 def cm_per_360(dpi: float, sens: float) -> float:
@@ -108,10 +106,9 @@ def sens_case(
     style = _STYLE_RANGES.get(profile.archetype or "")
     eff = settings.for_archetype(profile.archetype)
 
-    jitter = float(rep.input_health.get("jitter_ms", 0.0) or 0.0)
-    polling = float(rep.input_health.get("polling_hz_est", 0.0) or 0.0)
-    input_bad = jitter > _JITTER_BAD_MS or (0.0 < polling < _POLLING_LOW_HZ)
-    has_flicks = rep.n_flicks >= _MIN_FLICKS and not input_bad
+    # Shared gate (report.input_degraded) — this file used to re-derive it
+    # from its own copy of the thresholds, one call away from insights.py's.
+    has_flicks = rep.n_flicks >= _MIN_FLICKS and not input_degraded(rep)
 
     lower: list[str] = []
     higher: list[str] = []

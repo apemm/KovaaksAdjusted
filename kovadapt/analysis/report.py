@@ -15,6 +15,27 @@ from .movement import segment_flicks, directional_bias, region_deficits, movemen
 from .notable import find_notable_moments
 
 
+# ---- input health: the one gate on every microstructure claim -------------
+# Lives HERE, in the module that owns RunReport, because analysis/insights.py
+# and analysis/sens.py both import report — so this is the only place all
+# three (and the GUI) can share. It previously existed as three separate
+# inline copies, and every surface that forgot one told the user something
+# the other surfaces refused to say about the same run.
+JITTER_BAD_MS = 2.0
+POLLING_LOW_HZ = 490.0       # below any competitive polling class
+
+
+def input_degraded(rep) -> bool:
+    """True when this run's input timing is too noisy to read flick
+    microstructure from — overshoot rates, correction counts, directional
+    bias, per-flick moments. Tolerates a missing, empty or None
+    `input_health` rather than raising on an old or partial report."""
+    health = getattr(rep, "input_health", None) or {}
+    jitter = float(health.get("jitter_ms", 0.0) or 0.0)
+    polling = float(health.get("polling_hz_est", 0.0) or 0.0)
+    return jitter > JITTER_BAD_MS or (0.0 < polling < POLLING_LOW_HZ)
+
+
 def run_time_window(run: Run) -> tuple[float, float] | None:
     """Epoch (start, end) of the run, reconstructed from the stats file's
     wall-clock kill timestamps.
@@ -97,6 +118,26 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
     if not flicks_exist:
         lines.append("No mouse telemetry for this run — start the recorder for movement analysis.")
         return " ".join(lines)
+    # Everything below is flick microstructure, so it answers to the same
+    # input-health gate the Coach and the KPI strip use. Ungated, this header
+    # printed a confident "40% of flicks overshot — consider a slight sens
+    # decrease" directly above a tile reading "noisy-input" and a Coach card
+    # saying microstructure diagnoses were suppressed for that very run.
+    if input_degraded(rep):
+        ih = rep.input_health or {}
+        jitter = float(ih.get("jitter_ms", 0.0) or 0.0)
+        polling = float(ih.get("polling_hz_est", 0.0) or 0.0)
+        detail = f"timing jitter {jitter:.1f}ms" if jitter > JITTER_BAD_MS else ""
+        if 0.0 < polling < POLLING_LOW_HZ:
+            detail = (detail + ", " if detail else "") + f"polling ~{polling:.0f}Hz"
+        lines.append(
+            f"Input timing is too noisy to read flick microstructure from "
+            f"({detail}) — overshoot and bias findings are withheld for this "
+            "run; run the Optimizer checkup (background apps or USB "
+            "contention).")
+        if rep.mean_flick_ms > 0:
+            lines.append(f"Mean flick {rep.mean_flick_ms:.0f}ms.")
+        return " ".join(lines)
     b = rep.bias.get("bias_score", 0.0)
     if abs(b) > 0.15:
         weak = "left" if b > 0 else "right"
@@ -112,12 +153,15 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
         lines.append(f"{rep.overshoot_rate:.0%} of flicks overshot — consider a slight sens decrease or larger targets; the engine will compensate.")
     if rep.mean_flick_ms > 0:
         lines.append(f"Mean flick {rep.mean_flick_ms:.0f}ms.")
-    ih = rep.input_health
-    if ih.get("polling_hz_est", 0) >= 125:
-        note = f"Mouse polling ~{ih['polling_hz_est']:.0f}Hz"
-        if ih.get("jitter_ms", 0.0) > 1.0:
-            note += (f", timing jitter {ih['jitter_ms']:.1f}ms — high; run the "
-                     "Optimizer checkup (background apps or USB contention)")
+    ih = rep.input_health or {}
+    # `or 0.0`: a report carrying a null polling value used to raise TypeError
+    # here rather than simply skipping the note.
+    polling = float(ih.get("polling_hz_est", 0.0) or 0.0)
+    if polling >= 125:
+        note = f"Mouse polling ~{polling:.0f}Hz"
+        if float(ih.get("jitter_ms", 0.0) or 0.0) > 1.0:
+            note += (f", timing jitter {float(ih['jitter_ms']):.1f}ms — high; run "
+                     "the Optimizer checkup (background apps or USB contention)")
         lines.append(note + ".")
     return " ".join(lines)
 

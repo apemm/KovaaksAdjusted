@@ -44,20 +44,29 @@ def _seed(r: int, c: int) -> float:
     return (math.sin(c * 12.9898 + r * 78.233) * 43758.5453) % 1.0
 
 
+# A deviation smaller than this many z is treated as noise, so a flat map
+# renders flat instead of being stretched to fill the ramp.
+NOISE_FLOOR = 0.60
+
+
 def _heat_color(v: float, pal) -> QColor:
-    """Value 0..1 -> ramp color. Inferno-like on dark themes (deep purple
-    through red to yellow), a cream-safe violet-to-ember on light ones, and
-    the full rainbow in RGB gamer mode."""
-    v = min(max(v, 0.0), 1.0)
+    """Signed value -1..+1 -> DIVERGING ramp color.
+
+    Zero is the player's own average and gets the neutral midpoint; positive
+    (weaker than your average) runs warm, negative (stronger) runs cool. A
+    sequential ramp over a signed quantity hid the sign entirely — "worst of
+    a good set" and "genuinely bad" looked identical.
+    """
+    v = min(max(v, -1.0), 1.0)
+    mag = abs(v)
     if pal.rgb:
-        return QColor.fromHsvF((1.0 - v) * 0.83, 0.85, 0.35 + 0.65 * v)
+        hue = 0.62 - 0.62 * (v * 0.5 + 0.5)      # cyan -> red across the range
+        return QColor.fromHsvF(max(hue, 0.0) % 1.0, 0.85, 0.35 + 0.65 * mag)
+    warm, cool = (0.045, 0.55)                   # ember / ice
+    hue = warm if v >= 0 else cool
     if pal.is_dark:
-        return QColor.fromHsvF((0.78 + 0.38 * v) % 1.0,
-                               0.92 - 0.25 * v * v,
-                               0.22 + 0.78 * v)
-    return QColor.fromHsvF((0.78 + 0.30 * v) % 1.0,
-                           0.20 + 0.72 * v,
-                           0.82 - 0.10 * v)
+        return QColor.fromHsvF(hue, 0.30 + 0.62 * mag, 0.30 + 0.70 * mag)
+    return QColor.fromHsvF(hue, 0.18 + 0.68 * mag, 0.86 - 0.28 * mag)
 
 
 def pool(field: np.ndarray, rows: int, cols: int) -> np.ndarray:
@@ -73,11 +82,17 @@ def pool(field: np.ndarray, rows: int, cols: int) -> np.ndarray:
 def region_grid(deficits: dict[str, float], cols: int,
                 rows: int) -> tuple[np.ndarray, list[list[str]]]:
     """r{row}c{col} dict (aim convention: higher row = higher on the wall)
-    -> (grid with row 0 at the bottom, matching labels). Regions without an
-    entry read 0.0 — the z-scored mean."""
+    -> (grid with row 0 at the bottom, matching labels).
+
+    Regions with no observation are NaN, not 0.0. The values are z-scores,
+    so 0.0 IS the player's mean — filling absent regions with it rendered
+    "never measured" as a confident "exactly average" tile, and a run that
+    touched 8 of 25 regions still painted a full, authoritative 5x5 grid.
+    NaN lets the widget draw them as unmeasured instead of inventing them.
+    """
     labels = [[f"r{r}c{c}" for c in range(cols)] for r in range(rows)]
-    grid = np.array([[float(deficits.get(labels[r][c], 0.0)) for c in range(cols)]
-                     for r in range(rows)])
+    grid = np.array([[float(deficits.get(labels[r][c], np.nan))
+                      for c in range(cols)] for r in range(rows)])
     return grid, labels
 
 
@@ -247,11 +262,17 @@ class AsciiHeatmap(QWidget):
         else:
             g = np.asarray(grid, dtype=float)
             self._grid = g
-            lo, hi = float(np.nanmin(g)), float(np.nanmax(g))
-            if hi > lo:
-                self._norm = (g - lo) / (hi - lo)
-            else:
-                self._norm = np.full_like(g, 0.5 if hi != 0.0 else 0.0)
+            # Zero-anchored and symmetric, NOT min-max. Min-max always sent
+            # the smallest cell to 0 and the largest to 1 whatever their
+            # magnitudes, so 25 regions of pure noise rendered as a
+            # full-range map with one cell screaming "your weakest zone".
+            # These are z-scores: 0 is the player's own mean, and a deviation
+            # only earns colour once it is a real fraction of a standard
+            # deviation. NOISE_FLOOR keeps a flat map looking flat.
+            finite = g[np.isfinite(g)]
+            span = float(np.max(np.abs(finite))) if finite.size else 0.0
+            span = max(span, NOISE_FLOOR)
+            self._norm = np.clip(g / span, -1.0, 1.0)
             self._labels = ([[str(s) for s in row] for row in labels]
                             if labels is not None else None)
             self._fmt = fmt
@@ -293,7 +314,10 @@ class AsciiHeatmap(QWidget):
             return None                                   # in the gutter
         r = rows - 1 - disp_r                             # data row (bottom = 0)
         label = self._labels[r][c] if self._labels else f"r{r}c{c}"
-        return f"{label} · {self._fmt.format(float(self._grid[r, c]))}"
+        value = float(self._grid[r, c])
+        if not math.isfinite(value):
+            return f"{label} · not measured this run"
+        return f"{label} · {self._fmt.format(value)}"
 
     def mouseMoveEvent(self, event) -> None:
         info = self.zone_info(event.position().x(), event.position().y())
@@ -323,14 +347,14 @@ class AsciiHeatmap(QWidget):
             fm = QFontMetricsF(f)
             lx = w - 10 - fm.horizontalAdvance("#") * 10 - fm.horizontalAdvance("low  high  ")
             p.setPen(QColor(pal.fg_dim))
-            p.drawText(QPointF(lx, 15), "low ")
-            lx += fm.horizontalAdvance("low ")
+            p.drawText(QPointF(lx, 15), "stronger ")
+            lx += fm.horizontalAdvance("stronger ")
             for k in range(10):
-                p.setPen(_heat_color(k / 9.0, pal))
+                p.setPen(_heat_color(-1.0 + 2.0 * k / 9.0, pal))
                 p.drawText(QPointF(lx, 15), "#")
                 lx += fm.horizontalAdvance("#")
             p.setPen(QColor(pal.fg_dim))
-            p.drawText(QPointF(lx, 15), " high")
+            p.drawText(QPointF(lx, 15), " weaker")
 
         font = _mono()
         font.setPixelSize(13)
@@ -345,11 +369,22 @@ class AsciiHeatmap(QWidget):
                 v = float(self._norm[r, c])
                 zx = x0 + c * (zw + gap)
                 zy = y0 + disp_r * (zh + gap)
+
+                if not math.isfinite(v):
+                    # Never measured: say so rather than paint a confident
+                    # "average" tile. A hairline outline, no fill, no glyphs.
+                    p.setBrush(Qt.NoBrush)
+                    pen = QColor(pal.border)
+                    p.setPen(pen)
+                    p.drawRoundedRect(QRectF(zx, zy, zw, zh), 4, 4)
+                    continue
+
+                mag = abs(v)
                 color = _heat_color(v, pal)
 
                 # soft backing tint so a zone reads even between glyphs
                 back = QColor(color)
-                back.setAlphaF(0.07 + 0.20 * v)
+                back.setAlphaF(0.07 + 0.20 * mag)
                 p.setPen(Qt.NoPen)
                 p.setBrush(back)
                 p.drawRoundedRect(QRectF(zx, zy, zw, zh), 4, 4)
@@ -363,13 +398,16 @@ class AsciiHeatmap(QWidget):
                 my = zy + (zh - grows * chh) / 2
                 for gr in range(grows):
                     for gc in range(gcols):
-                        d = v + (_seed(disp_r * 31 + gr, c * 17 + gc) - 0.5) * 0.22
-                        d = min(max(d, 0.0), 1.0)
+                        # Jitter alpha, never the VALUE: perturbing the value
+                        # moves cells across ramp steps, so a zone's reported
+                        # density stopped matching its number.
+                        d = min(max(mag, 0.0), 1.0)
                         ch = _HEAT_RAMP[int(round(d * (len(_HEAT_RAMP) - 1)))]
                         if ch == " ":
                             continue
+                        jit = (_seed(disp_r * 31 + gr, c * 17 + gc) - 0.5) * 0.28
                         col = QColor(color)
-                        col.setAlphaF(0.55 + 0.45 * d)
+                        col.setAlphaF(min(max(0.55 + 0.45 * d + jit, 0.0), 1.0))
                         p.setPen(col)
                         p.drawText(QRectF(mx + gc * cw, my + gr * chh, cw * 2, chh * 1.4),
                                    Qt.AlignLeft | Qt.AlignVCenter, ch)

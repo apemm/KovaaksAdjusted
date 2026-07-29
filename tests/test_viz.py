@@ -129,8 +129,56 @@ def test_region_grid_maps_keys_bottom_up():
     assert grid[0, 0] == 1.5                 # row 0 = bottom row
     assert grid[4, 4] == -2.0
     assert grid[2, 1] == 0.3
-    assert grid[1, 1] == 0.0                 # missing regions read the mean
+    # Unmeasured regions are NaN, NOT 0.0. These are z-scores, so 0.0 is the
+    # player's own mean — filling absent regions with it painted a confident
+    # "exactly average" tile for a region no flick ever went near.
+    assert np.isnan(grid[1, 1])
     assert labels[0][0] == "r0c0" and labels[4][4] == "r4c4"
+
+
+def test_heatmap_does_not_manufacture_a_weakness_from_noise():
+    """Min-max normalization always sent the smallest cell to 0 and the
+    largest to 1, so 25 near-identical regions rendered as a full-range map
+    with one cell screaming 'your weakest zone'. The scale is zero-anchored
+    with a noise floor, so a flat map stays flat."""
+    hm = AsciiHeatmap()
+    noise = np.full((5, 5), 0.01)
+    noise[2, 2] = 0.03                       # a 0.02 z spread: pure noise
+    hm.set_data(noise)
+    assert np.nanmax(np.abs(hm._norm)) < 0.10, (
+        "a flat, tiny-variance map still fills the colour ramp")
+
+    real = np.zeros((5, 5))
+    real[1, 1] = 2.4                         # a genuine 2.4 z weakness
+    hm.set_data(real)
+    assert hm._norm[1, 1] == pytest.approx(1.0)
+    assert abs(hm._norm[0, 0]) < 1e-9        # zero stays neutral
+
+
+def test_heatmap_scale_is_signed_and_zero_anchored():
+    """Positive (weaker) and negative (stronger) must not collapse together."""
+    hm = AsciiHeatmap()
+    g = np.zeros((3, 3))
+    g[0, 0] = 2.0
+    g[2, 2] = -2.0
+    hm.set_data(g)
+    assert hm._norm[0, 0] > 0 and hm._norm[2, 2] < 0
+    assert hm._norm[0, 0] == pytest.approx(-hm._norm[2, 2])
+
+
+def test_heatmap_reports_unmeasured_regions_in_the_tooltip():
+    hm = AsciiHeatmap()
+    hm.resize(400, 300)
+    grid, labels = region_grid({"r0c0": 1.0}, 3, 3)
+    hm.set_data(grid, labels)
+    infos = []
+    for x in range(0, 400, 7):
+        for y in range(0, 300, 7):
+            info = hm.zone_info(x, y)
+            if info:
+                infos.append(info)
+    assert any("not measured" in i for i in infos), (
+        "unmeasured zones must say so, not report a confident number")
 
 
 def test_pool_downsamples_preserving_row_order():

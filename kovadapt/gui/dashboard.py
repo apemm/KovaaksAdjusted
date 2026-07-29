@@ -1,14 +1,30 @@
-"""Dashboard tab: the session hub — play adaptive tasks, launch the game,
-start/stop the adaptation loop, live profile stats, overlay controls, log."""
+"""Dashboard tab: HERO + ONE TREND + PLAY.
+
+Three hero numerals across the top — READINESS (how calibrated the adaptive
+model is), FORM (recent accuracy against the player's own baseline) and LOAD
+(session fatigue, or run volume when there is no fatigue reading) — then one
+accuracy trend drawn as character art (gui/viz.py, never pyqtgraph), the Play
+lockup, the overlay row, and the session log behind a "[ log ]" disclosure.
+
+Every hero carries a state word AND a "because …" clause naming the evidence
+it was computed from: `Hero` holds both and `HeroStat.show_hero()` is the only
+way to fill a card, so there is no code path that renders a numeral without
+its citation. A bare score is exactly the uncited claim this project forbids —
+and when a value genuinely is not available the card shows a dash and the
+clause says why, rather than a fake zero.
+"""
 
 from __future__ import annotations
 
-import pyqtgraph as pg
+from dataclasses import dataclass
+from datetime import datetime
+
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QGridLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,11 +37,282 @@ from PySide6.QtWidgets import (
 from .. import launcher
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
-from . import theme
-from .ascii_art import AsciiProgress, CatSlider
+from . import theme, viz
+from .ascii_art import CatSlider
 from .onboarding import HintBar
 from .overlay import OverlayWindow
 from .workers import WatcherWorker
+
+LOG_LABEL = "[ log ]"
+LOG_UNREAD = "[ log • ]"        # a line landed while the disclosure was shut
+
+FORM_WINDOW = 5          # runs averaged into the "recent" side of FORM
+FORM_MIN_RUNS = 3        # below this there is no recent window worth naming
+FORM_BAND_PP = 1.0       # |delta| under this reads as noise, not a direction
+
+
+# ------------------------------------------------------------------- heroes
+@dataclass(frozen=True)
+class Hero:
+    """One hero reading: the numeral, its state word, and the evidence.
+
+    `because` is a required field, not an option — `unknown()` is the only way
+    to produce a dash and it still demands one. Keeping the clause inside the
+    value object is what makes "never show a hero number without its
+    because-clause" a type-level guarantee instead of a habit.
+    """
+
+    value: str
+    word: str
+    because: str
+    tone: str = "fg"         # fg | good | warn | bad | accent
+    tip: str = ""            # fuller derivation, shown on hover
+
+    @classmethod
+    def unknown(cls, word: str, because: str, tip: str = "") -> "Hero":
+        return cls("—", word, because, "fg", tip)
+
+
+def readiness_hero(profile: PlayerProfile, region_count: int) -> Hero:
+    """How calibrated the adaptive model is.
+
+    Straight from PlayerProfile.readiness(): its score, its stage word, and
+    its own detail strings as the clause — the model's readiness metric is
+    already defined there and must not be re-derived here, or the dashboard
+    and the CLI's `status` would disagree about the same profile.
+    """
+    if profile.run_count == 0:
+        return Hero.unknown(
+            "no runs yet",
+            "because this scenario has no history — READINESS starts counting "
+            "with your first run",
+            "READINESS weights a settled accuracy baseline (50%), wall regions "
+            "carrying evidence (35%) and directional-bias evidence (15%).")
+    r = profile.readiness(region_count)
+    tone = {"dialed in": "good", "calibrating": "accent"}.get(r["stage"], "fg")
+    return Hero(f"{r['score']:.0%}", r["stage"],
+                "because " + " · ".join(r["detail"]), tone, r["message"])
+
+
+def form_hero(profile: PlayerProfile, half_life: float = 5.0) -> Hero:
+    """Recent accuracy against the player's own baseline, in points."""
+    accs = [float(h["accuracy"]) for h in profile.history if "accuracy" in h]
+    if len(accs) < FORM_MIN_RUNS:
+        return Hero.unknown(
+            "too few runs",
+            f"because FORM averages a recent window against your baseline and "
+            f"that needs at least {FORM_MIN_RUNS} runs — this scenario has "
+            f"{len(accs)}",
+            "FORM = mean accuracy of the last few runs minus the profile's "
+            "ewma_accuracy baseline, in percentage points.")
+    if profile.ewma_accuracy <= 0.0:
+        return Hero.unknown(
+            "no baseline",
+            "because the profile's accuracy EWMA is still zero — there is "
+            "nothing to measure the recent runs against",
+            "ewma_accuracy is seeded by the first run; a zero here means the "
+            "profile predates that field or every run scored 0%.")
+    window = accs[-FORM_WINDOW:]
+    recent = sum(window) / len(window)
+    delta = (recent - profile.ewma_accuracy) * 100.0
+    if delta >= FORM_BAND_PP:
+        word, tone = "climbing", "good"
+    elif delta <= -FORM_BAND_PP:
+        word, tone = "dipping", "warn"
+    else:
+        word, tone = "holding", "fg"
+    return Hero(
+        f"{delta:+.1f}pp", word,
+        f"because your last {len(window)} runs average {recent:.1%} against a "
+        f"{profile.ewma_accuracy:.1%} baseline EWMA",
+        tone,
+        f"Mean accuracy of the last {len(window)} runs minus ewma_accuracy "
+        f"(half-life {half_life:g} runs), in percentage points. The size "
+        "controller holds "
+        "accuracy inside your archetype's band, so a dip often means the last "
+        "plan raised difficulty rather than that you got worse.")
+
+
+def _runs_today(history: list[dict]) -> int:
+    """Runs stamped with today's local date. Profile timestamps are naive
+    local ISO (written from Run.started), so a naive comparison is correct
+    here — parsing failures are skipped rather than guessed at."""
+    today = datetime.now().date()
+    n = 0
+    for h in history:
+        try:
+            if datetime.fromisoformat(str(h.get("ts", ""))).date() == today:
+                n += 1
+        except ValueError:
+            continue
+    return n
+
+
+def _volume_word(n: int) -> tuple[str, str]:
+    """Session-length cue for a run count. Thresholds are disclosed in the
+    card's tooltip — they are a rough cue, not a fatigue measurement."""
+    if n <= 0:
+        return "idle", "fg"
+    if n < 15:
+        return "light", "good"
+    if n < 40:
+        return "steady", "good"
+    return "heavy", "warn"
+
+
+def load_hero(profile: PlayerProfile, fatigue: dict | None,
+              min_runs: int, telemetry_on: bool = True) -> Hero:
+    """Session fatigue when a report carried a trusted reading, else volume.
+
+    `min_runs` is Settings.fatigue_min_runs. Below it SessionFatigueTracker
+    reports score 0 at level "fresh", which means "no evidence yet" and NOT
+    "you are fresh" — rendering that as a fatigue reading would be inventing
+    signal, so the volume fallback runs instead and says what is missing.
+    """
+    fat = fatigue or {}
+    needed = max(int(min_runs), 2)          # same floor the tracker applies
+    runs = int(fat.get("runs", 0) or 0)
+    if runs >= needed:
+        score = float(fat.get("score", 0.0))
+        level = str(fat.get("level", "fresh"))
+        trend = float(fat.get("trend", 0.0))
+        tone = {"fatigued": "bad", "declining": "warn"}.get(level, "good")
+        # FatigueState.trend is a BADNESS slope (analysis/fatigue.py:34):
+        # positive means overshoot and flick duration are RISING, i.e. quality
+        # falling. Printing it as "flick quality trends +X%" stated the exact
+        # opposite of the evidence — the direction word has to carry the sign.
+        if trend > 0:
+            drift = f"degrading {trend:.1%} per run"
+        elif trend < 0:
+            drift = f"improving {abs(trend):.1%} per run"
+        else:
+            drift = "flat"
+        return Hero(
+            f"{score:.0%}", level,
+            f"because flick quality is {drift} across {runs} telemetry runs "
+            f"this session",
+            tone,
+            fat.get("message")
+            or ("Theil-Sen slope of a per-run badness composite (overshoot "
+                "rate + flick duration) across this session's telemetry "
+                "runs, normalized by the session median."))
+    if not profile.history:
+        return Hero.unknown(
+            "no runs yet",
+            "because LOAD reads this session's flick-quality trend, or your "
+            "run volume when there is none — this scenario has neither yet",
+            "Fatigue needs runs with mouse telemetry; volume falls back to "
+            "the run timestamps in this scenario's profile history.")
+    today = _runs_today(profile.history)
+    word, tone = _volume_word(today)
+    plural = "" if today == 1 else "s"
+    # Say WHY there is no fatigue reading. Citing a run countdown while
+    # telemetry is switched off promises a number that can never arrive.
+    why = (f"fatigue needs {needed} runs with telemetry this session "
+           f"({runs} so far)" if telemetry_on else
+           "fatigue needs mouse telemetry, which is switched off")
+    return Hero(
+        f"{today} run{plural}", word,
+        f"because {today} run{plural} logged today in this scenario — {why}",
+        tone,
+        "Runs stamped with today's date in THIS scenario's profile history, "
+        "so a day spread across several scenarios counts only the selected "
+        "one. Buckets: 1-14 light, 15-39 steady, 40+ heavy — a session-length "
+        "cue, not a fatigue measurement.")
+
+
+def _mono_css(px: int) -> str:
+    """`font-family`/`font-size` for a widget-level sheet.
+
+    theme.py's app QSS opens with `* { font-family: "Segoe UI"; font-size:
+    13px }`, and a QSS font property beats QWidget.setFont() — so structural
+    mono type has to be restated here or it silently renders as 13px body
+    text (the same reason overlay.py pairs setFont with a font-size sheet).
+    """
+    return f'font-family: "{theme.mono_family()}"; font-size: {px}px;'
+
+
+class HeroStat(QFrame):
+    """One hero card: eyebrow, big mono numeral, state word, because-clause.
+
+    Colors are resolved in `_render()` from theme.current(), and `restyle()`
+    is just another render — the card caches its `Hero`, never a palette.
+    """
+
+    # theme.mono() snaps to CELL_SIZES (max 24); hero scale is exactly 2x the
+    # largest, which keeps Cascadia Mono's advance and row pitch on integer
+    # pixels — the whole reason those sizes were measured in the first place.
+    NUMERAL_PX = theme.CELL_SIZES[-1] * 2
+
+    def __init__(self, name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setProperty("card", True)
+        self._hero = Hero.unknown("", "")
+
+        # setFont carries what QSS cannot (capitalization, letter spacing) and
+        # gives the label honest metrics; the size and family have to come
+        # from a widget-level sheet as well, because theme.py's app-wide
+        # `* { font-family: "Segoe UI"; font-size: 13px }` outranks setFont —
+        # without the sheet the hero numeral rendered at body size.
+        eyebrow = theme.mono(12)
+        eyebrow.setCapitalization(QFont.AllUppercase)
+        eyebrow.setLetterSpacing(QFont.AbsoluteSpacing, 1.4)
+        self.name = QLabel(name)
+        self.name.setFont(eyebrow)
+        self.name.setProperty("dim", True)      # color still cascades from QSS
+        self.name.setStyleSheet(_mono_css(12))
+
+        numeral = theme.mono(theme.CELL_SIZES[-1])
+        numeral.setPixelSize(self.NUMERAL_PX)
+        self.value = QLabel("—")
+        self.value.setFont(numeral)
+
+        self.word = QLabel("")
+        self.word.setWordWrap(True)
+        self.because = QLabel("")
+        self.because.setWordWrap(True)
+        self.because.setProperty("dim", True)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self.value, 0, Qt.AlignBottom)
+        row.addWidget(self.word, 1, Qt.AlignBottom)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(4)
+        lay.addWidget(self.name)
+        lay.addLayout(row)
+        lay.addWidget(self.because, 1)
+
+    # ------------------------------------------------------------------
+    def show_hero(self, hero: Hero) -> None:
+        self._hero = hero
+        self._render()
+
+    def restyle(self, *_pal) -> None:
+        self._render()
+
+    def _render(self) -> None:
+        pal = theme.current()
+        h = self._hero
+        self.value.setText(h.value)
+        # An unresolved reading stays dim: a dash in accent would read as a
+        # value the model actually has.
+        known = h.value != "—"
+        self.value.setStyleSheet(
+            f"{_mono_css(self.NUMERAL_PX)} "
+            f"color: {pal.accent if known else pal.fg_dim};")
+        tone = {"good": pal.good, "warn": pal.warn, "bad": pal.bad,
+                "accent": pal.accent}.get(h.tone, pal.fg_dim)
+        self.word.setText(h.word)
+        self.word.setStyleSheet(f"color: {tone};")
+        self.because.setText(h.because)
+        tip = h.tip or h.because
+        # Qt does not inherit tooltips, so the whole card has to carry it or
+        # hovering the numeral itself explains nothing.
+        for w in (self, self.name, self.value, self.word, self.because):
+            w.setToolTip(tip)
 
 
 class Dashboard(QWidget):
@@ -41,15 +328,49 @@ class Dashboard(QWidget):
         self._last_log = ""
         self._last_profile: PlayerProfile | None = None
         self._install: launcher.InstallStatus | None = None
+        self._fatigue: dict = {}          # newest report's FatigueState, if any
+        self._shown: str | None = None    # scenario the heroes currently read
         self.overlay = OverlayWindow(settings)
 
         hint = HintBar(settings, (
             "Pick a scenario, then <b>Play adaptive task</b> — kovadapt watches "
             "your runs and regenerates the <b>[Adaptive]</b> variant between "
-            "them. Mouse telemetry records automatically while a session runs "
-            "(the <b>REC</b> dot). <b>Start adapting</b> does the same without "
-            "launching the game. The overlay shows only in Borderless/Windowed "
-            "mode."))
+            "them. The three numerals below read this scenario's model: "
+            "<b>READINESS</b> is how calibrated it is, <b>FORM</b> your recent "
+            "accuracy against your own baseline, <b>LOAD</b> this session's "
+            "fatigue. Each one says what it was computed from. Mouse telemetry "
+            "records automatically while a session runs (the <b>REC</b> dot)."))
+
+        # ------------------------------------------------- the three heroes
+        self.heroes: dict[str, HeroStat] = {}
+        hero_row = QHBoxLayout()
+        hero_row.setSpacing(14)
+        for key, name in (("readiness", "Readiness"), ("form", "Form"),
+                          ("load", "Load")):
+            card = HeroStat(name)
+            self.heroes[key] = card
+            hero_row.addWidget(card, 1)
+
+        # ------------------------------------------------- the one trend
+        self.trend = viz.AsciiTrend(title="accuracy per run · this scenario",
+                                    fmt="{:.0%}")
+        self.trend_caption = QLabel(
+            "Every run of this scenario, oldest on the left, newest tagged. "
+            "The adaptive loop should bend this upward without letting it pin "
+            "at 100% — the size controller holds accuracy inside your "
+            "archetype's band, so the line is meant to live in a corridor, "
+            "not to climb forever.")
+        self.trend_caption.setWordWrap(True)
+        self.trend_caption.setProperty("dim", True)
+        # A sparkline reads at a glance; past ~220px the extra height is just
+        # a taller gap between points and it starts to dominate the page.
+        self.trend.setMaximumHeight(220)
+        self.trend_w = QWidget()
+        tv = QVBoxLayout(self.trend_w)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(6)
+        tv.addWidget(self.trend)
+        tv.addWidget(self.trend_caption)
 
         # ---------------------------------------------------- play controls
         self.install_lbl = QLabel("checking install…")
@@ -129,60 +450,49 @@ class Dashboard(QWidget):
         ov.addWidget(self.ov_opacity, 1)
         ov.addWidget(self.ov_auto)
 
-        # ------------------------------- profile stats: two-column grid
-        self.stat_labels: dict[str, QLabel] = {}
-        stats_box = QGroupBox("Learned profile")
-        grid = QGridLayout(stats_box)
-        grid.setContentsMargins(14, 14, 14, 14)
-        grid.setHorizontalSpacing(36)
-        grid.setVerticalSpacing(14)
-        for i, (key, cap) in enumerate([
-            ("runs", "Runs"), ("accuracy", "Accuracy EWMA"),
-            ("scale", "Target scale"), ("movement", "Movement"),
-            ("focus", "Focus region"), ("pace", "Pace (kills/s)"),
-            ("archetype", "Archetype"), ("fatigue", "Session fatigue"),
-        ]):
-            grid.addWidget(QLabel(cap), i // 2, (i % 2) * 2)
-            lab = QLabel("—")
-            lab.setProperty("stat", True)
-            grid.addWidget(lab, i // 2, (i % 2) * 2 + 1)
-            self.stat_labels[key] = lab
-        grid.setColumnStretch(1, 1)         # value columns breathe
-        grid.setColumnStretch(3, 1)
+        # ------------------------------------------------- log, behind a lid
+        self.log_btn = QPushButton(LOG_LABEL)
+        self.log_btn.setCheckable(True)
+        self.log_btn.setProperty("flat", True)
+        self.log_btn.setFont(theme.mono(12))
+        self.log_btn.setStyleSheet(_mono_css(12))   # see _mono_css: QSS wins
+        self.log_btn.setToolTip(
+            "Session log: watcher messages, generated variants, launch results")
+        self.log_btn.toggled.connect(self._toggle_log)
+        log_row = QHBoxLayout()
+        log_row.addWidget(self.log_btn)
+        log_row.addStretch(1)
 
-        # calibration readiness: the iris motif filling through the rainbow
-        self.readiness = AsciiProgress()
-        self.readiness.set_progress(0.0, "calibration 0%")
-        self.readiness_msg = QLabel("play runs to calibrate the adaptive model")
-        self.readiness_msg.setProperty("dim", True)
-        self.readiness_msg.setWordWrap(True)
-        grid.addWidget(self.readiness, 4, 0, 1, 2)
-        grid.addWidget(self.readiness_msg, 4, 2, 1, 2)
-
-        # accuracy history sparkline — tall enough to actually read
-        self.trend = pg.PlotWidget(title="Accuracy per run")
-        self.trend.setMinimumHeight(240)
-        self.trend.setMaximumHeight(340)
-        self.trend.showGrid(y=True, alpha=0.2)
-        self.trend_curve = self.trend.plot([], [], symbol="o", symbolSize=5,
-                                           symbolPen=None)
-
-        # log
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
-        self.log.setMinimumHeight(180)
+        self.log.setMaximumHeight(150)
+        self.log.hide()
 
         lay = QVBoxLayout(self)
         lay.setSpacing(16)
         lay.addWidget(hint)
+        lay.addLayout(hero_row)
+        # Slack goes to a trailing stretch, not to a panel. Handing it to the
+        # trend made a sparkline 1400px tall on a tall window — the same
+        # failure as the hint bar that once filled a whole section. Every
+        # panel here has a natural height; only the empty space below should
+        # grow.
+        lay.addWidget(self.trend_w)
         lay.addWidget(play_box)
         lay.addWidget(ov_box)
-        lay.addWidget(stats_box)
-        lay.addWidget(self.trend)
-        lay.addWidget(self.log, 1)
+        lay.addLayout(log_row)
+        lay.addWidget(self.log)
+        lay.addStretch(1)
 
         self.refresh_scenarios()
+        # Show what the model already knows, on launch and whenever the pick
+        # changes. Without these the heroes only ever filled when a session
+        # started or a report landed, so the home screen greeted every launch
+        # with em-dashes no matter how much history the scenario had.
+        self.scenario.currentTextChanged.connect(
+            lambda _t: self.refresh_profile(self._picked_scenario()))
+        self.refresh_profile(self._picked_scenario())
         self.restyle(theme.current())
         self._refresh_install()
 
@@ -194,14 +504,13 @@ class Dashboard(QWidget):
     # ------------------------------------------------------------- theming
     def restyle(self, pal=None) -> None:
         pal = pal or theme.current()
-        from PySide6.QtGui import QColor
-
-        trend_bg = QColor(pal.bg_alt)
-        trend_bg.setAlpha(205)          # the backdrop eye ghosts through
-        self.trend.setBackground(trend_bg)
-        self.trend_curve.setPen(pg.mkPen(pal.accent, width=2))
-        self.trend_curve.setSymbolBrush(pal.accent)
+        for card in self.heroes.values():
+            card.restyle(pal)
+        self.trend.restyle()            # reads theme.current() at paint time
         self._render_install()
+        # The REC dot bakes a palette color into rich text; without this it
+        # kept the old theme's color across a switch.
+        self._render_rec(self.worker is not None)
         self.overlay.restyle()
 
     # ------------------------------------------------------------- install
@@ -332,6 +641,9 @@ class Dashboard(QWidget):
         self.start_btn.setText("Stop")
         self.scenario.setEnabled(False)
         self._render_rec(True)
+        # The watcher's fatigue tracker is session-scoped and restarts here;
+        # LOAD must not keep citing the previous session's trend.
+        self._fatigue = {}
         self.refresh_profile(name)
         self.overlay.start_session(name + ADAPTIVE_SUFFIX)
         if self.s.overlay_autoshow and not self.ov_toggle.isChecked():
@@ -359,12 +671,10 @@ class Dashboard(QWidget):
                 self.toggle()
 
     def _on_report(self, rep) -> None:
+        # Stash the fatigue reading BEFORE the reload: LOAD reads it, and
+        # refresh_profile is what repaints the heroes.
+        self._fatigue = dict(getattr(rep, "fatigue", None) or {})
         self.refresh_profile(self._watching or self._picked_scenario())
-        fat = getattr(rep, "fatigue", None) or {}
-        if fat.get("runs", 0) > 0:
-            self.stat_labels["fatigue"].setText(
-                f"{fat.get('level', 'fresh')} ({fat.get('score', 0.0):.0%})"
-            )
         self.overlay.on_report(rep, self._last_profile)
         self.report_ready.emit(rep)
 
@@ -399,51 +709,60 @@ class Dashboard(QWidget):
     # ------------------------------------------------------------------
     def refresh_scenarios(self) -> None:
         cur = self.scenario.currentText()
-        self.scenario.clear()
-        if self.s.scenarios_dir.is_dir():
-            names = sorted(
-                p.stem for p in self.s.scenarios_dir.glob("*.sce")
-                if not p.stem.endswith(ADAPTIVE_SUFFIX)
-            )
-            self.scenario.addItems(names)
-        if cur:
-            self.scenario.setCurrentText(cur)
+        # Rebuilding the list is not a user pick. clear() emits
+        # currentTextChanged("") and setCurrentText() emits it again, and the
+        # picker is wired to refresh_profile — so an unguarded Refresh ran
+        # refresh_profile("") mid-session, which sees a changed scenario and
+        # discards the session's fatigue reading. Pressing Refresh must not
+        # erase LOAD.
+        blocked = self.scenario.blockSignals(True)
+        try:
+            self.scenario.clear()
+            if self.s.scenarios_dir.is_dir():
+                names = sorted(
+                    p.stem for p in self.s.scenarios_dir.glob("*.sce")
+                    if not p.stem.endswith(ADAPTIVE_SUFFIX)
+                )
+                self.scenario.addItems(names)
+            if cur:
+                self.scenario.setCurrentText(cur)
+        finally:
+            self.scenario.blockSignals(blocked)
+        # Only a genuine change of pick reloads (and legitimately clears it).
+        if self._picked_scenario() != self._shown:
+            self.refresh_profile(self._picked_scenario())
+
+    def _toggle_log(self, on: bool) -> None:
+        self.log.setVisible(on)
+        self.log_btn.setText(LOG_LABEL)     # opening clears the unread mark
 
     def append_log(self, line: str) -> None:
         if line == self._last_log:      # never spam identical lines
             return
         self._last_log = line
         self.log.appendPlainText(line)
-
-    @staticmethod
-    def _ascii_bar(frac: float, width: int = 8) -> str:
-        filled = round(max(0.0, min(1.0, frac)) * width)
-        return "▓" * filled + "░" * (width - filled)
+        if not self.log_btn.isChecked():
+            # The log is collapsed by default, so failures ("scenario file not
+            # found") would otherwise land completely silently.
+            self.log_btn.setText(LOG_UNREAD)
 
     def refresh_profile(self, base_name: str) -> None:
+        if base_name != self._shown:
+            # A fatigue reading belongs to the session that produced it —
+            # carrying it onto another scenario's profile would make LOAD
+            # cite runs that never happened there.
+            self._fatigue = {}
+            self._shown = base_name
         prof = PlayerProfile.load(base_name + ADAPTIVE_SUFFIX, self.s.profile_path)
         self._last_profile = prof
-        sl = self.stat_labels
-        ready = prof.readiness(self.s.region_cols * self.s.region_rows)
-        self.readiness.set_progress(
-            ready["score"],
-            f"calibration {ready['score']:.0%} — {ready.get('stage', '')}")
-        parts = ready.get("detail", [])
-        fracs = (ready["baseline"], ready["regions"], ready["bias"])
-        bars = "   ".join(f"{self._ascii_bar(f)} {txt}"
-                          for f, txt in zip(fracs, parts))
-        self.readiness_msg.setText(bars or ready["message"])
-        if prof.run_count == 0:
-            for lab in sl.values():
-                lab.setText("—")
-            self.trend_curve.setData([], [])
-            return
-        sl["runs"].setText(str(prof.run_count))
-        sl["accuracy"].setText(f"{prof.ewma_accuracy:.1%}")
-        sl["scale"].setText(f"{prof.target_scale:.2f}x")
-        sl["movement"].setText(f"{prof.movement:.2f}")
-        sl["focus"].setText(prof.last_focus or "—")
-        sl["pace"].setText(f"{prof.ewma_kps:.2f}")
-        sl["archetype"].setText(prof.archetype or "—")
-        accs = [h.get("accuracy", 0.0) for h in prof.history[-60:]]
-        self.trend_curve.setData(list(range(len(accs))), accs)
+        self.heroes["readiness"].show_hero(
+            readiness_hero(prof, self.s.region_cols * self.s.region_rows))
+        self.heroes["form"].show_hero(form_hero(prof, self.s.ewma_half_life))
+        self.heroes["load"].show_hero(
+            load_hero(prof, self._fatigue, self.s.fatigue_min_runs,
+                      telemetry_on=self.s.telemetry_enabled))
+        accs = [float(h.get("accuracy", 0.0)) for h in prof.history[-60:]]
+        if len(accs) >= 2:
+            self.trend.set_data(accs, tag=f"{accs[-1]:.0%}")
+        else:
+            self.trend.clear()      # AsciiTrend renders "not enough runs yet"
