@@ -76,6 +76,10 @@ class RunReport:
     clip_files: dict = field(default_factory=dict)   # notable idx -> mp4 path
     fatigue: dict = field(default_factory=dict)      # session FatigueState snapshot
     input_health: dict = field(default_factory=dict)  # polling/jitter/click-hold
+    # Neural flick-score digest (ml/infer.py:summarize), stamped by the
+    # watcher when a trained checkpoint exists. analysis/ itself never
+    # imports kovadapt.ml — it stays a pure leaf; ml is built ON analysis.
+    ml: dict = field(default_factory=dict)
 
     def save(self, path: Path | str) -> Path:
         path = Path(path)

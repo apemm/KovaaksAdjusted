@@ -49,6 +49,10 @@ class SessionWatcher:
             settings.fatigue_min_runs, settings.fatigue_sensitivity
         )
         self._fatigue_level_logged = "fresh"
+        # Neural flick scorer ([ml] extra): loaded lazily on first use, once
+        # per watcher — None when torch or the checkpoint is missing.
+        self._ml_scorer = None
+        self._ml_tried = False
 
     # ----------------------------------------------------------- telemetry
     def _start_capture(self) -> None:
@@ -102,6 +106,52 @@ class SessionWatcher:
         p = self.traces.path_for(run.scenario, run.started.isoformat())
         return p.parent.parent.parent / "reports" / p.parent.name / (p.stem + ".json")
 
+    # -------------------------------------------------------------- neural
+    def _scorer(self):
+        """Lazily load the neural flick scorer (ml/infer.py), once per
+        watcher. Returns None when torch or the checkpoint is missing — a
+        `kovadapt train` finishing mid-session applies on the next watch."""
+        if not self._ml_tried:
+            self._ml_tried = True
+            try:
+                from .ml.infer import load_scorer
+
+                self._ml_scorer = load_scorer(self.s.profile_path)
+            except Exception:
+                self._ml_scorer = None
+            if self._ml_scorer is not None:
+                self.log("neural scorer: checkpoint loaded — stamping flick "
+                         "quality into reports")
+        return self._ml_scorer
+
+    def _log_shadow(self, state: dict, plan, run) -> None:
+        """Append this run's (state, plan) transition to the shadow-policy
+        JSONL log (ml/shadow.py) — the future training set for the neural
+        difficulty policy. Torch-free and best-effort: the untrained policy
+        never influences the emitted plan, and a logging failure must never
+        touch the adaptation loop."""
+        try:
+            import dataclasses
+            import json
+
+            from .ml.shadow import DifficultyShadowPolicy
+
+            policy = DifficultyShadowPolicy(self.s.profile_path)
+            try:  # default=float coerces numpy scalars along the way
+                plan_d = json.loads(json.dumps(dataclasses.asdict(plan), default=float))
+            except Exception:
+                plan_d = {"describe": plan.describe()}
+            sug = policy.propose(state)  # None until a policy is trained
+            policy.log_transition({
+                "ts": run.started.isoformat(),
+                "profile_state": json.loads(json.dumps(state, default=float)),
+                "plan": plan_d,
+                "suggestion": None if sug is None else dataclasses.asdict(sug),
+                "outcome": None,
+            })
+        except Exception:
+            pass
+
     def _analyze(self, run) -> RunReport:
         """Build + persist the post-run report (trace, clips, JSON)."""
         trace = self._run_trace(run)
@@ -113,6 +163,15 @@ class SessionWatcher:
             if state.message and state.level != self._fatigue_level_logged:
                 self._fatigue_level_logged = state.level
                 self.log(f"  fatigue: {state.message}")
+        if flicks and trace is not None:
+            scorer = self._scorer()
+            if scorer is not None:
+                try:
+                    from .ml.infer import summarize
+
+                    rep.ml = summarize(scorer.score(trace, flicks))
+                except Exception as exc:  # best-effort; never break the loop
+                    self.log(f"  neural scorer error: {exc}")
         if trace is not None and len(trace) > 10:
             rep.trace_file = str(self.traces.save(trace, run.scenario, run.started.isoformat()))
         if self.clip_recorder is not None and rep.notable:
@@ -162,6 +221,9 @@ class SessionWatcher:
         if not profile.archetype:
             profile.archetype = detect_archetype(self.base, run)
             self.log(f"  archetype: {profile.archetype}")
+        # Shadow-policy schema: profile state is captured BEFORE observe()
+        # folds this run in (ml/shadow.py:SHADOW_LOG_SCHEMA).
+        shadow_state = self._profile_state(profile, rep)
         # Bias needs both sides sampled: directional_bias returns 0.0 for
         # "no evidence" too, and a vertical-heavy run must not decay a
         # learned skew toward balanced.

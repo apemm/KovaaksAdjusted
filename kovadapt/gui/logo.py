@@ -194,11 +194,13 @@ class _EyeField:
                 flick = np.floor(age * 26.0) % 3 != 0
                 b = np.where(strobe, np.where(flick, 1.55, 0.25), b)
         if 0.25 < t < ascii_art._SPARK + 0.6:
-            # the heartbeat gathering at the pupil before the spark
-            beat = max(0.0, math.sin((t - 0.25) * 5.2)) \
-                * min((t - 0.25) / 0.5, 1.0)
+            # the lub-dub heartbeat gathering at the pupil before the spark
+            u = t - 0.25
+            beat = (max(0.0, math.sin(u * 5.2))
+                    + 0.6 * max(0.0, math.sin(u * 5.2 - 1.1))) \
+                * min(u / 0.5, 1.0)
             hb = self._iris & (b <= 0.0) & (rad < 0.30)
-            b = np.where(hb, 0.10 * beat * (1.0 - rad / 0.30), b)
+            b = np.where(hb, 0.14 * beat * (1.0 - rad / 0.30), b)
         if 3.0 < t < 3.9:                       # echo pulse across the iris
             b = b + np.where(
                 self._iris,
@@ -223,8 +225,8 @@ class _EyeField:
             band = -1.35 + (t - ascii_art.GLEAM_T) / ascii_art.GLEAM_LEN * 2.7
             xn = self._x / ascii_art._RI
             boost = np.where(self._iris & (rad <= 1.04),
-                             env * np.exp(-((xn - band) / 0.32) ** 2), 0.0)
-            rgb = rgb + (1.0 - rgb) * (0.75 * boost[:, None])
+                             env * np.exp(-((xn - band) / 0.38) ** 2), 0.0)
+            rgb = rgb + (1.0 - rgb) * (0.85 * boost[:, None])
 
         visible = b > 0.02
         if k > 0.0:

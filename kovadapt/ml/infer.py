@@ -108,6 +108,34 @@ class FlickScorer:
         return out
 
 
+def summarize(scores: list[FlickScore]) -> dict:
+    """Compact, JSON-ready digest of a run's flick scores.
+
+    This is what the watcher stamps into ``RunReport.ml`` — the report JSON
+    must stay small and serializable, so per-flick embeddings/residuals are
+    reduced to run-level aggregates plus the best/worst flick anchors
+    (``t_click`` epoch times, cross-referencable with notable moments and
+    clips via the shared time base)."""
+    if not scores:
+        return {}
+    qs = np.array([s.quality for s in scores], dtype=np.float64)
+    worst = min(scores, key=lambda s: s.quality)
+    best = max(scores, key=lambda s: s.quality)
+    return {
+        "n_scored": len(scores),
+        "mean_quality": round(float(qs.mean()), 4),
+        "p10_quality": round(float(np.percentile(qs, 10)), 4),
+        "worst_quality": round(worst.quality, 4),
+        "worst_t_click": worst.t_click,
+        "best_quality": round(best.quality, 4),
+        "best_t_click": best.t_click,
+        "mean_residual": {
+            h: round(float(np.mean([s.residual.get(h, 0.0) for s in scores])), 4)
+            for h in scores[0].residual
+        },
+    }
+
+
 def load_scorer(profile_dir: Path | str) -> FlickScorer | None:
     """Load ``<profile_dir>/ml/flick_encoder.pt`` -> scorer, or ``None``
     when torch is missing, the checkpoint does not exist, or it is

@@ -406,10 +406,12 @@ def led_state(cell: Cell, t: float) -> float:
     age = t - lit_at
 
     if age <= 0.0:
-        # darkness — except a faint heartbeat gathering at the pupil
+        # darkness — except a lub-dub heartbeat gathering at the pupil
         if cell.role == "iris" and cell.rad < 0.30 and t > 0.25:
-            beat = max(0.0, math.sin((t - 0.25) * 5.2))
-            return 0.10 * beat * min((t - 0.25) / 0.5, 1.0) * (1.0 - cell.rad / 0.30)
+            u = t - 0.25
+            beat = max(0.0, math.sin(u * 5.2)) \
+                + 0.6 * max(0.0, math.sin(u * 5.2 - 1.1))
+            return 0.14 * beat * min(u / 0.5, 1.0) * (1.0 - cell.rad / 0.30)
         return 0.0
 
     b = _pop(age)
