@@ -201,14 +201,27 @@ class Settings:
         path.parent.mkdir(parents=True, exist_ok=True)
         d = asdict(self)
         d.pop("root", None)
-        path.write_text(json.dumps(d, indent=2))
+        path.write_text(json.dumps(d, indent=2), encoding="utf-8")
         return path
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
         path = path or Path.home() / ".kovadapt" / "settings.json"
         if path.is_file():
-            d = json.loads(path.read_text())
+            try:
+                # utf-8-sig: tolerate a BOM from external editors/scripts
+                # (PowerShell 5.1's -Encoding utf8 writes one).
+                d = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(d, dict):
+                    raise ValueError("settings.json root is not an object")
+            except (ValueError, OSError):
+                # A broken settings file must never brick startup: set it
+                # aside for inspection and boot on defaults.
+                try:
+                    path.replace(path.with_suffix(".json.bad"))
+                except OSError:
+                    pass
+                return cls()
             # Tolerate settings files written by other versions.
             known = {f for f in cls.__dataclass_fields__ if f != "root"}
             return cls(**{k: v for k, v in d.items() if k in known})

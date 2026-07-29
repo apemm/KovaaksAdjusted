@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 
 from kovadapt.adapt.archetype import detect_archetype
@@ -286,3 +288,23 @@ def test_settings_save_defaults_to_canonical_load_path(tmp_path, monkeypatch):
     loaded = Settings.load()  # default path round-trips the customization
     assert loaded.target_accuracy_high == 0.91
     assert loaded.profile_dir == str(custom)
+
+
+def test_settings_load_tolerates_utf8_bom(tmp_path):
+    """PowerShell 5.1's -Encoding utf8 writes a BOM; load() must not choke."""
+    p = tmp_path / "settings.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"target_accuracy_high": 0.91}).encode())
+    assert Settings.load(p).target_accuracy_high == 0.91
+
+
+def test_settings_load_survives_corrupt_file(tmp_path):
+    """A broken settings.json boots on defaults and is set aside, not fatal."""
+    p = tmp_path / "settings.json"
+    p.write_text("{not json", encoding="utf-8")
+    s = Settings.load(p)
+    assert s.target_accuracy_high == Settings().target_accuracy_high
+    assert not p.exists() and (tmp_path / "settings.json.bad").is_file()
+
+    p.write_text('["a", "list"]', encoding="utf-8")  # valid JSON, wrong shape
+    assert Settings.load(p).theme == Settings().theme
+    assert not p.exists()
