@@ -215,11 +215,20 @@ def _render() -> list[Cell]:
     for r in range(ROWS):
         for c in range(COLS):
             v = float(cell_ink[r, c])
+            g = float(glint_cell[r, c])
+            d = float(cdist[r, c])
             if v < _MIN_INK:
+                # the glint core has near-zero ink BY DESIGN (highlights are
+                # subtractive) — emit solid bright cells there instead of an
+                # empty hole, so the highlight reads white on dark grounds
+                if g > 0.35 and d <= 1.04:
+                    ch = _RAMP[min(int((0.45 + 0.55 * g) * (len(_RAMP) - 1)),
+                                   len(_RAMP) - 1)]
+                    cells.append(Cell(c, r, ch, "glint", 0.0, 0.0, g, d,
+                                      float(seeds[r, c])))
                 continue
             ch = _RAMP[min(int(v * (len(_RAMP) - 1) + 0.5), len(_RAMP) - 1)]
-            d = float(cdist[r, c])
-            if d <= 1.04 and glint_cell[r, c] > 0.5:
+            if d <= 1.04 and g > 0.5:
                 role, order, hue = "glint", 0.0, 0.0
             elif d <= 1.02:
                 hue = float(cang[r, c]) / (2 * math.pi)
@@ -394,20 +403,20 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
             col = QColor.fromHsvF(hue, s_mod, val)
         elif cell.role == "glint":
             col = QColor("#ffffff") if is_dark else QColor(ink)
-            col.setAlphaF(0.9 if is_dark else 0.35)
+            col.setAlphaF(min(0.55 + 0.45 * cell.ink, 1.0) if is_dark else 0.35)
         elif cell.role == "shade":
             col = QColor(ink)
-            col.setAlphaF(0.28 + 0.45 * cell.ink)
+            col.setAlphaF(min(0.28 + 0.45 * cell.ink, 1.0))
         else:
             col = QColor(ink)
-            col.setAlphaF(0.35 + 0.65 * cell.ink)
+            col.setAlphaF(min(0.35 + 0.65 * cell.ink, 1.0))
         if b < 1.0:
             a = col.alphaF()
             r0, g0, b0 = bg.redF(), bg.greenF(), bg.blueF()
             col = QColor.fromRgbF(r0 + (col.redF() - r0) * b,
                                   g0 + (col.greenF() - g0) * b,
                                   b0 + (col.blueF() - b0) * b)
-            col.setAlphaF(a * (0.3 + 0.7 * b))
+            col.setAlphaF(min(a * (0.3 + 0.7 * b), 1.0))
         elif b > 1.0:
             k = min(b - 1.0, 0.5)
             col = QColor.fromRgbF(col.redF() + (1 - col.redF()) * k,
@@ -553,7 +562,7 @@ def loop_cell_color(cell: Cell, phase: float, *, is_dark: bool,
         col.setAlphaF((0.9 if is_dark else 0.35) * (0.82 + 0.18 * tw))
         return col
     col = QColor(ink)                            # non-live roles: static
-    col.setAlphaF(0.35 + 0.65 * cell.ink)
+    col.setAlphaF(min(0.35 + 0.65 * cell.ink, 1.0))
     return col
 
 
@@ -622,6 +631,134 @@ def blink_lid_paths(rect: QRectF,
 
 # ------------------------------------------------------- eye progress bar
 _NYAN_BANDS = ("#ff3355", "#ff9f2e", "#ffe12e", "#4ddd55", "#3aa0ff", "#9a5cff")
+
+# The cat's coat follows the accent theme: indigo keeps the black cat.
+_CAT_COATS = {
+    "indigo": ("#17171c", "#33333d", "#7cfc9b"),   # black cat, green eyes
+    "ocean": ("#2c3a52", "#48597a", "#ffd23e"),    # slate-blue, amber eyes
+    "mint": ("#e8e6df", "#b9b6ac", "#3aa0ff"),     # cream-white, blue eyes
+    "rose": ("#c96f3b", "#a04e21", "#4ddd55"),     # ginger, green eyes
+}
+
+
+def _cat_coat(pal) -> tuple[QColor, QColor, QColor]:
+    """(body, edge, eyes) for the current accent; black cat by default."""
+    from .theme import ACCENTS
+
+    key = "indigo"
+    for name, spec in ACCENTS.items():
+        if pal.accent in (spec["light"][0], spec["dark"][0]):
+            key = name
+            break
+    body, edge, eye = _CAT_COATS.get(key, _CAT_COATS["indigo"])
+    return QColor(body), QColor(edge), QColor(eye)
+
+
+class CatSlider(QWidget):
+    """A slider that is a black pixel cat walking a scrolling RGB trail —
+    the overlay opacity control. API-compatible enough with QSlider for the
+    dashboard: value()/setValue(), valueChanged(int), setRange, tooltips."""
+
+    from PySide6.QtCore import Signal as _Signal
+
+    valueChanged = _Signal(int)
+
+    def __init__(self, lo: int = 30, hi: int = 100, parent=None) -> None:
+        super().__init__(parent)
+        from PySide6.QtCore import QTimer
+
+        self._lo, self._hi = lo, hi
+        self._value = hi
+        self._phase = 0
+        self.setMinimumSize(180, 26)
+        self.setCursor(Qt.PointingHandCursor)
+        self._anim = QTimer(self)
+        self._anim.setInterval(140)
+        self._anim.timeout.connect(self._advance)
+
+    def _advance(self) -> None:
+        self._phase += 1
+        self.update()
+
+    def showEvent(self, event) -> None:
+        self._anim.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._anim.stop()
+        super().hideEvent(event)
+
+    # ----------------------------------------------------- QSlider-ish API
+    def setRange(self, lo: int, hi: int) -> None:
+        self._lo, self._hi = lo, hi
+
+    def value(self) -> int:
+        return self._value
+
+    def setValue(self, v: int) -> None:
+        v = int(max(self._lo, min(self._hi, v)))
+        if v != self._value:
+            self._value = v
+            self.valueChanged.emit(v)
+            self.update()
+
+    # -------------------------------------------------------------- mouse
+    def _set_from_x(self, x: float) -> None:
+        span = max(self.width() - 30, 1)
+        frac = max(0.0, min(1.0, (x - 4) / span))
+        self.setValue(round(self._lo + frac * (self._hi - self._lo)))
+
+    def mousePressEvent(self, event) -> None:
+        self._set_from_x(event.position().x())
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.LeftButton:
+            self._set_from_x(event.position().x())
+
+    # -------------------------------------------------------------- paint
+    def paintEvent(self, event) -> None:
+        pal = theme.current()
+        p = QPainter(self)
+        span = max(self.width() - 30, 1)
+        frac = (self._value - self._lo) / max(self._hi - self._lo, 1)
+        knob_x = 4 + frac * span
+        mid_y = self.height() / 2
+
+        # empty remainder of the track
+        p.setPen(QColor(pal.border))
+        p.drawLine(int(knob_x + 24), int(mid_y), self.width() - 2, int(mid_y))
+
+        # the RGB trail behind the cat: scrolling dashed bands
+        bh = 2.6
+        y0 = mid_y - 3 * bh
+        for i, hexcol in enumerate(_NYAN_BANDS):
+            col = QColor(hexcol)
+            col.setAlphaF(0.45 + 0.55 * frac)   # trail glows with opacity
+            y = y0 + i * bh
+            x = 4 - (self._phase * 3) % 10
+            while x < knob_x - 2:
+                w = min(6.0, knob_x - 2 - x)
+                if x + w > 4 and w > 0:
+                    p.fillRect(QRectF(max(x, 4.0), y, w, bh - 0.4), col)
+                x += 10
+
+        # the cat (2px pixel blocks, walking bob) — coat follows the accent
+        cx = knob_x - 2
+        cy = mid_y - 10 + (self._phase % 2)
+        black, edge, eye = _cat_coat(pal)
+        p.fillRect(QRectF(cx - 5, cy + 3, 5, 3), edge)           # tail
+        p.fillRect(QRectF(cx - 6, cy + 1, 3, 3), edge)           # tail curl
+        p.fillRect(QRectF(cx, cy + 6, 16, 9), edge)              # body edge
+        p.fillRect(QRectF(cx + 1, cy + 7, 14, 7), black)         # body
+        p.fillRect(QRectF(cx + 10, cy + 1, 10, 9), edge)         # head edge
+        p.fillRect(QRectF(cx + 11, cy + 2, 8, 7), black)         # head
+        p.fillRect(QRectF(cx + 11, cy - 1, 3, 3), black)         # ears
+        p.fillRect(QRectF(cx + 17, cy - 1, 3, 3), black)
+        p.fillRect(QRectF(cx + 13, cy + 4, 2, 2), eye)           # eyes
+        p.fillRect(QRectF(cx + 17, cy + 4, 2, 2), eye)
+        step = self._phase % 2
+        for i in range(3):
+            p.fillRect(QRectF(cx + 2 + i * 5 + step, cy + 15, 3, 3), black)
 
 
 class AsciiProgress(QWidget):
@@ -718,26 +855,23 @@ class AsciiProgress(QWidget):
         p.drawLine(int(x0 + filled + 22), y0 + 3 * bh,
                    int(x0 + track), y0 + 3 * bh)
 
-        # the cat, riding the tip (2px pixel blocks, gentle bob)
+        # the cat, riding the tip (2px pixel blocks, gentle bob); its coat
+        # follows the accent theme — indigo keeps the black cat
         cx = x0 + filled - 2
         cy = 1 + (self._phase % 2)
-        body = QColor("#f2a7c3")
-        body_d = QColor("#cf7ba2")
-        grey = QColor("#8d8d99")
-        dark = QColor("#101014")
-        p.fillRect(QRectF(cx - 4, cy + 8, 6, 4), grey)          # tail
-        p.fillRect(QRectF(cx, cy + 4, 16, 12), body_d)          # body border
-        p.fillRect(QRectF(cx + 1, cy + 5, 14, 10), body)        # pastry body
-        for sx, sy in ((4, 7), (8, 9), (5, 12), (10, 6), (11, 11)):
-            p.fillRect(QRectF(cx + sx, cy + sy, 2, 2), body_d)  # sprinkles
-        p.fillRect(QRectF(cx + 12, cy + 2, 10, 10), grey)       # head
-        p.fillRect(QRectF(cx + 12, cy, 3, 3), grey)             # ears
-        p.fillRect(QRectF(cx + 19, cy, 3, 3), grey)
-        p.fillRect(QRectF(cx + 15, cy + 5, 2, 2), dark)         # eyes
-        p.fillRect(QRectF(cx + 19, cy + 5, 2, 2), dark)
-        p.fillRect(QRectF(cx + 17, cy + 9, 3, 1.6), dark)       # mouth
+        body, edge, eye = _cat_coat(pal)
+        p.fillRect(QRectF(cx - 4, cy + 8, 6, 4), edge)          # tail
+        p.fillRect(QRectF(cx - 5, cy + 6, 3, 3), edge)          # tail curl
+        p.fillRect(QRectF(cx, cy + 4, 16, 12), edge)            # body edge
+        p.fillRect(QRectF(cx + 1, cy + 5, 14, 10), body)        # body
+        p.fillRect(QRectF(cx + 12, cy + 2, 10, 10), edge)       # head edge
+        p.fillRect(QRectF(cx + 13, cy + 3, 8, 8), body)         # head
+        p.fillRect(QRectF(cx + 12, cy, 3, 3), body)             # ears
+        p.fillRect(QRectF(cx + 19, cy, 3, 3), body)
+        p.fillRect(QRectF(cx + 15, cy + 5, 2, 2), eye)          # eyes
+        p.fillRect(QRectF(cx + 19, cy + 5, 2, 2), eye)
         for leg in range(4):
-            p.fillRect(QRectF(cx + 2 + leg * 4, cy + 16, 3, 3), grey)
+            p.fillRect(QRectF(cx + 2 + leg * 4, cy + 16, 3, 3), edge)
         self._draw_label(p, pal, x0 + track + 30)
 
     def _draw_label(self, p: QPainter, pal, x: float) -> None:

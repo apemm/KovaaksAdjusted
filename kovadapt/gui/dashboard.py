@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -23,7 +22,7 @@ from .. import launcher
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
 from . import theme
-from .ascii_art import AsciiProgress
+from .ascii_art import AsciiProgress, CatSlider
 from .onboarding import HintBar
 from .overlay import OverlayWindow
 from .workers import WatcherWorker
@@ -99,10 +98,9 @@ class Dashboard(QWidget):
         self.ov_unlock.setToolTip("Unlock to drag the overlay into place; lock "
                                   "to make it click-through again")
         self.ov_unlock.toggled.connect(self._unlock_overlay)
-        self.ov_opacity = QSlider(Qt.Horizontal)
-        self.ov_opacity.setRange(30, 100)
+        self.ov_opacity = CatSlider(30, 100)
         self.ov_opacity.setValue(int(settings.overlay_opacity * 100))
-        self.ov_opacity.setToolTip("Overlay opacity")
+        self.ov_opacity.setToolTip("Overlay opacity — the cat walks it there")
         self.ov_opacity.valueChanged.connect(
             lambda v: self.overlay.set_opacity(v / 100))
         # Debounced persist: keyboard/wheel changes never fire sliderReleased.

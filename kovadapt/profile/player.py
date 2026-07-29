@@ -57,6 +57,13 @@ class PlayerProfile:
     last_run_ts: str = ""
     ewma_bias: float = 0.0           # directional flick bias (+ = left weaker)
     archetype: str = ""              # clicking | tracking | switching ("" = unknown)
+    # Fitts throughput trend (ms of flick time per bit of difficulty; lower =
+    # better). Two EWMAs at different half-lives form the minimal persisted
+    # trend signal: fast at/above slow means throughput has stopped improving.
+    # All default so pre-v0.4 profile JSON keeps loading.
+    ewma_fitts_ms: float = 0.0       # fast EWMA of per-run Fitts slope (0 = no evidence)
+    slow_fitts_ms: float = 0.0       # 4x-half-life reference EWMA (trend baseline)
+    fitts_obs: int = 0               # telemetry runs folded into the Fitts EWMAs
     history: list[dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ ewma
@@ -97,6 +104,23 @@ class PlayerProfile:
             self.ewma_bias = float(bias_score)
         else:
             self.ewma_bias += self._alpha(half_life) * (float(bias_score) - self.ewma_bias)
+
+    def observe_fitts(self, fitts_slope_ms: float, half_life: float = 5.0) -> None:
+        """Fold one run's Fitts slope (analysis/report.py: ms of flick time
+        per bit of distance) into the throughput trend. The slow EWMA runs at
+        4x the half-life; the fast EWMA falling below it is genuine motor
+        improvement, sitting at/above it is a throughput stall (the signal
+        the engine's Fitts controller acts on)."""
+        f = float(fitts_slope_ms)
+        if f <= 0:
+            return
+        if self.fitts_obs == 0:
+            self.ewma_fitts_ms = f
+            self.slow_fitts_ms = f
+        else:
+            self.ewma_fitts_ms += self._alpha(half_life) * (f - self.ewma_fitts_ms)
+            self.slow_fitts_ms += self._alpha(4.0 * half_life) * (f - self.slow_fitts_ms)
+        self.fitts_obs += 1
 
     # --------------------------------------------------------------- regions
     def region(

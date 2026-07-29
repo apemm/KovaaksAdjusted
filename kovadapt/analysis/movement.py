@@ -183,11 +183,21 @@ def directional_bias(flicks: list[Flick]) -> dict:
 def region_deficits(flicks: list[Flick], cols: int = 3, rows: int = 3) -> dict[str, float]:
     """Per-region weakness signal from real flick data.
 
-    A flick's direction maps to the wall region it was aimed toward
-    (angle -> grid cell around the center). Deficit per region = mean
-    (overshoot + correction penalty + slowness penalty), z-scored across
-    regions. Feeds the bandit as *observed* rewards, replacing (or blending
-    with) run-level attribution.
+    Direction AND amplitude aware: each flick credits the wall region it was
+    aimed toward, at a ring distance from the grid center set by its
+    amplitude relative to the run's own flick-amplitude distribution
+    (amplitude / p90, clipped to 1). Short flicks credit the inner cells,
+    long flicks the edges — skill decays with distance from the mouse rest
+    position, so large-angle weakness lives at the extremes (analysis/kb.py:
+    p-rest-position, dx-region-deficit). The unit direction is stretched
+    onto the square (divided by max(|ux|, |uy|)) so diagonal flicks can
+    reach the corner cells at any grid size.
+
+    Deficit per region = mean (overshoot + correction penalty + slowness
+    penalty) over regions with >= 2 observations, z-scored across regions.
+    Feeds the bandit as *observed* rewards, replacing (or blending with)
+    run-level attribution. Keys follow the r{row}c{col} cross-module
+    contract in aim convention (+y up: an upward flick credits a higher row).
     """
     if not flicks:
         return {}
@@ -195,13 +205,14 @@ def region_deficits(flicks: list[Flick], cols: int = 3, rows: int = 3) -> dict[s
     buckets: dict[str, list[float]] = {}
     durs = np.array([f.duration for f in flicks])
     med_dur = float(np.median(durs))
+    ref_amp = max(float(np.percentile([f.amplitude for f in flicks], 90)), 1e-9)
     for f in flicks:
-        # direction unit vector -> nearest ring cell offset
+        # direction stretched onto the square, scaled by the amplitude ring
         ux, uy = np.cos(f.angle), np.sin(f.angle)
-        c = int(np.clip(round(center_c + ux), 0, cols - 1))
-        r = int(np.clip(round(center_r + uy), 0, rows - 1))
-        if r == center_r and c == center_c and (abs(ux) > 0.3 or abs(uy) > 0.3):
-            c = int(np.clip(center_c + np.sign(ux), 0, cols - 1))
+        m = max(abs(ux), abs(uy), 1e-9)
+        ring = min(f.amplitude / ref_amp, 1.0)
+        c = int(np.clip(round(center_c + (ux / m) * ring * center_c), 0, cols - 1))
+        r = int(np.clip(round(center_r + (uy / m) * ring * center_r), 0, rows - 1))
         slowness = max(f.duration / med_dur - 1.0, 0.0) if med_dur > 0 else 0.0
         buckets.setdefault(f"r{r}c{c}", []).append(
             f.overshoot + 0.15 * f.corrections + 0.25 * slowness

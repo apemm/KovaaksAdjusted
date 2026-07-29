@@ -185,7 +185,13 @@ class AnalysisView(QWidget):
         self.coach_lay.setSpacing(6)
         self.coach_box.hide()
 
+        # room to breathe: generous spacing between every panel
+        split.setHandleWidth(14)
+        right.setHandleWidth(14)
+        left_w.setHandleWidth(14)
+        self.coach_lay.setSpacing(10)
         lay = QVBoxLayout(self)
+        lay.setSpacing(16)
         if settings is not None:
             lay.addWidget(HintBar(settings, (
                 "Every watched run lands here automatically — or use "

@@ -24,23 +24,32 @@ ARCHETYPES = ("clicking", "tracking", "switching")
 def default_archetype_overrides() -> dict[str, dict[str, float]]:
     """Per-archetype Settings overrides (keys must be Settings field names).
 
-    tracking:  accuracy is per-tick hit rate (runs much higher than clicking),
-               so the sweet spot moves up; movement is the difficulty axis, so
-               it never drops to zero and sizing reacts more gently.
-    switching: flick volume is the point — slightly looser accuracy band and
-               more spawn mass on the weak region.
+    The clicking baseline band (0.85-0.95) is the primary-sourced doctrine
+    (analysis/kb.py: p-speed-accuracy-governor). Per kb.py GAPS there is NO
+    primary tracking or switching band, so both bands below are kovadapt
+    extrapolations of the same control law:
+
+    tracking:  accuracy is per-tick time-on-target, which runs lower than
+               click accuracy (every off-target tick counts against you), so
+               the band sits below the clicking doctrine at ~0.70-0.88;
+               movement is the difficulty axis, so it never drops to zero
+               and sizing reacts more gently.
+    switching: flick volume is the point, so the band trades accuracy for
+               attempts — ~0.65-0.85, looser than clicking but still tight
+               enough that sprayed flicks pull difficulty back down — and
+               more spawn mass lands on the weak region.
     """
     return {
         "clicking": {},
-        "tracking": {
+        "tracking": {  # kovadapt extrapolation (no primary tracking band)
             "target_accuracy_low": 0.70,
             "target_accuracy_high": 0.88,
             "size_learning_rate": 0.6,
             "min_movement": 0.35,
         },
-        "switching": {
-            "target_accuracy_low": 0.55,
-            "target_accuracy_high": 0.75,
+        "switching": {  # kovadapt extrapolation (no primary switching band)
+            "target_accuracy_low": 0.65,
+            "target_accuracy_high": 0.85,
             "focus_weight": 0.6,
         },
     }
@@ -64,15 +73,21 @@ class Settings:
 
     kovaaks_root: str = ""
     # Difficulty controller: keep per-run hit rate inside this band ("training sweet spot").
-    target_accuracy_low: float = 0.60
-    target_accuracy_high: float = 0.80
+    # Defaults are the primary-sourced clicking doctrine — hold accuracy in an explicit
+    # 85-95% band and train speed against it (analysis/kb.py: p-speed-accuracy-governor,
+    # dx-acc-above-band). Tracking/switching bands are labeled extrapolations set in
+    # default_archetype_overrides().
+    target_accuracy_low: float = 0.85
+    target_accuracy_high: float = 0.95
     # Target size clamps (multipliers on the base scenario's bounding-box size).
     min_target_scale: float = 0.40
     max_target_scale: float = 2.50
     size_learning_rate: float = 0.9  # gain on log-scale size updates
-    # Spawn region grid over the wall plane (columns x rows).
-    region_cols: int = 3
-    region_rows: int = 3
+    # Spawn region grid over the wall plane (columns x rows). 5x5 pairs with the
+    # amplitude-aware flick->region mapping (analysis/movement.py:region_deficits):
+    # short flicks credit inner cells, long flicks the edges.
+    region_cols: int = 5
+    region_rows: int = 5
     focus_weight: float = 0.5  # probability mass concentrated on the bandit's focus region
     # Ornstein-Uhlenbeck micro-movement process.
     ou_theta: float = 0.35  # mean reversion rate (per run)
@@ -82,13 +97,25 @@ class Settings:
     max_movement: float = 1.0
     # EWMA half-life (runs) for profile statistics.
     ewma_half_life: float = 5.0
-    # --- Advanced engine internals (defaults preserve pre-v0.3 behavior) ---
+    # --- Advanced engine internals ---
     size_speed_coupling: float = 0.35    # size floor grows with target speed
     pace_coupling_gain: float = 0.4      # kills/s above norm -> OU push
     min_shots_for_size: int = 10         # size controller needs this many shots
     bandit_obs_noise: float = 0.25       # observation noise of region posteriors
     bandit_prior_var: float = 1.0        # prior variance of fresh region arms
-    bandit_posterior_decay: float = 0.0  # per-run forgetting toward the prior
+    # Per-run forgetting toward the prior. Default on since v0.4: weaknesses
+    # re-open as you improve, so mapped arms must not stay pinned forever.
+    bandit_posterior_decay: float = 0.03
+    # --- Doctrine-aligned progression controllers (analysis/kb.py citations) ---
+    # Fitts throughput controller: accuracy comfortable (inside the band) but the
+    # ms-per-bit EWMA no longer improving -> shrink targets one extra step per run
+    # to push difficulty back to the challenge point (p-challenge-point,
+    # p-fitts-throughput). 0 disables.
+    fitts_control_gain: float = 0.35
+    # Pace plateau push: accuracy in band + flat kills/s across recent history ->
+    # bounded upward push on the movement target through the existing OU/pace
+    # pathway (p-speed-is-growth-axis). 0 disables.
+    pace_progression_gain: float = 0.3
     # --- Trace-informed dodge direction ---
     dodge_bias_enabled: bool = True      # strafe longer toward the weak side
     dodge_bias_gain: float = 0.8         # scales EWMA bias into strafe asymmetry

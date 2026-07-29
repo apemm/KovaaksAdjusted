@@ -91,7 +91,7 @@ class _ThemeCombo(QComboBox):
         rect = self.style().subControlRect(
             QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self)
         x = rect.x() + 6
-        for i, chq in enumerate("Gamer"):
+        for i, chq in enumerate("RGB"):
             sp.setPen(QColor.fromHsvF(
                 ((self._phase * 0.045) + i * 0.14) % 1.0, 0.85, 1.0))
             sp.drawText(x, rect.y(), rect.width(), rect.height(),
@@ -121,6 +121,11 @@ class MainWindow(QMainWindow):
                            ("Optimizer", self.optimizer)):
             self.space.add_section(name, page)
         self.nav = NavBar(self.space, corner=self._corner())
+        # everything is clickable first: hovering a panel never traps the wheel
+        from .shell import WheelGuard
+
+        self._wheel_guard = WheelGuard(self.space)
+        self._wheel_guard.guard(self.space)
 
         central = QWidget()
         central.setObjectName("tabPage")   # transparent: backdrop shows through
@@ -156,11 +161,11 @@ class MainWindow(QMainWindow):
         self.theme_pick = _ThemeCombo()
         for label, mode in (("Auto theme", "auto"), ("Light", "light"),
                             ("Dark", "dark"), ("Midnight", "midnight"),
-                            ("Gamer", "rgb")):
+                            ("RGB", "rgb")):
             self.theme_pick.addItem(label, mode)
         self.theme_pick.setToolTip(
-            "Auto follows Windows · Midnight is near-black · Gamer is "
-            "midnight with cycling RGB (and a certain cat)")
+            "Auto follows Windows · Midnight is near-black · RGB is "
+            "midnight with cycling colors (and a certain cat)")
         self.theme_pick.setCurrentIndex(
             {"auto": 0, "light": 1, "dark": 2, "midnight": 3, "rgb": 4}
             .get(self.themes.mode, 0))

@@ -1,12 +1,17 @@
 """Adaptation engine: run + profile -> next scenario parameters.
 
-Three coupled controllers:
+Coupled controllers:
   1. Size controller  — multiplicative log-scale update keeping hit rate in the
-     configured sweet spot (default 60-80%): flow-state difficulty.
+     configured sweet spot (default 85-95%, the primary-sourced clicking band —
+     analysis/kb.py: p-speed-accuracy-governor): flow-state difficulty.
+     A Fitts throughput sub-controller adds an extra shrink step when accuracy
+     is comfortable in-band but ms-per-bit has stalled (challenge point).
   2. Region bandit    — Thompson sampling concentrates spawns on weak regions.
   3. Movement (OU)    — Ornstein-Uhlenbeck drift + speed-coupled sizing: when
      movement intensity rises, targets grow to keep the task fair; when the
-     player's pace (kills/s) rises, movement rises to break autopilot.
+     player's pace (kills/s) rises, movement rises to break autopilot — and
+     when pace plateaus with accuracy parked in-band, a bounded progression
+     push raises the movement target (speed is the growth axis).
 """
 
 from __future__ import annotations
@@ -73,6 +78,7 @@ class AdaptationEngine:
         run: Run,
         region_deficits: dict[str, float] | None = None,
         bias_score: float | None = None,
+        fitts_slope_ms: float | None = None,
     ) -> None:
         """Fold a finished run into the profile (must be called before plan).
 
@@ -97,6 +103,8 @@ class AdaptationEngine:
         profile.observe_run(run, s.ewma_half_life)
         if bias_score is not None:
             profile.observe_bias(bias_score, s.ewma_half_life)
+        if fitts_slope_ms is not None and fitts_slope_ms > 0:
+            profile.observe_fitts(fitts_slope_ms, s.ewma_half_life)
 
     # --------------------------------------------------------------- plan
     def plan(
@@ -122,6 +130,15 @@ class AdaptationEngine:
                 excess = err - math.copysign(band, err)
                 # accuracy too high -> excess > 0 -> shrink targets, and vice versa
                 scale *= math.exp(-s.size_learning_rate * excess)
+            elif (s.fitts_control_gain > 0 and profile.fitts_obs >= 5
+                  and profile.ewma_fitts_ms >= profile.slow_fitts_ms):
+                # Fitts throughput sub-controller: comfortable in the band but
+                # ms-per-bit has stalled -> one extra gentle shrink step per
+                # run toward the challenge point (analysis/kb.py:
+                # p-challenge-point, p-fitts-throughput). ~1.75%/run at the
+                # default gain; the deadband above reverses it if accuracy
+                # falls out of the band.
+                scale *= math.exp(-s.fitts_control_gain * 0.05)
         scale = float(np.clip(scale, s.min_target_scale, s.max_target_scale))
 
         # -- 2. movement: OU drift + pace coupling --------------------------
@@ -130,6 +147,18 @@ class AdaptationEngine:
             # Player running hotter than their norm => likely autopiloting.
             rel = last_run.kills_per_second() / profile.ewma_kps - 1.0
             pace_push = float(np.clip(rel, -0.5, 0.5))
+        if (s.pace_progression_gain > 0 and last_run is not None
+                and profile.run_count >= 10
+                and s.target_accuracy_low <= last_run.accuracy <= s.target_accuracy_high):
+            # Pace-plateau progression: accuracy parked in-band with kills/s
+            # flat across recent history -> bounded upward push through the
+            # existing OU/pace pathway (analysis/kb.py: p-speed-is-growth-axis).
+            kpss = [float(h.get("kps", 0.0)) for h in profile.history[-10:]]
+            half = len(kpss) // 2
+            a0 = sum(kpss[:half]) / max(half, 1)
+            a1 = sum(kpss[half:]) / max(len(kpss) - half, 1)
+            if a0 > 0 and abs(a1 / a0 - 1.0) < 0.03:
+                pace_push += 0.5 * s.pace_progression_gain
         # Built per-plan from the *effective* settings so archetype overrides
         # of ou_theta/ou_sigma apply (contract: tunables via _effective()).
         ou = OrnsteinUhlenbeck(theta=s.ou_theta, sigma=s.ou_sigma)

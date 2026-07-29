@@ -72,7 +72,8 @@ def test_status_after_replay_shows_heatmap_grid(env: Settings, capsys):
     assert "accuracy EWMA: 66.7%" in out
     assert "region deficit heatmap" in out
     grid = out.split("heatmap", 1)[1]
-    assert grid.count("--") == 9  # 3x3 grid, every cell still unobserved
+    # v0.4 default grid is 5x5: every cell still unobserved
+    assert grid.count("--") == 25
 
 
 def test_status_heatmap_renders_region_evidence(env: Settings, capsys):

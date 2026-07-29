@@ -172,6 +172,7 @@ class SessionWatcher:
             profile, run,
             region_deficits=rep.region_deficits or None,
             bias_score=bias,
+            fitts_slope_ms=rep.fitts_slope_ms or None,
         )
         fatigue = rep.fatigue.get("score", 0.0) if self.s.fatigue_easing else 0.0
         plan = self.engine.plan(profile, run, fatigue=fatigue)

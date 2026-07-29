@@ -310,7 +310,10 @@ def test_generate_variant_preserves_crlf(mini_sce: Path, tmp_path: Path):
 
 
 def test_focus_region_gets_more_density(mini_sce: Path, tmp_path: Path):
-    s = Settings(kovaaks_root=str(tmp_path), focus_weight=0.6)
+    # pinned at 3x3: the mini fixture has too few spawns to exercise the
+    # (v0.4-default) 5x5 grid; the mechanism under test is density, not dims
+    s = Settings(kovaaks_root=str(tmp_path), focus_weight=0.6,
+                 region_cols=3, region_rows=3)
     engine = AdaptationEngine(s, rng=np.random.default_rng(3))
     prof = PlayerProfile(scenario="x")
     plan = engine.plan(prof, None)

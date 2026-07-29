@@ -11,9 +11,10 @@ from kovadapt.profile.player import PlayerProfile
 
 
 def make_rep(**kw) -> RunReport:
+    # accuracy defaults INSIDE the v0.4 doctrine band (0.85-0.95)
     base = dict(
         scenario="X [Adaptive]", started_iso="2026-07-28T12:00:00",
-        score=800.0, accuracy=0.70, avg_ttk=0.9, kills=40, kps=0.8,
+        score=800.0, accuracy=0.90, avg_ttk=0.9, kills=40, kps=0.8,
         n_flicks=40, mean_flick_ms=180.0, overshoot_rate=0.1,
         mean_corrections=0.8,
         input_health={"polling_hz_est": 1000.0, "jitter_ms": 0.4},
@@ -40,7 +41,7 @@ def ids(insights: list[Insight]) -> set[str]:
     return {i.id for i in insights}
 
 
-def hist(acc=0.70, score=800.0, kps=0.8, n=12) -> list[dict]:
+def hist(acc=0.90, score=800.0, kps=0.8, n=12) -> list[dict]:
     return [{"accuracy": acc, "score": score, "kps": kps} for _ in range(n)]
 
 
@@ -54,7 +55,7 @@ def test_overshoot_control_failure_fires():
 
 
 def test_overshoot_strategic_is_positive_not_a_fix():
-    rep = make_rep(overshoot_rate=0.45, mean_corrections=0.5, accuracy=0.72)
+    rep = make_rep(overshoot_rate=0.45, mean_corrections=0.5, accuracy=0.90)
     prof = make_prof(history=hist())
     got = generate_insights(rep, prof, settings())
     (ins,) = [i for i in got if i.id == "dx-overshoot-strategic"]
@@ -92,8 +93,8 @@ def test_archetype_correction_profiles():
 
 def test_bias_and_region_and_fatigue():
     prof = make_prof(ewma_bias=0.3, history=hist())
-    prof.region("r2c0").update(0.9)
-    prof.region("r2c0").update(0.9)
+    prof.region("r4c0").update(0.9)      # top-left corner of the 5x5 grid
+    prof.region("r4c0").update(0.9)
     rep = make_rep(fatigue={"level": "declining", "score": 0.4, "runs": 7})
     got = generate_insights(rep, prof, settings())
     assert {"dx-bias", "dx-region-deficit", "dx-fatigue"} <= ids(got)

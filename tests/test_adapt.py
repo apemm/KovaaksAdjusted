@@ -203,7 +203,7 @@ def test_settings_for_archetype():
     assert t is not s
     assert t.target_accuracy_low == 0.70 and t.target_accuracy_high == 0.88
     assert t.region_cols == s.region_cols            # untouched fields inherited
-    assert s.target_accuracy_low == 0.60             # original unchanged
+    assert s.target_accuracy_low == 0.85             # doctrine default unchanged
     assert s.for_archetype("clicking") is s          # empty overrides -> same object
     assert s.for_archetype("") is s
     s.archetype_enabled = False

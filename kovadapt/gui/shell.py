@@ -14,8 +14,18 @@ sections, so no wrapper may paint an opaque background.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPropertyAnimation,
+    Qt,
+    Signal,
+)
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSpinBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,6 +36,41 @@ from PySide6.QtWidgets import (
 )
 
 _SCROLL_MS = 350
+
+
+class WheelGuard(QObject):
+    """Everything is clickable first: inner scrollables (plots, logs, tables,
+    combos, spinboxes, nested scroll areas) only consume the wheel AFTER
+    being clicked — until then the wheel always scrolls the page, so hovering
+    a panel never traps the scroll."""
+
+    def __init__(self, space: "PageSpace") -> None:
+        super().__init__(space)
+        self._space = space
+
+    def eventFilter(self, obj, ev) -> bool:
+        if ev.type() != QEvent.Wheel:
+            return False
+        w = obj if hasattr(obj, "hasFocus") else None
+        if w is None:
+            return False
+        owner = w
+        if not owner.hasFocus() and hasattr(owner, "parentWidget"):
+            parent = owner.parentWidget()      # viewports focus their area
+            if parent is not None and parent.hasFocus():
+                owner = parent
+        if owner.hasFocus():
+            return False                       # clicked-in: let it scroll
+        self._space.wheelEvent(ev)             # hand the wheel to the page
+        return True
+
+    def guard(self, root: QWidget) -> None:
+        for w in root.findChildren(QWidget):
+            if isinstance(w, (QAbstractScrollArea, QComboBox, QAbstractSpinBox)):
+                w.setFocusPolicy(Qt.ClickFocus)
+                w.installEventFilter(self)
+                if isinstance(w, QAbstractScrollArea):
+                    w.viewport().installEventFilter(self)
 
 
 class _Section(QWidget):
@@ -44,8 +89,8 @@ class _Section(QWidget):
         divider.setFixedHeight(1)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 20, 18, 26)
-        lay.setSpacing(8)
+        lay.setContentsMargins(22, 28, 22, 40)
+        lay.setSpacing(14)
         lay.addWidget(head)
         lay.addWidget(divider)
         lay.addWidget(page, 1)
@@ -78,11 +123,34 @@ class PageSpace(QScrollArea):
         self._current = 0
 
         bar = self.verticalScrollBar()
-        bar.setSingleStep(24)               # fine pixel steps on wheel/keys
+        bar.setSingleStep(24)               # fine pixel steps on keys
         bar.valueChanged.connect(self._track)
         self._anim = QPropertyAnimation(bar, b"value", self)
         self._anim.setDuration(_SCROLL_MS)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        # kinetic wheel: ticks accumulate into one short eased glide
+        self._wheel_anim = QPropertyAnimation(bar, b"value", self)
+        self._wheel_anim.setDuration(220)
+        self._wheel_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._wheel_target: int | None = None
+
+    def wheelEvent(self, event) -> None:
+        """Animated wheel scrolling: successive ticks glide, never step."""
+        delta = event.angleDelta().y()
+        if delta == 0 or not self.isVisible():
+            super().wheelEvent(event)
+            return
+        bar = self.verticalScrollBar()
+        running = self._wheel_anim.state() == QPropertyAnimation.Running
+        base = self._wheel_target if running and self._wheel_target is not None \
+            else bar.value()
+        self._wheel_target = int(max(0, min(bar.maximum(), base - delta * 1.1)))
+        self._anim.stop()
+        self._wheel_anim.stop()
+        self._wheel_anim.setStartValue(bar.value())
+        self._wheel_anim.setEndValue(self._wheel_target)
+        self._wheel_anim.start()
+        event.accept()
 
     # ------------------------------------------------------------ sections
     def add_section(self, name: str, page: QWidget) -> QWidget:
