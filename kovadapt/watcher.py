@@ -124,6 +124,18 @@ class SessionWatcher:
                          "quality into reports")
         return self._ml_scorer
 
+    def _profile_state(self, profile, rep) -> dict:
+        """Plain-dict profile snapshot for the shadow log, keyed by
+        ml/shadow.py:PROFILE_STATE_KEYS (missing attrs -> None; the schema
+        tolerates absent keys)."""
+        try:
+            from .ml.shadow import PROFILE_STATE_KEYS
+        except Exception:
+            return {}
+        state = {k: getattr(profile, k, None) for k in PROFILE_STATE_KEYS if k != "fatigue"}
+        state["fatigue"] = dict(rep.fatigue)
+        return state
+
     def _log_shadow(self, state: dict, plan, run) -> None:
         """Append this run's (state, plan) transition to the shadow-policy
         JSONL log (ml/shadow.py) — the future training set for the neural
@@ -242,6 +254,7 @@ class SessionWatcher:
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
         profile.save(self.s.profile_path)
+        self._log_shadow(shadow_state, plan, run)
         self.log(
             f"[{datetime.now():%H:%M:%S}] run #{profile.run_count} "
             f"acc={run.accuracy:.1%} score={run.score:.0f} -> {plan.describe()}"

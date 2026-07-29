@@ -5,9 +5,10 @@ and propose target-scale / movement adjustments learned from logged
 ``(profile state, emitted plan, next-run outcome)`` transitions. The
 engine's deadband controller stays authoritative; the shadow policy only
 ever logs what it *would* have done until its offline replay demonstrably
-beats the controller. Nothing in the adaptation loop imports this module
-yet — wiring it into watcher/engine is deliberately out of scope for the
-scaffold.
+beats the controller. The watcher already appends one transition record
+per processed run (``SessionWatcher._log_shadow``), so the training set
+accumulates from day one; ``propose()`` is consulted there but, being
+untrained, never influences the emitted plan.
 
 Interface contract (stable, so the training pass can slot in):
 

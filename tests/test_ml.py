@@ -27,9 +27,15 @@ from kovadapt.ml.dataset import (
     is_val_sample,
     iter_trace_files,
 )
+from kovadapt.analysis.report import RunReport, run_time_window
+from kovadapt.ml.infer import FlickScore, summarize
 from kovadapt.ml.shadow import DifficultyShadowPolicy, ShadowSuggestion
 from kovadapt.ml.train import MIN_FLICKS, TrainResult
+from kovadapt.stats.parser import parse_stats_csv
 from kovadapt.telemetry.trace import MouseTrace
+from kovadapt.watcher import SessionWatcher
+
+from test_watcher import BASE, make_kovaaks_tree, make_settings, write_stats_csv
 
 needs_torch = pytest.mark.skipif(not ml_pkg.ML_AVAILABLE, reason="torch not installed")
 
@@ -87,9 +93,9 @@ class _Synth:
         )
 
 
-def make_trace(n_flicks: int, seed: int = 0) -> MouseTrace:
+def make_trace(n_flicks: int, seed: int = 0, t0: float = 1000.0) -> MouseTrace:
     rng = np.random.default_rng(seed)
-    b = _Synth()
+    b = _Synth(t0)
     for _ in range(n_flicks):
         ang = rng.uniform(0.0, 2.0 * np.pi)
         amp = rng.uniform(80.0, 400.0)
@@ -297,3 +303,92 @@ def test_cli_train_prints_summary(tmp_path, monkeypatch, capsys):
     assert calls["traces_root"] == tmp_path / "traces"
     assert calls["out_dir"] == tmp_path / "ml"
     assert calls["kw"] == {"epochs": 5, "seed": 7}
+
+
+# ------------------------------------------------------------ loop integration
+def test_summarize_flick_scores():
+    scores = [
+        FlickScore(t_click=1.0, quality=0.5, residual={"overshoot": -0.5}),
+        FlickScore(t_click=2.0, quality=-1.0, residual={"overshoot": 1.0}),
+        FlickScore(t_click=3.0, quality=0.1, residual={"overshoot": 0.1}),
+    ]
+    d = summarize(scores)
+    assert d["n_scored"] == 3
+    assert d["worst_t_click"] == 2.0 and d["worst_quality"] == -1.0
+    assert d["best_t_click"] == 1.0 and d["best_quality"] == 0.5
+    assert d["mean_quality"] == pytest.approx((0.5 - 1.0 + 0.1) / 3, abs=1e-4)
+    assert d["mean_residual"]["overshoot"] == pytest.approx(0.2, abs=1e-4)
+    json.dumps(d)  # digest must be JSON-ready (it lands in RunReport.ml)
+    assert summarize([]) == {}
+
+
+def test_runreport_ml_field_roundtrips(tmp_path):
+    rep = RunReport(scenario="s", started_iso="t", score=1.0, accuracy=0.5,
+                    avg_ttk=0.1, kills=3, kps=1.0,
+                    ml={"n_scored": 2, "mean_quality": 0.1})
+    p = rep.save(tmp_path / "r.json")
+    assert RunReport.load(p).ml == {"n_scored": 2, "mean_quality": 0.1}
+    # pre-ml report JSON (no "ml" key) still loads — defaults to {} (the
+    # JSON dataclass round-trip contract: new fields need defaults)
+    d = json.loads(p.read_text())
+    d.pop("ml")
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps(d))
+    assert RunReport.load(old).ml == {}
+
+
+def test_watcher_stamps_ml_digest_and_shadow_log(tmp_path, monkeypatch):
+    import kovadapt.ml.infer as infer_mod
+
+    root = tmp_path / "kovaaks"
+    make_kovaaks_tree(root, BASE)
+    s = make_settings(root, tmp_path / "state")
+    csv = write_stats_csv(s.stats_dir, BASE)
+    t0, _t1 = run_time_window(parse_stats_csv(csv))
+    trace = make_trace(6, seed=3, t0=t0 + 0.3)  # inside the run's window
+
+    class FakeScorer:
+        def score(self, tr, flicks):
+            return [FlickScore(t_click=f.t_click, quality=0.25,
+                               residual={"overshoot": -0.25}) for f in flicks]
+
+    monkeypatch.setattr(infer_mod, "load_scorer", lambda profile_dir: FakeScorer())
+    monkeypatch.setattr(SessionWatcher, "_run_trace", lambda self, run: trace)
+    w = SessionWatcher(s, BASE, on_update=lambda m: None)
+    w.process_run(csv)
+
+    rep = w.last_report
+    assert rep is not None and rep.n_flicks >= 1
+    assert rep.ml["n_scored"] >= 1
+    assert rep.ml["mean_quality"] == pytest.approx(0.25, abs=1e-6)
+    # digest persisted in the saved report JSON
+    saved = RunReport.load(
+        s.profile_path / "reports" / "mini_test" / "2026-05-27T20-25-38.json"
+    )
+    assert saved.ml == rep.ml
+    # one shadow transition per processed run, schema-tagged, plan captured,
+    # profile state snapshotted BEFORE observe() (fresh profile -> 0 runs)
+    log = s.profile_path / "ml" / "shadow_log.jsonl"
+    assert log.is_file()
+    lines = log.read_text().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["schema"] == "shadow-v1"
+    assert rec["ts"] == "2026-05-27T20:25:38"
+    assert rec["suggestion"] is None and rec["outcome"] is None
+    assert rec["profile_state"]["run_count"] == 0
+    assert rec["plan"]  # non-empty dict of the emitted AdaptationPlan
+
+
+def test_watcher_without_checkpoint_leaves_ml_empty(tmp_path, monkeypatch):
+    root = tmp_path / "kovaaks"
+    make_kovaaks_tree(root, BASE)
+    s = make_settings(root, tmp_path / "state")
+    csv = write_stats_csv(s.stats_dir, BASE)
+    t0, _t1 = run_time_window(parse_stats_csv(csv))
+    trace = make_trace(4, seed=5, t0=t0 + 0.3)
+    monkeypatch.setattr(SessionWatcher, "_run_trace", lambda self, run: trace)
+    w = SessionWatcher(s, BASE, on_update=lambda m: None)
+    w.process_run(csv)  # no checkpoint under the tmp profile dir
+    assert w.last_report is not None
+    assert w.last_report.ml == {}  # scorer None -> nothing stamped, no crash

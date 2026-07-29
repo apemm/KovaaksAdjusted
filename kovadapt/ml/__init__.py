@@ -10,8 +10,9 @@ The workstream so far:
   ``<profile_dir>/ml/flick_encoder.pt`` plus a metadata JSON.
 - ``infer``    — checkpoint loading + per-flick scoring, all of it
   degrading to ``None`` when torch or the checkpoint is missing.
-- ``shadow``   — scaffold for the future difficulty shadow policy
-  (interface + logging schema only; nothing is trained or wired yet).
+- ``shadow``   — scaffold for the future difficulty shadow policy: the
+  watcher logs one transition per run to its JSONL schema, but no policy
+  is trained and ``propose()`` never influences a plan.
 
 Import contract (CLAUDE.md): the core install stays numpy-only. This
 package imports cleanly on any install — ``ML_AVAILABLE`` reports whether
