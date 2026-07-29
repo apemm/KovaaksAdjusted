@@ -5,8 +5,9 @@ running a high-resolution build of gui/ascii_art.py's character stencil.
 Choreography: darkness — a heartbeat gathering at the pupil — lightning
 ignition along seeded iris fibers — the glow escapes the rim into lids,
 lashes and shading — the completed eye blinks once, slow and deliberate —
-on reopen a gleam sweeps across the iris and settles into the twin
-glints, which keep a live twinkle while the eye breathes. There is no
+on reopen a specular flash — a slanted reflection streak — glances
+across the whole eye, and the twin glints shimmer in behind it before
+settling into a live twinkle while the eye breathes. There is no
 crosshair in the opening (the reticle cells stay in the stencil for
 static renders, excluded here by role).
 
@@ -217,16 +218,21 @@ class _EyeField:
         over = np.clip(b - 1.0, 0.0, 0.5)[:, None]
         rgb = rgb + (1.0 - rgb) * over
 
-        # ---- the gleam: a light band sweeping the iris after the blink --
-        g_end = ascii_art.GLEAM_T + ascii_art.GLEAM_LEN + 0.35
+        # ---- the reflection flash: a slanted specular streak glancing
+        #      across the whole eye, sharp and quick like light catching a
+        #      curved lens; the glints shimmer in behind it ---------------
+        g_end = ascii_art.GLEAM_T + ascii_art.GLEAM_LEN + 0.30
         if ascii_art.GLEAM_T <= t <= g_end:
-            env = math.sin(math.pi * min(
-                (t - ascii_art.GLEAM_T) / (g_end - ascii_art.GLEAM_T), 1.0))
-            band = -1.35 + (t - ascii_art.GLEAM_T) / ascii_art.GLEAM_LEN * 2.7
-            xn = self._x / ascii_art._RI
-            boost = np.where(self._iris & (rad <= 1.04),
-                             env * np.exp(-((xn - band) / 0.38) ** 2), 0.0)
-            rgb = rgb + (1.0 - rgb) * (0.85 * boost[:, None])
+            prog = (t - ascii_art.GLEAM_T) / (g_end - ascii_art.GLEAM_T)
+            env = math.sin(math.pi * min(prog, 1.0)) ** 0.7  # fast rise, linger
+            band = -1.55 + prog * 3.1
+            # slant the streak (u = x tilted by y) so it reads as a reflection
+            # sliding across a domed surface, not a flat vertical wipe
+            u = (self._x - 0.5 * self._y) / ascii_art._RI
+            streak = env * np.exp(-((u - band) / 0.22) ** 2)
+            on_eye = self._iris | (rad <= 1.14)   # iris + onto the rim
+            boost = np.where(on_eye, streak, 0.0)
+            rgb = rgb + (1.0 - rgb) * (0.95 * boost[:, None])
 
         visible = b > 0.02
         if k > 0.0:

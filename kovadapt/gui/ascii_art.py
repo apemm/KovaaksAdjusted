@@ -345,8 +345,8 @@ _RETICLE_RED = "#ff3b30"
 # and Animating Eye Blinks)
 BLINK_T = 4.55
 BLINK_CLOSE, BLINK_HOLD, BLINK_OPEN = 0.38, 0.22, 0.70
-GLEAM_T = 6.0          # the gleam sweeps in only after the reopen
-GLEAM_LEN = 0.9
+GLEAM_T = 6.0          # the reflection flash sweeps in only after the reopen
+GLEAM_LEN = 0.7        # quick — a light streak glancing across the eye
 BREATHE_T = 6.9
 
 
