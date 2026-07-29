@@ -39,8 +39,12 @@ class FatigueState:
         return asdict(self)
 
 
-def _theil_sen_slope(y: np.ndarray) -> float:
-    """Median of pairwise slopes — robust to one bad run in a small series."""
+def theil_sen_slope(y: np.ndarray) -> float:
+    """Median of pairwise slopes over the run index — robust to one bad run
+    in a small series.
+
+    Shared estimator: the session fatigue tracker fits it within a session,
+    and analysis/skill.py fits it across sessions of saved run reports."""
     n = y.size
     if n < 2:
         return 0.0
@@ -71,7 +75,7 @@ class SessionFatigueTracker:
             return FatigueState(runs=n)
         y = np.array(self._badness)
         scale = float(np.median(y)) or 1.0
-        slope = _theil_sen_slope(y) / scale        # relative badness change per run
+        slope = theil_sen_slope(y) / scale         # relative badness change per run
         rise = slope * (n - 1)                     # total relative change this session
         score = float(np.clip(rise * self.sensitivity / _FULL_FATIGUE_RISE, 0.0, 1.0))
         if score >= _FATIGUED_SCORE:

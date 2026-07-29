@@ -133,3 +133,37 @@ def test_deterministic():
 def test_quiet_on_a_clean_run():
     got = generate_insights(make_rep(), make_prof(history=hist()), settings())
     assert not [i for i in got if i.severity != "info"]
+
+
+# ------------------------------------------------------- cross-session trends
+def test_cross_session_trends_trigger_cards():
+    from kovadapt.analysis.skill import fit_skill
+
+    def ents(**series):
+        out = []
+        for i in range(20):
+            e = dict(scenario="X", started_iso=f"2026-07-01T{i:02d}:00:00",
+                     score=800.0 + (i % 3), accuracy=0.70, kps=0.8,
+                     overshoot_rate=0.2, mean_flick_ms=180.0,
+                     mean_corrections=1.0, fitts_slope_ms=120.0)
+            for k, v in series.items():
+                e[k] = v(i)
+            out.append(e)
+        return out
+
+    # falling Fitts slope over 20 runs + flat score -> cross-session progress card
+    trends = fit_skill(ents(fitts_slope_ms=lambda i: 150.0 - 2.0 * i))
+    got = generate_insights(make_rep(), make_prof(history=hist()), settings(),
+                            trends=trends)
+    (card,) = [i for i in got if i.id == "dx-fitts-progress"]
+    assert card.kind == "progress" and card.sources
+    assert "20" in card.reasoning            # run count
+    assert "%" in card.reasoning             # actual magnitude of the change
+
+    # overshoot rising across sessions -> exactly the one extra card, nothing else
+    rising = fit_skill(ents(overshoot_rate=lambda i: 0.15 + 0.01 * i))
+    got2 = generate_insights(make_rep(), make_prof(history=hist()), settings(),
+                             trends=rising)
+    (over,) = [i for i in got2 if i.id == "dx-overshoot-control"]
+    assert "sessions" in over.title and "20" in over.reasoning and over.sources
+    assert "dx-fitts-progress" not in ids(got2)

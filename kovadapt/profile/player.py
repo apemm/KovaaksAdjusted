@@ -155,39 +155,63 @@ class PlayerProfile:
             self.region(key, prior_var, obs_noise).update(damp * weight * float(z))
 
     # ------------------------------------------------------------- readiness
+    BASELINE_RUNS = 24      # runs before the EWMAs are considered settled
+    REGION_OBS = 3          # observations per arm before it counts as mapped
+    BIAS_RUNS = 8           # runs of smoothing before bias evidence is trusted
+
     def readiness(self, region_count: int = 9) -> dict:
         """How calibrated the adaptive model is, 0..1 + what's still needed.
 
         Adaptation runs from run 1, but its decisions sharpen as evidence
-        accumulates. Three components, weighted by how much each controller
-        depends on them:
+        accumulates, and the ceiling is deliberately high — "dialed in"
+        means roughly a training week, not a warm-up. Three components,
+        weighted by how much each controller depends on them:
 
-          baseline  runs folded into the EWMAs vs ~2 half-lives (size/pace
+          baseline  runs folded into the EWMAs vs BASELINE_RUNS (size/pace
                     controllers trust their baseline from here on)
-          regions   region arms with >= 2 observations (bandit exploitation
-                    beats exploration once most arms have real evidence)
-          bias      |EWMA| distinguishable given ~5-run smoothing (dodge
-                    direction stays neutral until then, which is correct)
+          regions   region arms with >= REGION_OBS observations (bandit
+                    exploitation beats exploration once arms carry evidence)
+          bias      |EWMA| distinguishable after BIAS_RUNS of smoothing
+                    (dodge direction stays neutral until then — correct)
         """
-        baseline = min(self.run_count / 10.0, 1.0)
-        observed = sum(1 for p in self.regions.values() if p.n >= 2)
+        baseline = min(self.run_count / float(self.BASELINE_RUNS), 1.0)
+        observed = sum(1 for p in self.regions.values() if p.n >= self.REGION_OBS)
         regions = min(observed / max(region_count, 1), 1.0)
-        bias = 1.0 if (self.run_count >= 5 and abs(self.ewma_bias) > 0.0) else \
-            min(self.run_count / 5.0, 1.0)
+        bias = 1.0 if (self.run_count >= self.BIAS_RUNS
+                       and abs(self.ewma_bias) > 0.0) else \
+            min(self.run_count / float(self.BIAS_RUNS), 1.0)
         score = 0.5 * baseline + 0.35 * regions + 0.15 * bias
 
+        if score >= 0.999:
+            stage = "dialed in"
+        elif score >= 0.6:
+            stage = "calibrating"
+        elif score >= 0.25:
+            stage = "learning"
+        else:
+            stage = "cold start"
+
+        detail = [
+            f"runs {min(self.run_count, self.BASELINE_RUNS)}/{self.BASELINE_RUNS}",
+            f"regions {observed}/{region_count} mapped "
+            f"({self.REGION_OBS}+ observations each)",
+            ("bias evidence collected" if bias >= 1.0 else
+             f"bias evidence {min(self.run_count, self.BIAS_RUNS)}/{self.BIAS_RUNS} runs"),
+        ]
         missing: list[str] = []
         if baseline < 1.0:
-            missing.append(f"{10 - self.run_count} more runs for a stable baseline")
+            missing.append(f"{self.BASELINE_RUNS - self.run_count} more runs "
+                           "for a settled baseline")
         if regions < 1.0:
-            missing.append(f"{max(region_count - observed, 0)} wall regions unexplored")
+            missing.append(f"{max(region_count - observed, 0)} wall regions "
+                           "still need evidence")
         if not missing:
-            msg = "fully calibrated — adaptation is running on solid evidence"
+            msg = "dialed in — adaptation is running on settled evidence"
         else:
             msg = "calibrating: " + "; ".join(missing)
         return {"score": round(score, 3), "baseline": round(baseline, 3),
                 "regions": round(regions, 3), "bias": round(bias, 3),
-                "message": msg}
+                "stage": stage, "detail": detail, "message": msg}
 
     # ----------------------------------------------------------- persistence
     @staticmethod

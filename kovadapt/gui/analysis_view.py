@@ -29,7 +29,7 @@ from ..analysis.report import RunReport
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
 from ..telemetry.trace import MouseTrace
-from . import theme
+from . import ascii_art, theme
 from .onboarding import HintBar
 from .replay import TrajectoryReplay
 
@@ -96,24 +96,27 @@ class AnalysisView(QWidget):
         self.flicks: list = []
         self._settings = settings
 
-        # header
+        # header (with the ASCII mark keeping the empty state company)
         self.title = QLabel("No run analyzed yet")
         self.title.setProperty("headline", True)
         self.summary = QLabel("Finish a run while watching (or open a saved report).")
         self.summary.setWordWrap(True)
         open_btn = QPushButton("Open report…")
         open_btn.clicked.connect(self._open_dialog)
+        self.empty_mark = ascii_art.AsciiEye()
+        self.empty_mark.setFixedSize(230, 110)
 
         head = QHBoxLayout()
         head_col = QVBoxLayout()
         head_col.addWidget(self.title)
         head_col.addWidget(self.summary)
         head.addLayout(head_col, 1)
+        head.addWidget(self.empty_mark)
         head.addWidget(open_btn, 0, Qt.AlignTop)
 
         # left column: bias bars + movement heatmap, each with a plain-language caption
         self.bias_plot = pg.PlotWidget(title="Flick quality by direction (lower = better)")
-        self.bias_plot.setMaximumHeight(180)
+        self.bias_plot.setMinimumHeight(220)
         self.bias_plot.setLabel("left", "flick cost (overshoot + corrections)")
         self.bias_caption = _caption(
             "Each bar scores flicks toward that side — taller is worse. Built from "
@@ -129,13 +132,22 @@ class AnalysisView(QWidget):
             "Where your crosshair spent its time around engagements — bright = more "
             "travel. A lopsided cloud means your engagements cluster on one side.")
 
-        left = QVBoxLayout()
-        left.addWidget(self.bias_plot)
-        left.addWidget(self.bias_caption)
-        left.addWidget(self.heat_plot, 1)
-        left.addWidget(self.heat_caption)
-        left_w = QWidget()
-        left_w.setLayout(left)
+        bias_w = QWidget()
+        bv = QVBoxLayout(bias_w)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.addWidget(self.bias_plot, 1)
+        bv.addWidget(self.bias_caption)
+        heat_w = QWidget()
+        hv = QVBoxLayout(heat_w)
+        hv.setContentsMargins(0, 0, 0, 0)
+        hv.addWidget(self.heat_plot, 1)
+        hv.addWidget(self.heat_caption)
+        # vertical splitter: the flick-quality bars get real room instead of
+        # being crushed under the heatmap
+        left_w = QSplitter(Qt.Vertical)
+        left_w.addWidget(bias_w)
+        left_w.addWidget(heat_w)
+        left_w.setSizes([320, 380])
 
         # right column: notable moments + replay
         self.moments = QListWidget()
@@ -200,10 +212,15 @@ class AnalysisView(QWidget):
                 it.setForeground(pg.mkColor(_kind_color(kind)))
 
     # ------------------------------------------------------------------
+    def set_trends(self, trends) -> None:
+        """Cross-session SkillTrends from the boot worker."""
+        self._trends = trends
+
     def show_report(self, rep: RunReport, trace: MouseTrace | None = None,
                     profile: PlayerProfile | None = None) -> None:
         self.report = rep
         self.trace = trace
+        self.empty_mark.hide()
         self._fill_insights(rep, profile)
         if trace is None and rep.trace_file and Path(rep.trace_file).is_file():
             self.trace = MouseTrace.load(rep.trace_file)
@@ -240,7 +257,9 @@ class AnalysisView(QWidget):
         if profile is None or self._settings is None or profile.run_count == 0:
             self.coach_box.hide()
             return
-        insights = generate_insights(rep, profile, self._settings)
+        insights = generate_insights(
+            rep, profile, self._settings,
+            trends=getattr(self, "_trends", None))
         self._last_insights = (rep, profile)
         for ins in insights:
             self.coach_lay.addWidget(_InsightCard(ins))

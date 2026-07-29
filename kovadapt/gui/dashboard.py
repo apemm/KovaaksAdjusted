@@ -353,13 +353,23 @@ class Dashboard(QWidget):
     def append_log(self, line: str) -> None:
         self.log.appendPlainText(line)
 
+    @staticmethod
+    def _ascii_bar(frac: float, width: int = 8) -> str:
+        filled = round(max(0.0, min(1.0, frac)) * width)
+        return "▓" * filled + "░" * (width - filled)
+
     def refresh_profile(self, base_name: str) -> None:
         prof = PlayerProfile.load(base_name + ADAPTIVE_SUFFIX, self.s.profile_path)
         self._last_profile = prof
         sl = self.stat_labels
         ready = prof.readiness(self.s.region_cols * self.s.region_rows)
         self.readiness.setValue(int(ready["score"] * 100))
-        self.readiness_msg.setText(ready["message"])
+        self.readiness.setFormat(f"calibration %p% — {ready.get('stage', '')}")
+        parts = ready.get("detail", [])
+        fracs = (ready["baseline"], ready["regions"], ready["bias"])
+        bars = "   ".join(f"{self._ascii_bar(f)} {txt}"
+                          for f, txt in zip(fracs, parts))
+        self.readiness_msg.setText(bars or ready["message"])
         if prof.run_count == 0:
             for lab in sl.values():
                 lab.setText("—")

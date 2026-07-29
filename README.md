@@ -14,6 +14,8 @@ Free, ML-driven adaptive training for [KovaaK's](https://store.steampowered.com/
 - **In-game overlay** — a toggleable, click-through, translucent card over the game: last run vs your baseline, session count, difficulty, fatigue, input health, accuracy sparkline. Drag it anywhere, tune its opacity; needs Borderless/Windowed mode.
 - **Themes** — dark and light, or auto-synced to the Windows theme, switchable live.
 - **Startup guide & hints** — a short first-run guide plus contextual TIP bars on every tab; one click tucks them all away, the Help menu brings them back.
+- **A coach that cites its sources** — every run gets insight cards grounded in a research-distilled knowledge base (Fitts's law and throughput, the two-phase flick literature, Aimer7's guide, Voltaic doctrine): the exact numbers that triggered each insight, what they mean, what to try, and the citations behind it. Cross-session skill curves separate real progress from score plateaus. Nothing is forced, and nothing is claimed without evidence.
+- **Scenario browser** — every installed scenario with its training state, searchable, one click to play or start adapting.
 
 KovaaK's has no modding API, so adaptation happens **between** runs: each finished run updates your profile and rewrites `<Scenario> [Adaptive].sce`. Every run reshapes the next — and the app drops you straight into the current variant.
 

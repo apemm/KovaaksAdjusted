@@ -21,6 +21,7 @@ from ..config import Settings
 from ..profile.player import PlayerProfile
 from . import kb
 from .report import RunReport
+from .skill import SkillTrends
 
 # kovadapt's own calibration cutoffs (labeled "editorial" in reasoning text
 # wherever the KB provides no primary-source number).
@@ -32,6 +33,7 @@ _REGION_DEFICIT = 0.15
 _JITTER_BAD_MS = 2.0
 _POLLING_LOW_HZ = 490.0      # below any competitive polling class
 _MIN_FLICKS = 8              # too few flicks = no microstructure claims
+_CROSS_SESSION_MIN_RUNS = 15  # runs before a cross-session progress claim
 
 
 @dataclass(frozen=True)
@@ -62,9 +64,14 @@ def _recent(profile: PlayerProfile, key: str, n: int) -> list[float]:
 
 
 def generate_insights(
-    rep: RunReport, profile: PlayerProfile, settings: Settings
+    rep: RunReport, profile: PlayerProfile, settings: Settings,
+    *, trends: SkillTrends | None = None,
 ) -> list[Insight]:
-    """All insights for one run, most actionable first."""
+    """All insights for one run, most actionable first.
+
+    ``trends`` (optional) is a cross-session ``SkillTrends`` fit over the
+    saved report history (analysis/skill.py); when provided it can add
+    cross-session cards on top of the within-session rules."""
     out: list[Insight] = []
     eff = settings.for_archetype(profile.archetype)
     arche = profile.archetype or "clicking"
@@ -187,6 +194,54 @@ def generate_insights(
                 f"pace rose {_mean(kpss[:half]):.2f} → {_mean(kpss[half:]):.2f} "
                 "kills/s. Speed is the axis long-term improvement shows up on."))
 
+    # ---- cross-session trends (saved report history) ----------------------
+    if trends is not None:
+        out.extend(_cross_session_insights(trends))
+
+    return out
+
+
+def _cross_session_insights(trends: SkillTrends) -> list[Insight]:
+    """Cards that need the whole saved-report history, not one run."""
+    out: list[Insight] = []
+    o = trends.overall
+    fitts_t, kps_t = o.get("fitts_slope_ms"), o.get("kps")
+    score_t, over_t = o.get("score"), o.get("overshoot_rate")
+
+    # Speed improving across >= _CROSS_SESSION_MIN_RUNS runs under a flat
+    # score trend: the cross-session form of dx-fitts-progress.
+    driver = None
+    for cand in (fitts_t, kps_t):
+        if (cand is not None and cand.classification == "improving"
+                and cand.n >= _CROSS_SESSION_MIN_RUNS):
+            driver = cand
+            break
+    if driver is not None and score_t is not None and score_t.classification == "flat":
+        if driver.metric == "fitts_slope_ms":
+            what = (f"flick time per bit of distance fell {abs(driver.rel_change):.0%} "
+                    f"(Theil-Sen {driver.slope:+.2f} ms/bit per run) over "
+                    f"{driver.n} runs")
+        else:
+            what = (f"kill pace rose {abs(driver.rel_change):.0%} "
+                    f"(Theil-Sen {driver.slope:+.3f} kills/s per run) over "
+                    f"{driver.n} runs")
+        out.append(_from_kb(
+            "dx-fitts-progress", "progress", "info",
+            "Cross-session: improving under a flat scoreboard",
+            f"Across your saved reports, {what} while the score trend stayed "
+            f"flat ({score_t.rel_change:+.0%} over {score_t.n} runs). Robust "
+            "trends over run history, not PBs."))
+
+    # Overshoot rising across sessions (not just within one run/session).
+    if over_t is not None and over_t.classification == "declining":
+        out.append(_from_kb(
+            "dx-overshoot-control", "diagnosis", "attention",
+            "Overshoot is rising across sessions",
+            f"Overshoot rate rose {abs(over_t.rel_change):.0%} across "
+            f"{over_t.n} saved runs (Theil-Sen {over_t.slope:+.4f}/run) — a "
+            "sustained cross-session pattern, not one bad day; the "
+            "persists-across-sessions branch of the sourced prescription "
+            "applies."))
     return out
 
 

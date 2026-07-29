@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.s = settings
         self.themes = themes
         self.setWindowTitle("kovadapt — adaptive KovaaK's")
-        self.resize(1140, 760)
+        self.resize(1300, 860)
 
         tabs = QTabWidget()
         self.dashboard = Dashboard(settings)
@@ -121,19 +121,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(help_btn)
         return w
 
-    def _wipe_from_corner(self) -> None:
-        """Old theme held on screen; new one revealed through a growing
-        circle at the theme controls — the eye dilating."""
-        corner = self._tabs.cornerWidget(Qt.TopRightCorner)
-        center = corner.mapTo(self, corner.rect().center())
-        transition.iris_wipe(self, center)
-
     def _pick_mode(self, i: int) -> None:
-        self._wipe_from_corner()
+        transition.ascii_wipe(self)   # capture the old look, then restyle
         self.themes.set_mode(("auto", "dark", "light")[i])
 
     def _pick_accent(self, i: int) -> None:
-        self._wipe_from_corner()
+        transition.ascii_wipe(self)
         self.themes.set_accent(self.accent_pick.itemData(i))
 
     def _sync_hints_action(self) -> None:
@@ -149,6 +142,15 @@ class MainWindow(QMainWindow):
         p = Path(self.s.profile_dir)
         p.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
+    def set_trends(self, trends) -> None:
+        """Cross-session skill model from the boot worker (may be None)."""
+        if trends is None:
+            return
+        self.analysis.set_trends(trends)
+        summary = getattr(trends, "summary", lambda: "")()
+        if summary:
+            self.dashboard.append_log(f"skill model: {summary}")
 
     def _browser_play(self, name: str) -> None:
         self._tabs.setCurrentWidget(self.dashboard)
@@ -215,10 +217,17 @@ def main() -> int:
     themes = ThemeManager(app, settings)
     app.setWindowIcon(logo.make_icon())
 
-    splash = logo.SplashScreen()   # "the eye wakes up" while we construct
+    splash = logo.SplashScreen()   # the ASCII eye wakes up while we work
     splash.start()
     app.processEvents()
     win = MainWindow(settings, themes)
+
+    from .boot import BootWorker
+
+    boot = BootWorker(settings, parent=win)
+    boot.status.connect(splash.set_status)
+    boot.trends_ready.connect(win.set_trends)
+    boot.start()
 
     def reveal() -> None:
         win.show()

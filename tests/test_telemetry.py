@@ -360,16 +360,21 @@ def test_readiness_progression():
     prof = PlayerProfile(scenario="r")
     r0 = prof.readiness(9)
     assert r0["score"] < 0.1 and "calibrating" in r0["message"]
+    assert r0["stage"] == "cold start"
+    assert len(r0["detail"]) == 3
 
-    prof.run_count = 10
+    # v0.4 raised the ceiling: full calibration needs BASELINE_RUNS runs and
+    # REGION_OBS observations per arm — a training week, not a warm-up.
+    prof.run_count = PlayerProfile.BASELINE_RUNS
     prof.ewma_bias = 0.2
     for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
         post = prof.region(k)
-        post.update(0.1)
-        post.update(0.1)
+        for _ in range(PlayerProfile.REGION_OBS):
+            post.update(0.1)
     r1 = prof.readiness(9)
     assert r1["score"] == 1.0
-    assert "fully calibrated" in r1["message"]
+    assert r1["stage"] == "dialed in"
+    assert "dialed in" in r1["message"]
     assert r0["score"] < r1["score"]
 
 
@@ -377,11 +382,27 @@ def test_readiness_partial_regions():
     prof = PlayerProfile(scenario="r")
     prof.run_count = 10
     for k in ("r0c0", "r1c1"):
-        prof.region(k).update(0.1)
-        prof.region(k).update(0.1)
+        for _ in range(PlayerProfile.REGION_OBS):
+            prof.region(k).update(0.1)
     r = prof.readiness(9)
-    assert 0.5 < r["score"] < 1.0
-    assert "7 wall regions unexplored" in r["message"]
+    assert 0.2 < r["score"] < 1.0
+    assert "7 wall regions still need evidence" in r["message"]
+    assert "regions 2/9 mapped" in r["detail"][1]
+
+
+def test_readiness_below_old_ceiling_is_not_full():
+    """10 runs + 2 observations per arm — the old v0.3 'fully calibrated'
+    state — must no longer read as done."""
+    prof = PlayerProfile(scenario="r")
+    prof.run_count = 10
+    prof.ewma_bias = 0.2
+    for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
+        post = prof.region(k)
+        post.update(0.1)
+        post.update(0.1)
+    r = prof.readiness(9)
+    assert r["score"] < 0.8
+    assert r["stage"] != "dialed in"
 
 
 # ------------------------------------------------ v0.3.x hardening regressions
