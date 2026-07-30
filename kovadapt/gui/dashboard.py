@@ -763,6 +763,9 @@ class Dashboard(QWidget):
                       telemetry_on=self.s.telemetry_enabled))
         accs = [float(h.get("accuracy", 0.0)) for h in prof.history[-60:]]
         if len(accs) >= 2:
-            self.trend.set_data(accs, tag=f"{accs[-1]:.0%}")
+            # Cite the real run numbers: the list is sliced, so without this
+            # the axis called run 78 "run 1" on a long profile.
+            self.trend.set_data(accs, tag=f"{accs[-1]:.0%}",
+                                first_run=len(prof.history) - len(accs) + 1)
         else:
             self.trend.clear()      # AsciiTrend renders "not enough runs yet"

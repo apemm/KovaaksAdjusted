@@ -2672,15 +2672,22 @@ def _plan_summary(facts: SceFacts) -> tuple[str, str]:
     if ramp is not None:
         ramp = _esc(ramp)
         path = facts.speed_path
+        # Where the ramp DID apply, its figure is deliberately not quoted. The
+        # record rounds it to whole units (describe() writes "{:.0f}"), so a
+        # variant carrying 65.9 records speed=66, and printing that here put a
+        # third rounding of one quantity beside the ledger's exact one. The
+        # ledger already carries the written number; this line names the path.
         if path == "ramp":
-            applied.append(f"absolute MaxSpeed ramp {ramp} u/s — every target "
-                           "here authors 0, so that is the path that applied")
+            applied.append("the absolute MaxSpeed ramp — every target here "
+                           "authors 0, so that is the path that applied, and the "
+                           "MaxSpeed rows above carry what was written")
         elif path == "mixed":
             walls = ", ".join(c for c, v in sorted(facts.authored.items())
                               if v == 0)
-            applied.append(f"absolute MaxSpeed ramp {ramp} u/s, written only to "
-                           f"the base-speed-0 targets ({_esc(walls)}) — the "
-                           "rest were modulated around their own authored speed")
+            applied.append("the absolute MaxSpeed ramp, written only to the "
+                           f"base-speed-0 targets ({_esc(walls)}) — the rest were "
+                           "modulated around their own authored speed, and the "
+                           "MaxSpeed rows above carry both")
         elif path == "multiplier":
             tail = (f"its record also carries speed={ramp}, the absolute 0-170 "
                     "static-wall ramp. That number was NOT written here: every "

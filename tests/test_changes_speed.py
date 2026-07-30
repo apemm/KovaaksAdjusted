@@ -355,17 +355,24 @@ def test_the_provenance_never_quotes_a_ramp_the_multiplier_path_did_not_write(
     view.deleteLater()
 
 
-def test_the_provenance_does_quote_the_ramp_where_the_ramp_applied(tmp_path, qapp):
+def test_the_provenance_names_the_ramp_path_where_the_ramp_applied(tmp_path, qapp):
     """The fix may not simply delete the field: on a base-speed-0 wall the ramp
-    IS the path that ran."""
+    IS the path that ran. Its FIGURE still stays off the page — describe()
+    records it to whole units, so a variant carrying 65.9 records speed=66, and
+    printing that would put a third rounding of one quantity beside the ledger's
+    exact one. The path is named; the number lives in the ledger."""
     s = _install(tmp_path, speeds=(0.0,))
     prof = _trained()
     plan = _variant(s, prof)
     view = _page(s)
     text = _plain(view.provenance.text())
     assert view._facts.speed_path == "ramp"
-    assert f"absolute MaxSpeed ramp {plan.target_max_speed:.0f} u/s" in text
+    assert "the absolute MaxSpeed ramp" in text
+    assert "MaxSpeed rows above carry what was written" in text
     assert "NOT written here" not in text
+    assert f"{plan.target_max_speed:.0f} u/s" not in text and "speed=" not in text
+    assert float(_speed_row(view._facts).adaptive) == pytest.approx(
+        plan.target_max_speed), "and the ledger carries the exact written number"
     view.deleteLater()
 
 
@@ -374,11 +381,11 @@ def test_a_mixed_scenario_says_which_characters_the_ramp_reached(tmp_path, qapp)
     them, and a page-wide claim either way is false."""
     s = _install(tmp_path, speeds=(1300.0, 0.0))
     prof = _trained()
-    plan = _variant(s, prof)
+    _variant(s, prof)
     view = _page(s)
     text = _plain(view.provenance.text())
     assert view._facts.speed_path == "mixed"
-    assert f"ramp {plan.target_max_speed:.0f} u/s" in text
+    assert "the absolute MaxSpeed ramp" in text
     assert "only to the base-speed-0 targets (char2)" in text
     assert "char1" not in text.split("only to the base-speed-0")[1]
     # the ledger is the surface that reports per character, and it still does

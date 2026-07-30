@@ -363,10 +363,11 @@ def _fmt_value(fmt: str, v: float) -> str:
     The test is "the rendered text carries no nonzero digit", not "it is
     nothing but zeros and a point": a signed zero can carry a UNIT, and
     stripping only "0." left "%" behind, so "{:.0%}" sailed through and put
-    "-0%" on the trend's y axis.
+    "-0%" on the trend's y axis. It reads the SIGN off the text too, because
+    -0.0 is not less than zero in Python but still formats with a minus.
     """
     txt = fmt.format(v)
-    if v < 0 and not any(c in "123456789" for c in txt):
+    if txt.lstrip().startswith("-") and not any(c in "123456789" for c in txt):
         return fmt.format(0.0)
     return txt
 
@@ -921,9 +922,11 @@ class AsciiHeatmap(_Ignite, QWidget):
         if not self._flat_map or ends is None:
             return ""
         lo_v, hi_v, _span = ends
-        return (f"every measured zone {self._fmt.format(lo_v)}"
-                f"..{self._fmt.format(hi_v)} — too narrow to shade, "
-                f"so the numbers carry it")
+        # Kept short on purpose: it shares one footer line with coverage_note,
+        # and both together have to fit a chart column before elision starts.
+        return (f"measured zones {self._fmt.format(lo_v)}"
+                f"..{self._fmt.format(hi_v)} — too narrow to shade; "
+                f"the numbers carry it")
 
     def footer_note(self) -> str:
         """The whole footer sentence: what was measured, and why it is flat if
@@ -1326,8 +1329,8 @@ class AsciiTrend(_Ignite, QWidget):
         whether they all got a column of their own.
         """
         n = len(self._values)
-        if not n:
-            return "", ""
+        if n < 2:
+            return "", ""            # no axis is drawn: there is no trend yet
         first = self._first_run
         left = (f"run {first} · " if first is not None else "oldest shown · ")
         left += _fmt_value(self._fmt, self._values[0])

@@ -708,7 +708,12 @@ class AnalysisView(QWidget):
         accs = [float(h.get("accuracy", 0.0)) for h in hist[-60:]]
         if len(accs) >= 2:
             self.trend_spark.set_title(_trend_title(accs))
-            self.trend_spark.set_data(accs, tag=f"{accs[-1]:.0%}")
+            # first_run is the true 1-based run number of accs[0]. Without it
+            # the widget can only say "oldest shown", because it cannot know
+            # this list was sliced — on a 137-run profile it was labelling
+            # run 78 as "run 1".
+            self.trend_spark.set_data(accs, tag=f"{accs[-1]:.0%}",
+                                      first_run=len(hist) - len(accs) + 1)
             self.trend_w.show()
         else:
             self.trend_spark.set_title(_TREND_TITLE)
