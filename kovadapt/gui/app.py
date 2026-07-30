@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPainter
 
 from ..config import Settings
-from . import logo, transition
+from . import logo, transition, viz
 from .backdrop import Backdrop
 from .analysis_view import AnalysisView
 from .browser import ScenarioBrowser
@@ -51,6 +51,11 @@ try:
     from .ml_page import MLPage
 except ImportError:      # authored separately; the section is skipped until it lands
     MLPage = None
+
+try:
+    from .changes_view import ChangesView
+except ImportError:      # same pattern: the section appears once the file exists
+    ChangesView = None
 
 
 class _ThemeCombo(QComboBox):
@@ -119,13 +124,20 @@ class MainWindow(QMainWindow):
         self.config = ConfigView(settings)
         self.optimizer = OptimizerView(settings)
         self.ml_page = MLPage(settings) if MLPage is not None else None
+        self.changes = ChangesView(settings) if ChangesView is not None else None
         # one continuous scroll of transparent sections over the backdrop
         self.space = PageSpace()
         sections = [("Dashboard", self.dashboard),
                     ("Scenarios", self.browser),
-                    ("Analysis", self.analysis),
-                    ("Adaptability", self.config),
-                    ("Optimizer", self.optimizer)]
+                    ("Analysis", self.analysis)]
+        # "What changed" reads PER TASK, where Analysis reads per RUN, so it is
+        # its own section rather than another block on an already-tall page.
+        # It cannot be called "Adaptability" — that name is taken by the
+        # settings page below it.
+        if self.changes is not None:
+            sections.append(("What changed", self.changes))
+        sections += [("Adaptability", self.config),
+                     ("Optimizer", self.optimizer)]
         if self.ml_page is not None:
             sections.append(("How it learns", self.ml_page))   # always last
         for name, page in sections:
@@ -145,7 +157,11 @@ class MainWindow(QMainWindow):
         col.addWidget(self.nav)
         col.addWidget(self.space, 1)
         self.setCentralWidget(central)
-        self.backdrop = Backdrop(self)
+        # Both of these need the live Settings or the feature does not exist:
+        # the charts fall back to "full" with no way to honour the user's
+        # motion choice, and the backdrop never leaves its deterministic loop.
+        viz.use_settings(settings)
+        self.backdrop = Backdrop(self, settings)
 
         # Ctrl+1..N jump straight to a section (Ctrl+6 = How it learns)
         for i in range(self.space.count()):
@@ -270,14 +286,34 @@ class MainWindow(QMainWindow):
         views = [self.dashboard, self.browser, self.analysis, self.optimizer]
         if self.ml_page is not None:
             views.append(self.ml_page)
+        if self.changes is not None:
+            views.append(self.changes)      # or a theme switch leaves it stale
         for view in views:
             view.restyle(pal)
         self.nav.restyle(pal)
         self.backdrop.notify_theme()
 
     def _on_report(self, rep) -> None:
-        self.analysis.show_report(rep, profile=self.dashboard.last_profile)
+        prof = self.dashboard.last_profile
+        self.analysis.show_report(rep, profile=prof)
         self.optimizer.note_report(rep)
+        # Bind the backdrop eye to what the loop just learned. Accuracy is
+        # withheld until run 2: observe_run seeds every EWMA to the first
+        # run's own value, so before then there is no baseline to report and
+        # a dilation would be a claim the data does not support. Fatigue is
+        # only passed once the tracker itself trusts it.
+        fat = getattr(rep, "fatigue", None) or {}
+        runs = int(fat.get("runs", 0) or 0)
+        acc = None
+        if prof is not None and prof.run_count > 1 and prof.ewma_accuracy > 0:
+            acc = float(prof.ewma_accuracy)
+        self.backdrop.set_session(
+            accuracy=acc,
+            fatigue=float(fat.get("score", 0.0)) if runs >= 2 else None,
+            watching=self.dashboard.worker is not None,
+        )
+        if self.changes is not None:
+            self.changes.refresh()      # the ledger just gained a run
         idx = self.space.index_of(self.analysis)
         if self.space.current_index() != idx:   # unread only if not in view
             self.nav.set_badge(idx, True)

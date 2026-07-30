@@ -48,13 +48,24 @@ def settings(tmp_path):
 
 
 def _expected_sections() -> list[str]:
-    """5 base sections, +'How it learns' once gui/ml_page.py exists."""
-    names = ["Dashboard", "Scenarios", "Analysis", "Adaptability", "Optimizer"]
+    """The section list, in order, with the two optional pages folded in
+    exactly where app.py inserts them: 'What changed' sits between Analysis
+    and Adaptability (it reads per TASK, where Analysis reads per run), and
+    'How it learns' is always last. Both appear only once their module
+    exists, so this stays true while either is authored separately."""
+    names = ["Dashboard", "Scenarios", "Analysis"]
+    try:
+        import kovadapt.gui.changes_view  # noqa: F401
+        names.append("What changed")
+    except ImportError:
+        pass
+    names += ["Adaptability", "Optimizer"]
     try:
         import kovadapt.gui.ml_page  # noqa: F401
+        names.append("How it learns")
     except ImportError:
-        return names
-    return names + ["How it learns"]
+        pass
+    return names
 
 
 def test_main_window_constructs_and_closes(qapp, settings):
@@ -64,7 +75,7 @@ def test_main_window_constructs_and_closes(qapp, settings):
     themes = ThemeManager(qapp, settings)
     win = MainWindow(settings, themes)
     expected = _expected_sections()
-    assert len(expected) in (5, 6)
+    assert 5 <= len(expected) <= 7
     assert win.space.count() == len(expected)
     assert win.space.names() == expected
     # one nav link per section, in order — these are the scroll targets

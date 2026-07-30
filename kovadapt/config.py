@@ -158,6 +158,12 @@ class Settings:
     show_hints: bool = True              # contextual hint bars across the app
     onboarding_done: bool = False        # startup guide shown once until dismissed
     skip_splash: bool = False            # jump straight to the window (no LED opening)
+    # full | reduced | off. "full" is the shipped default (the app is meant to
+    # feel alive); "reduced" keeps the meaningful reveals and drops every
+    # ambient/idle loop; "off" makes everything instant. One dial rather than a
+    # code change, because motion taste is personal and a 240 Hz panel makes a
+    # dropped frame obvious. See gui/motion.py.
+    motion: str = "full"
     profile_dir: str = str(Path.home() / ".kovadapt")
 
     root: Path = field(init=False, repr=False)

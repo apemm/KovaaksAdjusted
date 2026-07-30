@@ -54,6 +54,7 @@ _SECTION_WIDTH = {
     "Dashboard": "default",
     "Scenarios": "wide",
     "Analysis": "wide",
+    "What changed": "wide",     # baseline-vs-now comparisons need the room
     "Adaptability": "default",
     "Optimizer": "default",
     "How it learns": "prose",

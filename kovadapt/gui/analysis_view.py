@@ -407,6 +407,16 @@ class AnalysisView(QWidget):
 
         # ---- notable moments + replay, also side by side
         self.moments = QListWidget()
+        # Moment text is a full sentence, and the panel is ~330px wide: elided
+        # to one line it read "Overshot a right flick by 36% of its distance,
+        # then corrected 1x before" and pushed a horizontal scrollbar under the
+        # list. Wrapping is what makes the sentence readable; ElideNone stops
+        # Qt truncating instead of wrapping, and the off switch on the
+        # horizontal bar keeps the wrap authoritative.
+        self.moments.setWordWrap(True)
+        self.moments.setTextElideMode(Qt.ElideNone)
+        self.moments.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.moments.setResizeMode(QListWidget.Adjust)
         self.moments.currentRowChanged.connect(self._select_moment)
         self.full_btn = QPushButton("Whole run")
         self.full_btn.setEnabled(False)
@@ -714,8 +724,17 @@ class AnalysisView(QWidget):
             for d in dirs
         ]
         ns = [(b.get(d) or {}).get("n", 0) for d in dirs]
-        self.bias_bars.set_title(_bias_title(vals, ns, input_degraded(rep)))
-        self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns])
+        degraded = input_degraded(rep)
+        self.bias_bars.set_title(_bias_title(vals, ns, degraded))
+        # ratio_counts is the caller's explicit permission for the chart to
+        # spell out a side-vs-side ratio, and only this layer can grant it:
+        # viz.py cannot reach input_degraded (it would have to import analysis
+        # and take a RunReport). Withheld on a degraded run, so the footer can
+        # never contradict a title that says the comparison cannot be made;
+        # granted otherwise, since a 1.09x gap genuinely cannot be eyeballed
+        # and the sentence is the only way to read it.
+        self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
+                                ratio_counts=None if degraded else ns)
 
     def _draw_heat(self, rep: RunReport | None = None) -> None:
         """Zone heatmap on the Settings.region_cols x region_rows grid:

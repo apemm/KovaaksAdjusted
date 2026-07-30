@@ -14,6 +14,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -30,12 +31,19 @@ from .onboarding import HintBar
 
 # Override keys editable per archetype (subset of Settings fields that map
 # cleanly to "how should adaptation differ for this task type").
+# (field, label, lo, hi) — the range is PER KEY. A blanket 0.0-3.0 for all
+# five let the archetype pages save values the fields cannot mean: accuracy
+# bands and min_movement are fractions, focus_weight is a share of spawn mass,
+# so 3.0 is not a stricter setting, it is a nonsense one. It also crashed the
+# "What changed" ladder, which plots focus_weight on a 0..100% rail and
+# (correctly) refuses to paint a clamped position next to an unclamped number.
+# Each range matches that field's own global spin above.
 _ARCH_KEYS = (
-    ("target_accuracy_low", "Accuracy low"),
-    ("target_accuracy_high", "Accuracy high"),
-    ("size_learning_rate", "Size learning rate"),
-    ("min_movement", "Min movement"),
-    ("focus_weight", "Focus weight"),
+    ("target_accuracy_low", "Accuracy low", 0.30, 0.99),
+    ("target_accuracy_high", "Accuracy high", 0.35, 1.00),
+    ("size_learning_rate", "Size learning rate", 0.05, 3.00),
+    ("min_movement", "Min movement", 0.00, 1.00),
+    ("focus_weight", "Focus weight", 0.00, 0.90),
 )
 _ARCH_EDITABLE = ("tracking", "switching")   # clicking is the baseline
 
@@ -149,6 +157,20 @@ class ConfigView(QWidget):
         self.skip_splash_cb = QCheckBox(
             "Skip the loading screen (jump straight to the window)")
         self.skip_splash_cb.setChecked(bool(getattr(s, "skip_splash", False)))
+        # Motion intensity is one dial rather than a code change: taste is
+        # personal, and on a 240 Hz panel a dropped frame is visible.
+        self.motion = QComboBox()
+        for label, value in (("Full — everything, including ambient life", "full"),
+                             ("Reduced — reveals only, no idle motion", "reduced"),
+                             ("Off — everything instant", "off")):
+            self.motion.addItem(label, value)
+        cur = str(getattr(s, "motion", "full") or "full").lower()
+        idx = self.motion.findData(cur)
+        self.motion.setCurrentIndex(idx if idx >= 0 else 0)
+        self.motion.setToolTip(
+            "Full animates the backdrop eye and every reveal. Reduced keeps the "
+            "reveals that carry meaning (a run landing) and drops ambient loops. "
+            "Off paints final states with no animation at all.")
         self.telemetry = QCheckBox("Record raw mouse telemetry while watching")
         self.telemetry.setChecked(s.telemetry_enabled)
         self.clips = QCheckBox("Capture video clips of notable moments (needs kovadapt[clips])")
@@ -158,6 +180,7 @@ class ConfigView(QWidget):
         tel = QGroupBox("Telemetry && clips")
         f = _form(tel)
         f.addRow(self.skip_splash_cb)
+        f.addRow("Motion", self.motion)
         f.addRow(self.telemetry)
         f.addRow(self.clips)
         f.addRow("Clip FPS", self.clip_fps)
@@ -243,13 +266,13 @@ class ConfigView(QWidget):
         for name in _ARCH_EDITABLE:
             ov = (s.archetype_overrides or {}).get(name) or {}
             spins: dict[str, QDoubleSpinBox] = {}
-            for key, cap in _ARCH_KEYS:
-                spins[key] = _dspin(float(ov.get(key, getattr(s, key))), 0.0, 3.0)
+            for key, cap, lo, hi in _ARCH_KEYS:
+                spins[key] = _dspin(float(ov.get(key, getattr(s, key))), lo, hi)
             self.arch_spins[name] = spins
             self._remember_arch(name, ov)
             box = QGroupBox(name)
             row = _form(box)
-            for key, cap in _ARCH_KEYS:
+            for key, cap, _lo, _hi in _ARCH_KEYS:
                 row.addRow(cap, spins[key])
             av.addWidget(box)
 
@@ -287,8 +310,8 @@ class ConfigView(QWidget):
         """Snapshot an archetype's baseline: which knobs are real overrides
         and what the spins currently read. Anything loaded (init, reset, the
         readout refresh after a save) is by definition not a user choice."""
-        self._arch_explicit[name] = {k for k, _ in _ARCH_KEYS if k in ov}
-        self._arch_base[name] = {k: self.arch_spins[name][k].value() for k, _ in _ARCH_KEYS}
+        self._arch_explicit[name] = {k for k, *_ in _ARCH_KEYS if k in ov}
+        self._arch_base[name] = {k: self.arch_spins[name][k].value() for k, *_ in _ARCH_KEYS}
 
     def _update_cm360(self) -> None:
         """Live cm/360 readout (KovaaK's/Quake yaw: 0.022° per count)."""
@@ -318,6 +341,8 @@ class ConfigView(QWidget):
         self.mov_min.setValue(d.min_movement)
         self.mov_max.setValue(d.max_movement)
         self.skip_splash_cb.setChecked(bool(getattr(d, "skip_splash", False)))
+        mi = self.motion.findData(str(getattr(d, "motion", "full")))
+        self.motion.setCurrentIndex(mi if mi >= 0 else 0)
         self.telemetry.setChecked(d.telemetry_enabled)
         self.clips.setChecked(d.clips_enabled)
         self.clip_fps.setValue(d.clip_fps)
@@ -338,7 +363,7 @@ class ConfigView(QWidget):
         self.arch_en.setChecked(d.archetype_enabled)
         for name, spins in self.arch_spins.items():
             ov = (d.archetype_overrides or {}).get(name) or {}
-            for key, _ in _ARCH_KEYS:
+            for key, *_ in _ARCH_KEYS:
                 spins[key].setValue(float(ov.get(key, getattr(d, key))))
             self._remember_arch(name, ov)
         self.status.setText("defaults loaded — click Save settings to apply")
@@ -362,6 +387,7 @@ class ConfigView(QWidget):
         s.min_movement = min(self.mov_min.value(), self.mov_max.value())
         s.max_movement = self.mov_max.value()
         s.skip_splash = self.skip_splash_cb.isChecked()
+        s.motion = self.motion.currentData()
         s.telemetry_enabled = self.telemetry.isChecked()
         s.clips_enabled = self.clips.isChecked()
         s.clip_fps = self.clip_fps.value()
@@ -384,7 +410,7 @@ class ConfigView(QWidget):
         for name, spins in self.arch_spins.items():
             ov = dict(overrides.get(name) or {})
             base, explicit = self._arch_base[name], self._arch_explicit[name]
-            for key, _ in _ARCH_KEYS:
+            for key, *_ in _ARCH_KEYS:
                 val = round(spins[key].value(), 4)
                 glob = round(float(getattr(s, key)), 4)
                 # An override may only exist where the user chose to differ.
