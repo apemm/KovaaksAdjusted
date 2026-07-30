@@ -8,11 +8,54 @@ import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Resolved at IMPORT, before any test can monkeypatch Path.home — this is the
+# one path the suite must never write. See _never_write_the_real_settings.
+_REAL_SETTINGS = (Path.home() / ".kovadapt" / "settings.json").resolve()
+
 # Real KovaaK's install, if present (skipped on CI / other machines).
 _ROOT = os.environ.get(
     "KOVAAKS_ROOT",
     r"C:\Program Files (x86)\Steam\steamapps\common\FPSAimTrainer\FPSAimTrainer",
 )
+
+
+@pytest.fixture(autouse=True)
+def _never_write_the_real_settings(monkeypatch):
+    """Make it IMPOSSIBLE for the suite to write the developer's settings.json.
+
+    `Settings.save()` and `load()` deliberately default to the canonical
+    ~/.kovadapt/settings.json regardless of a customized `profile_dir` — the
+    bootstrap location has to be knowable (documented in CLAUDE.md). The
+    consequence is that a test which builds a Settings with a temp
+    `profile_dir` and then calls `save()` with NO argument writes the real
+    file, and monkeypatching `Path.home` does not help because the class-level
+    default was already evaluated at import time.
+
+    That has now happened twice on this machine, both times repointing
+    `kovaaks_root`/`profile_dir` at a scratch directory and silently breaking
+    the developer's install. A comment was not enough, so this is a wall.
+
+    The rule is exactly "never write the REAL file", not "never save without a
+    path": `save()` resolves its default through `Path.home()` at CALL time, so
+    a test with proper home isolation is already safe and stays allowed. Only a
+    write that would land on the genuine path — captured here at import, before
+    any test can patch it — fails.
+    """
+    from kovadapt.config import Settings
+
+    real = Settings.save
+
+    def guarded(self, path=None):
+        target = Path(path) if path is not None else \
+            Path.home() / ".kovadapt" / "settings.json"
+        if target.resolve() == _REAL_SETTINGS:
+            raise AssertionError(
+                f"this test would overwrite the REAL {_REAL_SETTINGS}. Either "
+                "monkeypatch Path.home to tmp_path, or pass an explicit path: "
+                "s.save(tmp_path / 'settings.json')")
+        return real(self, target)
+
+    monkeypatch.setattr(Settings, "save", guarded)
 
 
 @pytest.fixture

@@ -13,7 +13,13 @@ evidence:
                    contains the values it plots and every baseline is either a
                    fresh profile's own reachable default or a number read out
                    of the base `.sce`; a criterion the files cannot support
-                   goes unmeasured and prints a dash.
+                   goes unmeasured and prints a dash. NOW is measured back OUT
+                   OF THE WRITTEN VARIANT for the two criteria a `.sce` can be
+                   read for — target speed and spawn mass — because the emitted
+                   plan is what the game loads and `plan(fatigue=...)` eases the
+                   emitted values while persisted state stays un-eased. The
+                   model's number and the file's are two different claims, this
+                   page makes the file's, and it says which one it is.
     WHY            per criterion, the runs behind it: `profile.history` for
                    the controller inputs, `RegionPosterior.n` per arm, and the
                    per-run `region_deficits`/`bias` in the RunReport JSONs
@@ -50,6 +56,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field, replace
+from html import escape as _html_escape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -331,6 +338,14 @@ class SceFacts:
     variant_path: Path | None = None
     have_base: bool = False
     have_variant: bool = False
+    # The variant EXISTS on disk, whether or not it could be parsed and whether
+    # or not the base could. `have_variant` is the stronger claim — parsed, and
+    # comparable against a base — and only THIS field may back a sentence about
+    # what is or is not on disk. read_sce_facts returns early when the base is
+    # missing without ever looking at the variant, so the page said "no
+    # [Adaptive] .sce on disk carries this value", five times over, about a file
+    # sitting right next to the one it could not find.
+    variant_on_disk: bool = False
     error: str = ""
     chars: tuple[str, ...] = ()
     # Target characters whose base MaxSpeed could actually be READ. A character
@@ -340,6 +355,12 @@ class SceFacts:
     # arithmetic while the file never changes.
     authored: dict[str, float] = field(default_factory=dict)
     no_speed_key: tuple[str, ...] = ()
+    # The MaxSpeed those same characters carry in the VARIANT. The ladder plots
+    # its speed reading from these rather than from the model, because the
+    # emitted plan is what the game loads: `plan(fatigue=...)` eases the emitted
+    # values while the persisted profile stays un-eased by contract, so a
+    # variant written while tired legitimately holds a different number.
+    written_speeds: dict[str, float] = field(default_factory=dict)
     rows: tuple[LedgerRow, ...] = ()
     extra_sections: int = 0
     spawns: SpawnMap | None = None
@@ -479,6 +500,17 @@ def read_report_evidence(profile_dir: Path | str, base: str) -> ReportEvidence:
     )
 
 
+def _esc(text: str) -> str:
+    """HTML-escape a value bound for a RichText label.
+
+    quote=False deliberately: none of this lands inside an attribute, and the
+    default turns "the game's Scenarios folder" into "game&#x27;s" in the one
+    sentence a reader most needs. Scenario names and character names do contain
+    "&", so nothing interpolated into these labels may go through unescaped.
+    """
+    return _html_escape(text, quote=False)
+
+
 def _num(text: str | None) -> float | None:
     try:
         return float((text or "").strip())
@@ -559,17 +591,42 @@ def read_sce_facts(settings: Settings, base: str,
     """
     base_path = settings.scenarios_dir / f"{base}.sce"
     var_path = settings.scenarios_dir / f"{base}{ADAPTIVE_SUFFIX}.sce"
+    on_disk = var_path.is_file()
     if not base_path.is_file():
         # Short, because this string lands in four panels; the full path goes
-        # in the provenance label's tooltip.
+        # in the provenance label's tooltip. `variant_on_disk` is still recorded:
+        # without it the page claimed the variant had never been written, having
+        # never looked.
         return SceFacts(base_path=base_path, variant_path=var_path,
+                        variant_on_disk=on_disk,
                         error=f"{base}.sce is not in the game's Scenarios folder")
     try:
         src = SceFile.read(base_path)
-        var = SceFile.read(var_path) if var_path.is_file() else None
     except (OSError, ValueError) as exc:
         return SceFacts(base_path=base_path, variant_path=var_path,
+                        variant_on_disk=on_disk,
                         error=f"could not read {base}.sce: {exc.__class__.__name__}")
+    var = None
+    if on_disk:
+        try:
+            var = SceFile.read(var_path)
+        except (OSError, ValueError):
+            # A variant that will not open is NOT the base's failure. One try
+            # block around both reads reported "could not read <base>.sce" for a
+            # file that had already parsed fine, and threw away every fact it
+            # gave up. `variant_on_disk` then carries the real state: on disk,
+            # unreadable — which is neither "written" nor "never written".
+            var = None
+        else:
+            # SceFile is a deliberately TOLERANT verbatim line editor: it does
+            # not raise on arbitrary bytes, it just yields a file with no
+            # headers and no spawns. So "read() returned" is not evidence of a
+            # usable variant — a corrupt file would otherwise be reported as a
+            # written one and every criterion would read its values out of
+            # nothing. The generator always writes Name=, so its absence is
+            # the cheapest honest test that this is one of our variants.
+            if var.get_header("Name") is None:
+                var = None
 
     bots, chars = _target_profiles(src)
     # A MISSING MaxSpeed line and an authored MaxSpeed=0 are different facts:
@@ -579,12 +636,19 @@ def read_sce_facts(settings: Settings, base: str,
     # in this page's arithmetic while its file never moved.
     authored: dict[str, float] = {}
     no_key: list[str] = []
+    written_speeds: dict[str, float] = {}
     for char in chars:
         raw = src.get_in_section("Character Profile", char, "MaxSpeed")
         if raw is None:
             no_key.append(char)
             continue
         authored[char] = _num(raw) or 0.0
+        # Only for characters the BASE authors a readable speed for: without the
+        # author's own number there is nothing to read the written one against.
+        wrote = _num(var.get_in_section("Character Profile", char, "MaxSpeed")) \
+            if var else None
+        if wrote is not None:
+            written_speeds[char] = wrote
 
     rows: list[LedgerRow] = []
     for char in chars[:_MAX_CHARS]:
@@ -618,8 +682,10 @@ def read_sce_facts(settings: Settings, base: str,
             written = ""
     return SceFacts(
         base_path=base_path, variant_path=var_path, have_base=True,
-        have_variant=var is not None, chars=tuple(chars), authored=authored,
-        no_speed_key=tuple(no_key), rows=tuple(rows), extra_sections=extra,
+        have_variant=var is not None, variant_on_disk=on_disk,
+        chars=tuple(chars), authored=authored,
+        no_speed_key=tuple(no_key), written_speeds=written_speeds,
+        rows=tuple(rows), extra_sections=extra,
         spawns=spawns,
         description=(var.get_header("Description") or "") if var else "",
         written=written,
@@ -801,66 +867,198 @@ def _size_knob(profile: PlayerProfile, s: Settings, fresh: PlayerProfile) -> Kno
              "ledger below carries what was actually written."))
 
 
+class _WrittenSpeed(NamedTuple):
+    """What the [Adaptive] file on disk actually carries for target speed."""
+
+    value: float | None    # on the knob's own rail (a multiplier, or u/s)
+    detail: str = ""       # the per-character read behind it
+    why: str = ""          # why the file cannot answer, when value is None
+
+
+# The per-character speed reads in one variant agree to within the file's own
+# rounding (the generator writes round(base * mult, 1) from ONE multiplier), so
+# a spread wider than these is not rounding — it is two different decisions, and
+# collapsing them onto one rail would be the mixed-path lie in a new place.
+_SPEED_AGREE_MULT = 0.02       # on the 0.65-1.35 multiplier rail
+_SPEED_AGREE_RAMP = 0.2        # on the absolute 0-170 u/s rail
+
+
+def _written_speed(facts: SceFacts) -> _WrittenSpeed:
+    """The speed the VARIANT carries, on the same scale as the knob's rail.
+
+    The ladder plots this in preference to what the model implies, for the same
+    reason the spawn knob measures its share from the file: the emitted plan is
+    what the game loads, and `plan(fatigue=...)` eases the EMITTED values while
+    the persisted profile stays un-eased by contract. On an eased variant the
+    model implied x1.17 while the file carried x1.00 — and the ladder printed
+    the former one panel above a ledger row showing the latter.
+
+    Only ever called with a parsed variant; returns value=None with a reason
+    whenever the two files cannot answer between them.
+    """
+    path = facts.speed_path
+    if path not in ("multiplier", "ramp"):
+        return _WrittenSpeed(None, why="which speed path applies cannot be read")
+    pairs = [(c, facts.authored[c], facts.written_speeds[c])
+             for c in sorted(facts.authored) if c in facts.written_speeds]
+    if not pairs:
+        return _WrittenSpeed(None, why="the variant carries no MaxSpeed line to read")
+    # _fmt_num, not a fresh format string: this text sits one panel above the
+    # ledger rows for the very same keys, and the two must read identically.
+    if path == "ramp":
+        detail = ", ".join(f"{c} 0 -> {_fmt_num(w)}" for c, _, w in pairs)
+        vals = [w for _, _, w in pairs]
+        if max(vals) - min(vals) > _SPEED_AGREE_RAMP:
+            return _WrittenSpeed(None, why=(
+                f"the variant writes a different speed to each static wall "
+                f"({detail}), which is not one reading"))
+        return _WrittenSpeed(vals[0], detail)
+    ratios = [(c, a, w, w / a) for c, a, w in pairs if a > 0]
+    if not ratios:
+        return _WrittenSpeed(None, why="no authored speed to measure against")
+    detail = ", ".join(f"{c} {_fmt_num(a)} -> {_fmt_num(w)} (x{r:.3g})"
+                       for c, a, w, r in ratios)
+    if max(r for *_, r in ratios) - min(r for *_, r in ratios) > _SPEED_AGREE_MULT:
+        return _WrittenSpeed(None, why=(
+            f"the variant does not carry one multiplier for every target "
+            f"({detail}), which is not one reading"))
+    # The largest authored speed carries the least of the file's rounding to one
+    # decimal, so it is the truest read of the multiplier that was written.
+    return _WrittenSpeed(max(ratios, key=lambda t: t[1])[3], detail)
+
+
+def _speed_divergence(profile: PlayerProfile, facts: SceFacts,
+                      model_text: str) -> str:
+    """Why the speed in the FILE differs from what the model implies.
+
+    Read off the variant's own plan record, the same discipline size_check
+    applies: `plan(fatigue=...)` eases only the emitted values, so a variant
+    written while tired legitimately holds a lower speed than the persisted
+    (un-eased) model does. Without a record the difference is unattributable and
+    this says so rather than guessing.
+    """
+    record = _plan_record(facts.description)
+    lead = f"; the model's own state implies {model_text} instead"
+    if record is None:
+        return (f"{lead}, and the variant's Description carries no kovadapt plan "
+                "record, so why the two differ cannot be read off the file")
+    eased = _clamp(record.get("eased", 0.0), 0.0, 1.0)
+    if eased > 0:
+        return (f"{lead} — the variant recorded eased={eased:.2f} for itself, and "
+                "plan(fatigue=...) eases only the EMITTED values while the "
+                "persisted profile stays un-eased on purpose, so the next session "
+                "resumes true difficulty")
+    return (f"{lead}, so the variant on disk was written from an earlier model "
+            f"state (its own record reads movement={record.get('movement', 0.0):.2f} "
+            f"against the model's {profile.movement:.2f}) — playing a run, or "
+            "regenerating the variant, brings them back into step")
+
+
 def _speed_knob(profile: PlayerProfile, s: Settings, facts: SceFacts) -> Knob:
     """Which speed path applies is a property of the BASE FILE, per character,
     never of the model.
 
-    Every number below is read out of the base .sce — the generator always
-    applies the plan to the base and never to the previous variant, so the base
-    IS the baseline — and where the file cannot say, this criterion goes
-    unmeasured and says why. It used to hard-code the baseline (1.0 for the
-    multiplier path, 0.0 for the ramp) and to resolve the path with
-    `any(authored > 0)`, which on a scenario holding both a strafe bot and a
-    static wall printed "never writes the absolute 0-170 ramp here" directly
-    above a ledger row showing that exact ramp written.
+    Every number here is read out of the .sce files. The baseline is the base
+    file's own authored speed (the generator always applies the plan to the base
+    and never to the previous variant, so the base IS the baseline) and NOW is
+    the number the [Adaptive] file carries whenever one has been written —
+    because that is what the game loads. Reading NOW off the model instead let
+    the row print "1.00 -> 1.05x +5%" one panel above a ledger row saying
+    "MaxSpeed 1300 -> 1197 x0.921": both computed from the same variant, and
+    both wrong about the other. The gap is real and lawful — `plan(fatigue=...)`
+    eases the emitted plan while persisted state stays un-eased — so the row
+    names which number it is and where the difference came from.
+
+    Where the files cannot say, this criterion goes unmeasured and says why. It
+    used to hard-code the baseline (1.0 for the multiplier path, 0.0 for the
+    ramp) and to resolve the path with `any(authored > 0)`, which on a scenario
+    holding both a strafe bot and a static wall printed "never writes the
+    absolute 0-170 ramp here" directly above a ledger row showing that exact
+    ramp written.
     """
     path = facts.speed_path
     authored = ", ".join(f"{c} authors MaxSpeed={v:.0f}"
                          for c, v in sorted(facts.authored.items()))
     cold = profile.run_count == 0
-    cold_note = ""
-    if cold:
-        cold_note = (f"cold-start default (movement {profile.movement:.2f}), not a "
-                     "learned value — the OU walk takes its first step on your "
-                     "first run, but the file already carries this number")
-    if path == "multiplier":
-        now = speed_multiplier(profile.movement)
-        # 1.00x on this rail is not a chosen number: it is the author's own
-        # MaxSpeed expressed against itself, and the branch is only reachable
-        # once every target character's MaxSpeed line has been read and found
-        # greater than zero.
-        evidence = (f"because the base file gives its targets a speed of their own "
-                    f"({authored}), kovadapt modulates AROUND the author's value "
-                    f"(0.65-1.35x of it) and never writes the absolute 0-170 "
-                    f"static-wall ramp here — that ramp on a fast strafe bot would "
-                    f"collapse the scenario. 1.00x below IS that authored value, "
-                    f"read out of the base .sce; movement stands at "
-                    f"{profile.movement:.2f}, which maps to {now:.2f}x")
-        return Knob(key="target_speed", name="target speed (x authored)",
-                    lo=0.65, hi=1.35, baseline=1.0, now=now, fmt="{:.2f}",
-                    unit="x", delta_text=_ratio_delta(1.0, now),
-                    evidence=evidence, measured=not cold, note=cold_note,
-                    flag="cold start",
-                    tip=("adapt/stochastic.py:speed_multiplier maps movement "
-                         "intensity [0,1] onto 0.65-1.35; the generator writes "
-                         "base_speed x that, per target character. The absolute "
-                         "numbers are in the file ledger below."))
-    if path == "ramp":
-        now = movement_speed(profile.movement)
-        evidence = (f"because every target character's MaxSpeed line in the base "
-                    f"file reads 0 ({authored} — a static wall), movement intensity "
-                    f"is the only thing that can make them move at all, so the "
-                    f"absolute 0-170 ramp is the path that applies and the author's "
-                    f"own 0 is the baseline. Movement stands at "
-                    f"{profile.movement:.2f}, which maps to {now:.0f} units/s")
-        return Knob(key="target_speed", name="target speed (absolute ramp)",
-                    lo=0.0, hi=170.0, baseline=0.0, now=now, fmt="{:.0f}",
-                    unit="u/s", delta_text=(f"{now:+.0f}" if now else ""),
-                    evidence=evidence, measured=not cold, note=cold_note,
-                    flag="cold start",
-                    tip=("adapt/stochastic.py:movement_speed. This path exists "
-                         "only for base-speed-0 characters; anything with an "
-                         "authored speed is modulated instead."))
+    if path in ("multiplier", "ramp"):
+        ramp = path == "ramp"
+        model = (movement_speed(profile.movement) if ramp
+                 else speed_multiplier(profile.movement))
+        # "{:.4g}" on the ramp is _fmt_num's own rendering for anything on a
+        # 0-170 rail written to one decimal, so the NOW column and the ledger
+        # row for the same MaxSpeed print the same characters — at "{:.0f}" the
+        # ladder said 61 u/s over a ledger row reading 61.4.
+        fmt, unit = ("{:.4g}", "u/s") if ramp else ("{:.2f}", "x")
+        # In prose the ramp reads "108 u/s" and the multiplier "1.03x"; the
+        # ladder's NOW column concatenates the same unit without the space.
+        say = (lambda v: f"{fmt.format(v)} {unit}") if ramp else \
+              (lambda v: f"{fmt.format(v)}{unit}")
+        lo, hi = (0.0, 170.0) if ramp else (0.65, 1.35)
+        model_text = say(model)
+        if ramp:
+            # 1.00x on the other rail is not a chosen number either: it is the
+            # author's own MaxSpeed expressed against itself.
+            evidence = (f"because every target character's MaxSpeed line in the "
+                        f"base file reads 0 ({authored} — a static wall), movement "
+                        f"intensity is the only thing that can make them move at "
+                        f"all, so the absolute 0-170 ramp is the path that applies "
+                        f"and the author's own 0 is the baseline. ")
+        else:
+            evidence = (f"because the base file gives its targets a speed of their "
+                        f"own ({authored}), kovadapt modulates AROUND the author's "
+                        f"value (0.65-1.35x of it) and never writes the absolute "
+                        f"0-170 static-wall ramp here — that ramp on a fast strafe "
+                        f"bot would collapse the scenario. 1.00x below IS that "
+                        f"authored value, read out of the base .sce. ")
+        wrote = _written_speed(facts) if facts.have_variant else _WrittenSpeed(None)
+        note = ""
+        if wrote.value is None:
+            now = model
+            evidence += (f"Movement stands at {profile.movement:.2f}, which maps "
+                         f"to {model_text}")
+            if wrote.why:
+                note = (f"{wrote.why}, so this row plots what the model implies "
+                        "rather than what the variant carries")
+        else:
+            now = wrote.value
+            evidence += (f"{say(now)} is read out of the [Adaptive] file on disk "
+                         f"({wrote.detail}) — the number the game actually loads, "
+                         f"which is why this row plots it")
+            eps = max((hi - lo) * MOVE_EPS_FRAC, 1e-9)
+            if abs(now - model) > eps:
+                evidence += _speed_divergence(profile, facts, model_text)
+        if cold:
+            note = "; ".join(x for x in (
+                f"cold-start default (movement {profile.movement:.2f}), not a "
+                "learned value — the OU walk takes its first step on your first "
+                "run" + (", but the file already carries this number"
+                         if facts.have_variant else ""), note) if x)
+        # A hand-edited or foreign variant can carry a speed the controller
+        # itself could never emit. The rail has to hold what it plots.
+        if not lo <= now <= hi:
+            lo, hi = min(lo, now), max(hi, now)
+            note = "; ".join(x for x in (note, (
+                f"the variant carries {say(now)}, outside the controller's own "
+                "range, so the rail is widened to hold it — that number was not "
+                "written by these clamps")) if x)
+        return Knob(
+            key="target_speed",
+            name="target speed (absolute ramp)" if ramp
+            else "target speed (x authored)",
+            lo=lo, hi=hi, baseline=0.0 if ramp else 1.0, now=now, fmt=fmt,
+            unit=unit,
+            delta_text=((f"{now:+.4g}" if now else "") if ramp
+                        else _ratio_delta(1.0, now)),
+            evidence=evidence, measured=not cold, note=note, flag="cold start",
+            tip=("adapt/stochastic.py:movement_speed. This path exists only for "
+                 "base-speed-0 characters; anything with an authored speed is "
+                 "modulated instead. NOW is read out of the written variant "
+                 "whenever there is one." if ramp else
+                 "adapt/stochastic.py:speed_multiplier maps movement intensity "
+                 "[0,1] onto 0.65-1.35; the generator writes base_speed x that, "
+                 "per target character. NOW is that ratio measured back out of "
+                 "the written variant whenever there is one, so it agrees with "
+                 "the file ledger below even when the plan was eased."))
     if path == "mixed":
         per = "; ".join(
             f"{c} authors MaxSpeed={facts.authored[c]:.0f}, so it is "
@@ -1124,6 +1322,29 @@ def _movement_knob(profile: PlayerProfile, s: Settings,
 _PENDING_NOTE = "not written yet — no [Adaptive] .sce on disk carries this value"
 
 
+def _pending_note(facts: SceFacts) -> str:
+    """Why the ladder is showing model values rather than written ones.
+
+    THREE different absences, and they must not read alike. Only one of them is
+    "nothing has been written": read_sce_facts gives up on a missing base .sce
+    before it ever looks at the variant, so a task whose base file had been
+    renamed printed "no [Adaptive] .sce on disk carries this value" — five times,
+    plus the same claim in the headline — about a file sitting right beside the
+    one it could not find. `variant_on_disk` is the only field that may back a
+    sentence about what is on disk.
+    """
+    if not facts.have_base:
+        return ("unverified — the base .sce is missing, so what any [Adaptive] "
+                "file carries cannot be read"
+                if not facts.variant_on_disk else
+                "unverified — an [Adaptive] .sce IS on disk, but without its base "
+                "file there is no before/after to read it against")
+    if facts.variant_on_disk:
+        return ("the [Adaptive] .sce on disk could not be read, so what it "
+                "carries is unknown")
+    return _PENDING_NOTE
+
+
 def build_knobs(profile: PlayerProfile, settings: Settings, facts: SceFacts,
                 ev: ReportEvidence) -> list[Knob]:
     """The five criteria the engine actually moves, in the order it moves them.
@@ -1148,11 +1369,29 @@ def build_knobs(profile: PlayerProfile, settings: Settings, facts: SceFacts,
         # prints its own absence in the delta column ("no runs yet", "cold
         # start", "exploration") and its note already says why nothing landed,
         # so repeating this there would only bury that reason.
+        clause = _pending_note(facts)
         knobs = [replace(k, pending=True,
-                         note=". ".join(x for x in (_PENDING_NOTE, k.note) if x))
+                         note=". ".join(x for x in (clause, k.note) if x))
                  if k.measured else replace(k, pending=True)
                  for k in knobs]
     return knobs
+
+
+def _headline_unwritten(facts: SceFacts | None) -> str:
+    """The headline's own version of _pending_note — the same three absences, and
+    the same rule: only `variant_on_disk` may back a claim about the disk."""
+    if facts is None or facts.have_variant:
+        return ""
+    if not facts.have_base:
+        return (", and none of it can be checked against the game's files: the "
+                "base .sce is missing from the Scenarios folder"
+                + (", and the [Adaptive] file on disk has nothing to be compared "
+                   "against" if facts.variant_on_disk else ""))
+    if facts.variant_on_disk:
+        return (", but the [Adaptive] file on disk could not be read, so none of "
+                "it is verified against the game's own copy")
+    return ", but no [Adaptive] file has been written yet, so none of it has " \
+           "reached the game"
 
 
 def takeaway(knobs: list[Knob], profile: PlayerProfile | None,
@@ -1164,16 +1403,13 @@ def takeaway(knobs: list[Knob], profile: PlayerProfile | None,
     # with no variant on disk this said "have moved" over a ledger whose every
     # VARIANT cell was a dash.
     written = facts is None or facts.have_variant
+    unwritten = _headline_unwritten(facts)
     if profile.run_count == 0:
         return (f"{profile.scenario} has a profile but no completed runs — nothing "
                 "here is learned yet, and every value below is a cold-start default"
-                + ("" if written else
-                   ", none of which has been written: there is no [Adaptive] file "
-                   "on disk yet"))
+                + ("" if written else unwritten))
     moved = [k for k in knobs if k.measured and k.moved]
     n = profile.run_count
-    unwritten = ", but no [Adaptive] file has been written yet, so none of it has "\
-                "reached the game"
     if not moved:
         held = next((k for k in knobs if k.measured and not k.moved), None)
         why = f" — {held.name} has held: {held.evidence}" if held else ""
@@ -1955,9 +2191,15 @@ _LADDER_CAPTION = (
     "values it plots. <b>|</b> is the baseline the move is measured from — a "
     "fresh profile's own default, clamped to this archetype's limits where they "
     "are tighter, and for target speed the scenario author's own number read "
-    "out of the base <code>.sce</code>. <b>@</b> is where the model stands now, "
-    "<b>0</b> means the two coincide and the criterion has not moved, and the "
-    "run between them is the move. A move too small for the rail's resolution "
+    "out of the base <code>.sce</code>. <b>@</b> is where things stand now: for "
+    "target speed and spawn mass that is <i>measured back out of the written "
+    "<code>[Adaptive] .sce</code></i> whenever one exists, because the emitted "
+    "plan is what the game loads and an eased plan writes numbers the un-eased "
+    "model does not hold; for the other criteria it is the model's own state. "
+    "With no variant on disk every row is the model and the column above says "
+    "PLANNED. <b>0</b> means baseline and now coincide and the criterion has "
+    "not moved, and the run between them is the move. A move too small for the "
+    "rail's resolution "
     "still shows one glyph rather than none, so read the numbers for the "
     "magnitude. A dim run means the value is a cold-start default with no runs "
     "behind it — real in the file, but not learned. Amber marks a value sitting "
@@ -2266,31 +2508,56 @@ class ChangesView(QWidget):
         if spawns.reason:
             text += (f"<br><span style='color:{pal.warn}'>{spawns.reason}</span>")
         elif not spawns.adaptive:
+            # Why there is nothing measured to show, from the same three states
+            # the ladder's own clause uses: an unreadable [Adaptive] file is not
+            # an absent one, and this line claimed it was.
+            why = ("the [Adaptive] file on disk could not be read"
+                   if self._facts.variant_on_disk else
+                   "no variant has been written yet")
             text += (f"<br><span style='color:{pal.fg_dim}'>densities are the "
-                     "weights the next generation would ask for — no variant "
-                     "has been written yet</span>")
+                     f"weights the next generation would ask for — {why}</span>")
         return text
 
     def _provenance_text(self, pal) -> str:
         facts = self._facts
+        name = _esc(facts.variant_path.name if facts.variant_path else "")
         if not facts.have_base:
             self.provenance.setToolTip(str(facts.base_path or ""))
+            # An [Adaptive] file that IS on disk gets said out loud: the page used
+            # to report only the missing base and then claim, five knobs and one
+            # headline over, that nothing had ever been written.
             return (f"<span style='color:{pal.fg_dim}'>"
-                    f"{facts.error or 'no scenario file found'} — kovadapt can "
-                    "still show the model, but there is no file to compare "
-                    "against.</span>")
-        self.provenance.setToolTip(str(facts.variant_path or ""))
+                    f"{_esc(facts.error) or 'no scenario file found'} — kovadapt "
+                    "can still show the model, but there is no file to compare "
+                    "against"
+                    + (f"; <b>{name}</b> is on disk and cannot be read without its "
+                       "base." if facts.variant_on_disk else ".")
+                    + "</span>")
+        # The verbatim header lives in the tooltip, not on the page: every number
+        # printed on the page has to be one that applied here, and the raw string
+        # carries a static-wall ramp figure even when the multiplier path ran.
+        tip = str(facts.variant_path or "")
+        if facts.description:
+            tip += "\n\nDescription header, verbatim:\n" + facts.description
+        self.provenance.setToolTip(tip)
         if not facts.have_variant:
-            return (f"<span style='color:{pal.fg_dim}'>no "
-                    f"<b>{facts.variant_path.name if facts.variant_path else ''}</b> "
+            if facts.variant_on_disk:
+                return (f"<span style='color:{pal.warn}'><b>{name}</b> is on disk "
+                        "but could not be read, so the column above has nothing to "
+                        "compare against and nothing here is verified against the "
+                        "game's own copy.</span>")
+            return (f"<span style='color:{pal.fg_dim}'>no <b>{name}</b> "
                     "on disk — kovadapt has not written anything for this "
                     "scenario yet, so the column above has nothing to compare "
                     "against.</span>")
         out = (f"<span style='color:{pal.fg_dim}'>variant written "
-               f"<b>{facts.written or 'unknown'}</b>")
-        if facts.description:
-            out += f" — its own Description header reads: {facts.description}"
+               f"<b>{_esc(facts.written) or 'unknown'}</b>")
+        summary, unapplied = _plan_summary(facts)
+        if summary:
+            out += f" — {summary}"
         out += "</span>"
+        if unapplied:
+            out += f"<br><span style='color:{pal.fg_dim}'>{unapplied}</span>"
         check = size_check(self._profile, self.s, facts) if self._profile else ""
         if check:
             stale = "does not match" in check
@@ -2352,6 +2619,83 @@ class ChangesView(QWidget):
             self._clock.stop()
             self._pending = True    # replay it when the page comes back
         super().hideEvent(event)
+
+
+# The fields describe() records, in its own order, and what each one did to the
+# file. `speed` is deliberately NOT here: it is the absolute static-wall ramp,
+# it lands only on base-MaxSpeed-0 characters, and which characters those are is
+# a property of the base .sce — so it is rendered separately and gated on the
+# path the FILES say applied.
+_PLAN_LABELS = (
+    ("scale", "target size x{}"),
+    ("movement", "movement {} as emitted"),
+    ("focus", "focus region requested {}"),
+    ("dodge", "dodge skew {}"),
+    ("eased", "eased for fatigue {}"),
+)
+
+
+def _plan_fields(description: str) -> dict[str, str]:
+    """The `key=value` tokens of a variant's own plan record.
+
+    Only the MIDDLE segment of the header is scanned: the trailing `base: <name>`
+    carries a scenario name, and a name holding an `=` would otherwise become a
+    plan field that never existed.
+    """
+    if "kovadapt auto-generated" not in description:
+        return {}
+    parts = description.split("|")
+    return dict(re.findall(r"(\w+)=([^\s|]+)",
+                           parts[1] if len(parts) > 1 else description))
+
+
+def _plan_summary(facts: SceFacts) -> tuple[str, str]:
+    """(what the plan record says applied here, what it says did NOT).
+
+    Echoing the Description verbatim was cheaper and wrong. describe() always
+    writes `speed=<absolute 0-170 ramp>`, and on a scenario whose targets author
+    a MaxSpeed of their own that ramp is never written at all — the generator
+    takes the multiplier path, per character. Quoting a stored string is not
+    evidence that every number in it landed, and the absolute ramp and the
+    authored multiplier are exactly the two things this page may not blur:
+    writing the ramp onto a 1300-speed strafe bot collapses the scenario.
+    """
+    if not facts.description:
+        return "it carries no Description header, so it records no plan", ""
+    fields = _plan_fields(facts.description)
+    if not fields:
+        return ("its Description header is not a kovadapt plan record, so nothing "
+                "in it can be read as a record of what was written"), ""
+    applied = [text.format(_esc(fields[key])) for key, text in _PLAN_LABELS
+               if key in fields]
+    ramp, tail = fields.get("speed"), ""
+    if ramp is not None:
+        ramp = _esc(ramp)
+        path = facts.speed_path
+        if path == "ramp":
+            applied.append(f"absolute MaxSpeed ramp {ramp} u/s — every target "
+                           "here authors 0, so that is the path that applied")
+        elif path == "mixed":
+            walls = ", ".join(c for c, v in sorted(facts.authored.items())
+                              if v == 0)
+            applied.append(f"absolute MaxSpeed ramp {ramp} u/s, written only to "
+                           f"the base-speed-0 targets ({_esc(walls)}) — the "
+                           "rest were modulated around their own authored speed")
+        elif path == "multiplier":
+            tail = (f"its record also carries speed={ramp}, the absolute 0-170 "
+                    "static-wall ramp. That number was NOT written here: every "
+                    "target authors a MaxSpeed of its own, so the generator took "
+                    "the multiplier path per character — the MaxSpeed rows above "
+                    "are what landed.")
+        else:
+            tail = (f"its record also carries speed={ramp}, the absolute "
+                    "static-wall ramp, but the base .sce cannot say which speed "
+                    "path applied here, so whether that number was written is "
+                    "unknown.")
+    if not applied:
+        return "its plan record carries no readable fields", tail
+    return ("its own plan record, showing only what applied to this scenario: "
+            + ", ".join(applied)), tail
 
 
 def _plan_record(description: str) -> dict[str, float] | None:

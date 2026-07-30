@@ -28,7 +28,10 @@ was that no value could be read off any of them:
                   a dot field with no baseline, which left the title carrying
                   all of the meaning and the graph none. Two runs draw as a
                   SEGMENT between two marked points, and a spread too small to
-                  be a shape draws FLAT.
+                  be a shape draws FLAT — on one row, with the mean rule ON it.
+                  The axis names an absolute run number only when the caller
+                  states the offset: it is handed a WINDOW of the history
+                  (history[-60:]) and cannot know the index it starts at.
 
 Nothing here may draw a claim its data cannot carry, and no two parts of one
 panel may disagree. Three rules earn their own machinery:
@@ -39,7 +42,9 @@ panel may disagree. Three rules earn their own machinery:
       stretched into an oscillation, is a lie about movement — hence
       AsciiTrend._y_range's span floor;
     * a colour key is a promise that colour maps to number, so it appears
-      only when its own endpoints differ visibly.
+      only when its own endpoints differ visibly — and a lattice whose whole
+      spread is narrower than one ramp step is drawn uniformly FAINT rather
+      than stretched, however far from zero it sits.
 
 All three are pure QPainter and keep only their data: they read
 theme.current() at paint time, so restyle() is nothing but update() — never
@@ -77,7 +82,14 @@ from . import motion, theme
 _BAR_FILL = "#"                  # one filled cell of a bar's track
 _BAR_EMPTY = "."                 # the unfilled remainder: a faint scale rule
 _HEAT_RAMP = " .:-=+*#%@"        # light -> dense zone texture
-_TREND_SUB = "_-~\""             # where inside its cell a flat segment sits
+# Where inside its cell a flat segment sits: bottom, CENTRE, top. The middle
+# bucket has to be the glyph that reads flat, because dead centre is exactly
+# where a trend that did not move lands. With four glyphs ('_-~"') the buckets
+# were [0,.25) [.25,.5) [.5,.75) [.75,1) — none of them centred on 0.5 — so a
+# value sitting on a row's centre drew '~', and a flat panel whose whole
+# finding is "this did not move" was a run of ripples. Three buckets put "-"
+# on [1/3, 2/3), i.e. astride 0.5, at the cost of one sub-cell level.
+_TREND_SUB = "_-\""
 _IGNITE_RAMP = ".:-+#"           # a cell part-way through the ignite wave
 
 # Band widths, in px, for the furniture that makes a value readable.
@@ -134,6 +146,21 @@ _FLAT_SPAN_ABS = 1e-9
 # channel is kovadapt's calibration for "visibly different" at swatch size —
 # the all-positive occupancy map that shipped this managed 9.
 _KEY_MIN_DELTA = 40
+
+# One step of _HEAT_RAMP, in normalized units. A zone map whose whole measured
+# spread is narrower than this cannot separate two zones by even one glyph, so
+# the only thing normalization decides is WHICH single step they all land on.
+# Zero-anchoring a one-signed range sends them all to the LOUDEST: an occupancy
+# map reading 3.60..3.79 normalizes to 0.95..1.00, i.e. 25 zones of '@' at full
+# saturation reading "everything is maximally bad". Below one step the map is
+# drawn at the faintest step the ramp has instead (_FLAT_MAP_LEVEL) and the
+# numbers printed on the zones carry the values — the same lie min-max
+# normalization used to tell the deficit branch, amplifying noise to fill the
+# ramp, kept alive by the offset instead of by the scale.
+_RAMP_STEP = 1.0 / (len(_HEAT_RAMP) - 1)
+# Inside _HEAT_RAMP's first non-blank bucket ([0.056, 0.167) rounds to '.'),
+# and low enough that a flat map can never read as data.
+_FLAT_MAP_LEVEL = 0.75 * _RAMP_STEP
 
 # --- live Settings ---------------------------------------------------------
 # The charts need the motion intensity, which lives on Settings. They hold the
@@ -331,9 +358,15 @@ def _dim(hex_or_col, alpha: float) -> QColor:
 
 def _fmt_value(fmt: str, v: float) -> str:
     """Format a value, never as a signed zero. "{:+.2f}" turns -0.001 into
-    "-0.00", which reads as a rendering bug rather than as the zero it is."""
+    "-0.00", which reads as a rendering bug rather than as the zero it is.
+
+    The test is "the rendered text carries no nonzero digit", not "it is
+    nothing but zeros and a point": a signed zero can carry a UNIT, and
+    stripping only "0." left "%" behind, so "{:.0%}" sailed through and put
+    "-0%" on the trend's y axis.
+    """
     txt = fmt.format(v)
-    if v < 0 and txt.lstrip("+-").strip("0.") == "":
+    if v < 0 and not any(c in "123456789" for c in txt):
         return fmt.format(0.0)
     return txt
 
@@ -789,6 +822,7 @@ class AsciiHeatmap(_Ignite, QWidget):
         self._grid: np.ndarray | None = None
         self._norm: np.ndarray | None = None
         self._labels: list[list[str]] | None = None
+        self._flat_map = False
         self._fmt = "{:.2f}"
         self._hover: tuple[int, int] | None = None
         self.setMinimumHeight(220)
@@ -806,6 +840,7 @@ class AsciiHeatmap(_Ignite, QWidget):
         hover tooltip (defaults to the r{row}c{col} region keys)."""
         if grid is None:
             self._grid = self._norm = self._labels = None
+            self._flat_map = False
             self._ignite_skip()
         else:
             g = np.asarray(grid, dtype=float)
@@ -820,7 +855,19 @@ class AsciiHeatmap(_Ignite, QWidget):
             finite = g[np.isfinite(g)]
             span = float(np.max(np.abs(finite))) if finite.size else 0.0
             span = max(span, NOISE_FLOOR)
-            self._norm = np.clip(g / span, -1.0, 1.0)
+            norm = np.clip(g / span, -1.0, 1.0)
+            # Zero-anchoring is right for a signed z-score, but it does nothing
+            # for a ONE-SIGNED range sitting far from zero: 3.60..3.79 becomes
+            # 0.95..1.00 and every zone paints at the ramp's last step. When the
+            # whole measured spread is under one ramp step there is no colour
+            # difference to draw, so it is drawn uniformly faint (sign kept, so
+            # the hue still says which way the metric runs) and the numbers on
+            # the zones carry it. Under two measured zones there is no spread to
+            # judge at all — a lone zone keeps its own magnitude.
+            self._flat_map = bool(
+                finite.size >= 2
+                and (float(finite.max()) - float(finite.min())) / span < _RAMP_STEP)
+            self._norm = np.sign(norm) * _FLAT_MAP_LEVEL if self._flat_map else norm
             self._labels = ([[str(s) for s in row] for row in labels]
                             if labels is not None else None)
             self._fmt = fmt
@@ -865,6 +912,24 @@ class AsciiHeatmap(_Ignite, QWidget):
         if seen == 0:
             return f"no zone measured this run — all {total} drawn hollow"
         return f"{seen} of {total} zones measured — the rest are drawn hollow"
+
+    def spread_note(self) -> str:
+        """Why every zone is the same shade, when the spread is too narrow to
+        colour. 25 identically faint zones and no explanation read as a broken
+        chart for exactly the reason 25 hollow ones do."""
+        ends = self._key_ends()
+        if not self._flat_map or ends is None:
+            return ""
+        lo_v, hi_v, _span = ends
+        return (f"every measured zone {self._fmt.format(lo_v)}"
+                f"..{self._fmt.format(hi_v)} — too narrow to shade, "
+                f"so the numbers carry it")
+
+    def footer_note(self) -> str:
+        """The whole footer sentence: what was measured, and why it is flat if
+        it is. Both halves are about the same lattice, so they share one line
+        rather than one of them going unsaid."""
+        return " · ".join(p for p in (self.coverage_note(), self.spread_note()) if p)
 
     # ------------------------------------------------------------------
     def _layout(self):
@@ -1097,7 +1162,11 @@ class AsciiHeatmap(_Ignite, QWidget):
         if foot_h:
             fy = h - foot_h - 2
             p.setPen(QColor(pal.fg_dim))
-            note = self.coverage_note()
+            # Elided, not clipped: this line explains the lattice, and a
+            # sentence cut mid-glyph reads as a broken panel (same rule as
+            # _paint_title). The key measures the ELIDED width, so it can only
+            # take room the sentence really left.
+            note = fm.elidedText(self.footer_note(), Qt.ElideRight, w - 24)
             p.drawText(QRectF(10, fy, w - 20, foot_h), Qt.AlignLeft | Qt.AlignVCenter,
                        note)
             self._paint_key(p, pal, fm, w, fy, foot_h,
@@ -1124,7 +1193,9 @@ class AsciiHeatmap(_Ignite, QWidget):
         not on screen. Below _KEY_MIN_DELTA the key is dropped and the values
         printed on the zones carry the numbers instead."""
         ends = self._key_ends()
-        if ends is None:
+        if ends is None or self._flat_map:
+            # A flat map paints every zone the SAME shade on purpose; a ramp
+            # beside it would key colours the lattice does not contain.
             return False
         if pal is None:
             pal = theme.current()          # palette read at use time, never held
@@ -1180,6 +1251,9 @@ class AsciiTrend(_Ignite, QWidget):
       runs, which is the exact thing the run ticks exist to prevent.
     * a spread under the _y_range span floor draws FLAT, on one row, with no
       min/max labels. Anything else is a picture of float noise.
+
+    The run axis names an absolute run number ONLY when a caller states the
+    offset (set_data's first_run) — see run_axis_text.
     """
 
     def __init__(self, title: str = "", fmt: str = "{:.0%}", parent=None) -> None:
@@ -1190,6 +1264,7 @@ class AsciiTrend(_Ignite, QWidget):
         self._values: list[float] = []
         self._tag: str | None = None
         self._baseline: float | None = None
+        self._first_run: int | None = None
         self.setMinimumHeight(200)
 
     # ------------------------------------------------------------------
@@ -1198,13 +1273,21 @@ class AsciiTrend(_Ignite, QWidget):
         self.update()
 
     def set_data(self, values: Sequence[float], tag: str | None = None,
-                 baseline: float | None = None) -> None:
+                 baseline: float | None = None, *,
+                 first_run: int | None = None) -> None:
         """`baseline` overrides the reference rule (default: the mean of the
         runs shown, which is the only baseline this widget can compute from
-        what it was given)."""
+        what it was given).
+
+        `first_run` is the true 1-based run number of ``values[0]``. Supply it
+        when `values` is a WINDOW of a longer history and the axis may name
+        absolute runs; omit it and the axis says "oldest shown" instead of
+        naming a run it cannot identify (see run_axis_text).
+        """
         self._values = [float(v) for v in values]
         self._tag = tag
         self._baseline = None if baseline is None else float(baseline)
+        self._first_run = None if first_run is None else int(first_run)
         if len(self._values) < 2:
             self._ignite_skip()               # one run is not a trend to reveal
             return
@@ -1227,6 +1310,39 @@ class AsciiTrend(_Ignite, QWidget):
             return self._baseline
         return float(np.mean(self._values)) if self._values else None
 
+    def run_axis_text(self, ncols: int) -> tuple[str, str]:
+        """(left label, right label) for the run axis under the line.
+
+        A label that names a specific run has to BE that run. This widget knows
+        only the LIST it was handed, and both callers hand over
+        ``profile.history[-60:]`` — so on a 137-run profile the axis printed
+        "run 1 · 62%" under what is really run 78 and "run 60 · newest" under
+        run 137. Two labels, both naming the wrong run, from an index the
+        widget cannot know the offset of.
+
+        So the absolute numbers appear only when the caller states the offset
+        (set_data's `first_run`). Without it the axis says what the widget can
+        actually support: which end is oldest, how many runs are drawn, and
+        whether they all got a column of their own.
+        """
+        n = len(self._values)
+        if not n:
+            return "", ""
+        first = self._first_run
+        left = (f"run {first} · " if first is not None else "oldest shown · ")
+        left += _fmt_value(self._fmt, self._values[0])
+        if n == 2:
+            # Two runs are a segment, not a trend anyone should read a
+            # direction off — the shape says so and the axis has to agree.
+            right = "2 runs · segment"
+        elif n <= ncols:
+            right = (f"run {first + n - 1} · newest" if first is not None
+                     else f"{n} runs · newest")
+        else:
+            right = (f"runs {first}..{first + n - 1} · {ncols} columns"
+                     if first is not None else f"{n} runs · {ncols} columns")
+        return left, right
+
     def _y_range(self) -> tuple[float, float, bool]:
         """(lo, hi, flat) for the value axis.
 
@@ -1242,7 +1358,12 @@ class AsciiTrend(_Ignite, QWidget):
           dramatic sawtooth while every label on the panel printed 67%).
         * the two axis labels must FORMAT differently. An axis printing "67%"
           at both ends is not an axis, so the range widens until the strings
-          differ (bounded, so a format with no placeholder cannot spin).
+          differ (bounded, so a format with no placeholder cannot spin). The
+          comparison runs through _fmt_value, i.e. the strings that get
+          PAINTED: raw format() calls a hairline negative "-0%", which differs
+          from "0%" as a string while reading as the same number on the axis,
+          so a range centred on zero stopped widening at once and put a signed
+          zero in the gutter.
         """
         src = self._values
         base = float(self.baseline())
@@ -1255,8 +1376,11 @@ class AsciiTrend(_Ignite, QWidget):
         else:
             pad = (hi - lo) * 0.10
             lo, hi = lo - pad, hi + pad
-        for _ in range(24):
-            if self._fmt.format(lo) != self._fmt.format(hi):
+        # 64, not 24: each pass only DOUBLES the span, and from _FLAT_SPAN_ABS
+        # (1e-9) a percentage format needs ~23 of them just to reach 1%. The
+        # magnitude test below is the real bound — this count is the backstop.
+        for _ in range(64):
+            if _fmt_value(self._fmt, lo) != _fmt_value(self._fmt, hi):
                 break
             mid = (hi + lo) / 2.0
             if hi - lo > max(1.0, 8.0 * abs(mid)):
@@ -1293,9 +1417,12 @@ class AsciiTrend(_Ignite, QWidget):
         # what the run ticks below exist to stop a viewer counting.
         segment = n == 2
 
-        tag_text = self._tag if self._tag is not None else self._fmt.format(src[-1])
+        tag_text = self._tag if self._tag is not None else _fmt_value(self._fmt, src[-1])
         tag_w = fm.horizontalAdvance(tag_text) + 14
-        gutter = max(lfm.horizontalAdvance(self._fmt.format(v)) for v in (hi, lo)) + 12
+        # every number this widget paints goes through _fmt_value, including the
+        # two it measures the gutter against
+        hi_txt, lo_txt = _fmt_value(self._fmt, hi), _fmt_value(self._fmt, lo)
+        gutter = max(lfm.horizontalAdvance(t) for t in (hi_txt, lo_txt)) + 12
         x_left, x_right = 10 + gutter, w - tag_w - 10
         y_top, y_bot = top + 8, h - _AXIS_H - 6
         if x_right - x_left < 40 or y_bot - y_top < 3 * chh:
@@ -1314,12 +1441,21 @@ class AsciiTrend(_Ignite, QWidget):
             cvals = np.full(ncols, float(np.mean(src)))
         levels = (cvals - lo) / (hi - lo) * (grid_rows - 1)
         rows_i = np.clip(np.rint(levels).astype(int), 0, grid_rows - 1)
+        if flat:
+            # SNAP the flat panel to its row. A flat range centres the level
+            # mid-cell as often as not, and left fractional that put the mean
+            # rule up to half a glyph row off the line it is the mean OF, while
+            # the sub-cell glyph leaned out of its cell to reach it — a run of
+            # '"' or '_' under a finding that reads "this did not move". On the
+            # row centre the line, the rule, the head and every run mark share
+            # one y, and the sub-cell glyph is dead centre, i.e. "-".
+            levels = rows_i.astype(float)
+        flat_level = float(rows_i[0])
 
         def level_of(v: float) -> float:
             """Row level of one run's value — the flat panel puts every run on
             the same row, so a mark can never sit off the line it belongs to."""
-            v = float(np.mean(src)) if flat else v
-            return (v - lo) / (hi - lo) * (grid_rows - 1)
+            return flat_level if flat else (v - lo) / (hi - lo) * (grid_rows - 1)
 
         def ypix(level: float) -> float:
             """Pixel y of a fractional row level (row centres, 0 = bottom)."""
@@ -1327,7 +1463,7 @@ class AsciiTrend(_Ignite, QWidget):
 
         # ---- the reference rule: where this metric has been sitting
         p.setPen(QPen(_dim(pal.fg_dim, 0.55), 1, Qt.DotLine))
-        by = ypix((base - lo) / (hi - lo) * (grid_rows - 1))
+        by = ypix(level_of(base))
         p.drawLine(QPointF(x_left, by), QPointF(x_right, by))
 
         # ---- the line itself
@@ -1477,7 +1613,7 @@ class AsciiTrend(_Ignite, QWidget):
             q = run_q[i]
             p.setPen(QPen(_dim(pal.fg_dim, 0.9 * q), 1.2))
             p.drawEllipse(QPointF(jx, py), 2.5, 2.5)
-            txt = f"{kind} {self._fmt.format(src[i])}"
+            txt = f"{kind} {_fmt_value(self._fmt, src[i])}"
             tw = lfm.horizontalAdvance(txt)
             tx = min(max(jx - tw / 2, x_left), x_right - tw)
             ty = py - chh - 4 if kind == "max" else py + 4
@@ -1496,33 +1632,39 @@ class AsciiTrend(_Ignite, QWidget):
         p.drawText(QRectF(x_right + 6, ty - chh / 2, tag_w, chh),
                    Qt.AlignLeft | Qt.AlignVCenter, tag_text)
 
-        # ---- the mean's label LAST: the line would otherwise draw over it
-        btxt = f"mean {self._fmt.format(base)}"
-        btw = lfm.horizontalAdvance(btxt) + 8
+        # ---- the mean's label LAST: the line would otherwise draw over it.
+        # OPAQUE backing, sized to the label's own line box. On a flat panel the
+        # line sits exactly on the mean rule (it IS the mean), so this chip
+        # always lands on the line's glyph run — and at 0.85 the glyphs read
+        # straight through the text in both themes. A label you cannot read is
+        # not a label, and the line loses ~9 characters of an unchanging rule.
+        btxt = f"mean {_fmt_value(self._fmt, base)}"
+        bth = lfm.height() + 4
+        btw = lfm.horizontalAdvance(btxt) + 10
+        chip = QRectF(x_right - btw, by - bth / 2, btw, bth)
         p.setPen(Qt.NoPen)
-        p.setBrush(_dim(pal.bg, 0.85))
-        p.drawRoundedRect(QRectF(x_right - btw, by - 8, btw, 15), 3, 3)
+        p.setBrush(QColor(pal.bg))
+        p.drawRoundedRect(chip, 3, 3)
         p.setFont(lf)
-        p.setPen(_dim(pal.fg_dim, 1.0))
-        p.drawText(QRectF(x_right - btw + 4, by - 8, btw - 8, 15),
-                   Qt.AlignLeft | Qt.AlignVCenter, btxt)
+        p.setPen(QColor(pal.fg_dim))
+        p.drawText(chip.adjusted(5, 0, -5, 0), Qt.AlignLeft | Qt.AlignVCenter, btxt)
 
         # ---- y scale in the gutter, run axis underneath
         p.setFont(lf)
         p.setPen(QColor(pal.fg_dim))
+        # hi_txt/lo_txt, not self._fmt.format: the widening loop above can
+        # centre a hairline range on zero, and raw format() prints its low end
+        # "-0%" — a signed zero on the axis reads as a rendering bug.
         p.drawText(QRectF(6, ypix(float(grid_rows - 1)) - 7, gutter - 10, 14),
-                   Qt.AlignRight | Qt.AlignVCenter, self._fmt.format(hi))
+                   Qt.AlignRight | Qt.AlignVCenter, hi_txt)
         p.drawText(QRectF(6, ypix(0.0) - 7, gutter - 10, 14),
-                   Qt.AlignRight | Qt.AlignVCenter, self._fmt.format(lo))
+                   Qt.AlignRight | Qt.AlignVCenter, lo_txt)
         p.setPen(QPen(_dim(pal.border, 1.0), 1, Qt.DotLine))
         p.drawLine(QPointF(x_left, y_bot + 2), QPointF(x_right, y_bot + 2))
         p.setPen(QColor(pal.fg_dim))
-        left_txt = f"run 1 · {self._fmt.format(src[0])}"
-        # The axis says what the picture is: two runs are a segment between two
-        # marks, not a trend anyone should read a direction off.
-        right_txt = ("2 runs · segment" if segment
-                     else f"run {n} · newest" if n <= ncols
-                     else f"{n} runs · {ncols} columns")
+        # The axis says what the picture is, and never names a run it cannot
+        # identify — run_axis_text owns both rules.
+        left_txt, right_txt = self.run_axis_text(ncols)
         p.drawText(QRectF(x_left, h - _AXIS_H, (x_right - x_left) / 2, _AXIS_H - 1),
                    Qt.AlignLeft | Qt.AlignVCenter, left_txt)
         p.drawText(QRectF(x_left + (x_right - x_left) / 2, h - _AXIS_H,
