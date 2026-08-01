@@ -145,11 +145,34 @@ class _CheckRow(QFrame):
             self.fix_btn.setEnabled(False)
             self.fix_btn.setText("Applying…")
 
+    # `SystemCheckup.apply_fix` turns any exception into "fix failed: …" and
+    # hands it back through the SAME channel as a success, so the outcome
+    # string is the only thing that knows which happened.
+    FAILED_PREFIX = "fix failed"
+
     def show_outcome(self, msg: str) -> None:
+        """Report what the fix actually did — including that it did not work.
+
+        This used to set the detail text, disable the button and label it
+        "Applied" unconditionally, and never touch `result.status` or the
+        status dot: a pixel-exact diff of the dot before and after a real fix
+        showed 0 of 360 pixels changing. So a FAILED fix rendered as a green
+        "Applied" over an unchanged amber dot, and success and failure
+        differed by one sentence of body text. On an app whose whole rule is
+        never to claim something it has not measured, that is the wrong thing
+        to put in a release.
+        """
+        ok = not msg.lower().startswith(self.FAILED_PREFIX)
         self.detail.setText(msg)
+        self.result.status = "ok" if ok else "bad"
+        self._dot.setText(_STATUS_DOT.get(self.result.status, "○"))
+        self.restyle()
         if hasattr(self, "fix_btn"):
-            self.fix_btn.setEnabled(False)
-            self.fix_btn.setText("Applied")
+            # A failure leaves the button live: the cause is usually
+            # transient (a permission prompt declined, the game running) and
+            # re-running is the obvious next move.
+            self.fix_btn.setEnabled(not ok)
+            self.fix_btn.setText("Applied" if ok else "Retry")
 
 
 class OptimizerWindow(QWidget):

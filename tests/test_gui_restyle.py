@@ -233,3 +233,34 @@ def test_shutdown_waits_for_a_running_fix(qapp, opt):
     opt.shutdown()
     assert not opt._fix.isRunning()
     assert opt._scan is None or not opt._scan.isRunning()
+
+
+def test_a_failed_fix_does_not_render_as_applied(qapp, opt, monkeypatch):
+    """SystemCheckup.apply_fix turns any exception into "fix failed: …" and
+    returns it through the SAME channel as a success, so the outcome string
+    is the only thing that knows which happened.
+
+    show_outcome used to disable the button, label it "Applied" and never
+    touch result.status or the dot — a pixel diff of the dot before and after
+    a real fix showed 0 of 360 pixels changing. A failure therefore rendered
+    as a green "Applied" over an unchanged amber dot.
+    """
+    from kovadapt.gui import theme
+    from kovadapt.gui.optimizer_window import _status_color
+
+    ok_row = _row(opt, "mouse_accel")
+    bad_row = _row(opt, "gamedvr")
+
+    ok_row.show_outcome("mouse_accel applied")
+    assert ok_row.result.status == "ok"
+    assert ok_row.fix_btn.text() == "Applied"
+    assert not ok_row.fix_btn.isEnabled()
+    assert _status_color("ok") in ok_row._dot.styleSheet()
+    assert theme.current().good in ok_row._dot.styleSheet()
+
+    bad_row.show_outcome("fix failed: Access is denied")
+    assert bad_row.result.status == "bad", "a failure was recorded as success"
+    assert bad_row.fix_btn.text() != "Applied"
+    assert bad_row.fix_btn.isEnabled(), "a transient failure must be retryable"
+    assert theme.current().bad in bad_row._dot.styleSheet()
+    assert "Access is denied" in bad_row.detail.text()
