@@ -424,16 +424,20 @@ def test_a_whole_blink_renders_and_the_eye_comes_back(qapp):
 
 
 # ---------------------------------------------------------------- watching
-def test_watching_lifts_the_catchlights_and_calms_the_wander(qapp):
+def test_watching_calms_the_wander(qapp):
+    """Watching used to ALSO lift the glint catchlights. With the glint role
+    removed from the art there is nothing to lift, and the lift was not moved
+    onto the iris — so watching must now leave the colours untouched and show
+    up only in the wander and the blink cadence. Pinned in both directions,
+    because a lift that silently returned would be a claim about the session
+    that this layer is explicitly not allowed to make."""
     win, bd = _backdrop()
-    glints = [i for i, (_p, _s, c) in enumerate(bd._live) if c.role == "glint"]
-    assert glints
+    assert all(c.role == "iris" for _p, _s, c in bd._live)
     bd.set_session(accuracy=0.7)
-    off = [bd._pen_list(0)[i].alphaF() for i in glints]
+    off = [c.alphaF() for c in bd._pen_list(0)]
     bd.set_session(accuracy=0.7, watching=True)
-    on = [bd._pen_list(0)[i].alphaF() for i in glints]
-    assert all(b >= a - 1e-9 for a, b in zip(off, on))
-    assert any(b > a for a, b in zip(off, on))
+    on = [c.alphaF() for c in bd._pen_list(0)]
+    assert off == on, "watching changed the pens; it has no colour left to move"
     assert bkd._WATCH_WANDER < 1.0            # a fixating eye drifts less
     win.deleteLater()
 

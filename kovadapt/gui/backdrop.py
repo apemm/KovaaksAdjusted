@@ -2,10 +2,10 @@
 
 Three layers — a big ASCII eye off-center and two depths of drifting glyph
 dust — slide at different rates toward the cursor (plus a slow ambient
-wander). Everything except the iris and glints is rendered once into a base
+wander). Everything except the iris is rendered once into a base
 pixmap (and the reticle into a small overlay pixmap); each animation frame
 Source-blits the base into a reusable frame pixmap, redraws only the few
-hundred live iris/glint glyphs, re-blits the reticle, and blinks: the eye's
+hundred live iris glyphs, re-blits the reticle, and blinks: the eye's
 interior is erase-composited between the resting lid parabolas and the
 moving margins (ascii_art.blink_lid_paths), then the lids are drawn AS
 CHARACTERS from ascii_art.blink_cells — the same visual style as the
@@ -91,7 +91,7 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QPainter,
 from . import ascii_art, motion, theme
 
 _GLYPHS = ".:*+#@"
-_LIVE_ROLES = ("iris", "glint")
+_LIVE_ROLES = ("iris",)
 # height / width of the rendered stencil, from its grid and cell aspect
 _EYE_ASPECT = ascii_art.ROWS * ascii_art._ASPECT / ascii_art.COLS
 
@@ -216,10 +216,14 @@ _BLINK_JITTER = (0.95, 1.10)        # per-blink duration spread
 _DUR_BAND = (0.12, 0.30)
 _BLINK_SEED = 0x5EED1D              # fixed: the track is reproducible
 
-# Watching lifts the catchlights a touch — an eye on task. Deliberately at
-# the edge of perception: the state is carried by the pupil and the blink
-# cadence, and this only has to keep the two agreeing.
-_GLINT_ALERT = 1.14
+# Watching used to lift the catchlights a touch. The glint role is gone (see
+# ascii_art: the eye had two different irises depending on which caller asked
+# for the stencil), so there is nothing left to lift and the lift is not
+# reinstated on the iris. That is a real, if tiny, loss of one redundant cue
+# — by the module docstring's own measurements it moved the composited
+# footprint by a fraction of the blink's 1.10%, i.e. below anything a viewer
+# could report — and the state is still carried by the pupil and the blink
+# cadence, which is what the comment already said was doing the work.
 _WATCH_WANDER = 0.5     # ambient wander shrinks while fixating on a task
 
 _LID_LEVELS = 24        # lid alphas bucketed so one QPen serves hundreds
@@ -303,7 +307,7 @@ class Backdrop:
         # is a valid value: motion.level(None) is FULL, which is exactly the
         # behaviour the backdrop had before it took a Settings at all.
         self._s = settings
-        self._base: QPixmap | None = None      # eye minus iris/glint/reticle
+        self._base: QPixmap | None = None      # eye minus iris/reticle
         self._overlay: QPixmap | None = None   # reticle + hub, re-blit on top
         self._frame: QPixmap | None = None     # base + live cells, per frame
         self._live: list[tuple[QPointF, QStaticText, ascii_art.Cell]] = []
@@ -339,7 +343,6 @@ class Backdrop:
         self._pupil_key = -1
         self._rads: np.ndarray | None = None      # per live cell
         self._iris_mask: np.ndarray | None = None
-        self._gain_alert: np.ndarray | None = None
         self._fs: np.ndarray | None = None        # saturation factor per cell
         self._fv: np.ndarray | None = None        # value factor per cell
         self._rng: random.Random | None = None
@@ -502,7 +505,7 @@ class Backdrop:
             s0, v0 = ascii_art._PUPIL_S, ascii_art._PUPIL_V
             fs = (s0 + (1.0 - s0) * want) / (s0 + (1.0 - s0) * dim0)
             fv = (v0 + (1.0 - v0) * want) / (v0 + (1.0 - v0) * dim0)
-            # only the iris is a ring around a core; glints keep their own
+            # only the iris is a ring around a core (see _iris_mask)
             self._fs = np.where(self._iris_mask, fs, 1.0)[:, None]
             self._fv = np.where(self._iris_mask, fv, 1.0)[:, None]
         self._pen_key = None                    # pens are stale
@@ -618,7 +621,7 @@ class Backdrop:
         # QStaticText caches each glyph's layout once: ~9x faster per frame
         # than drawText(rect, flags) while anchoring the same top-left corner
         self._live = []
-        rads, iris, gain = [], [], []
+        rads, iris = [], []
         for c in ascii_art.stencil():
             if c.role not in _LIVE_ROLES:
                 continue
@@ -628,10 +631,13 @@ class Backdrop:
                 (self._cell_pt[c.row * ascii_art.COLS + c.col], st, c))
             rads.append(c.rad)
             iris.append(c.role == "iris")
-            gain.append(1.0 if c.role == "iris" else _GLINT_ALERT)
         self._rads = np.asarray(rads, dtype=float)
+        # Every live cell is an iris cell now that the glint role is gone, so
+        # this mask is all-True. It is kept rather than dropped because it is
+        # what _refresh_pupil uses to say "the pupil factors apply to the ring
+        # around the core, not to everything live" — a distinction that comes
+        # back the moment any second live role does.
         self._iris_mask = np.asarray(iris, dtype=bool)
-        self._gain_alert = np.asarray(gain, dtype=float)
         # The lid plans hold pixel geometry and cell origins, so they die with
         # the size. The COLOUR table does not: loop_cell_color reads the
         # stencil, which is a fixed COLS x ROWS grid, so the table is a pure
@@ -691,9 +697,15 @@ class Backdrop:
 
     def _pen_list(self, step: int) -> list[QColor]:
         """This frame's pen per live cell: the loop colour, then the pupil
-        and alert factors. Memoized on (step, pupil, watching) — a steady
-        pupil makes a whole loop of frames free."""
-        key = (step, self._pupil_key if self._session else -1, self._watching)
+        factors. Memoized on (step, pupil) — a steady pupil makes a whole
+        loop of frames free.
+
+        `watching` is no longer part of the key: it only ever entered the
+        pens through the glint catchlight lift, and with the glint role gone
+        it changes nothing here. Leaving it in would throw the whole pen
+        cache away every time a watch session started or stopped, for an
+        identical result."""
+        key = (step, self._pupil_key if self._session else -1)
         if key == self._pen_key:
             return self._pens
         rgba = self._rgba_at(step)
@@ -710,8 +722,6 @@ class Backdrop:
                 v = rgb.max(axis=1, keepdims=True)
                 rgb = np.clip((v - (v - rgb) * self._fs) * self._fv, 0.0, 1.0)
             alpha = rgba[:, 3]
-            if self._watching:
-                alpha = np.clip(alpha * self._gain_alert, 0.0, 1.0)
             pens = [QColor.fromRgbF(r, g, b, a)
                     for (r, g, b), a in zip(rgb.tolist(), alpha.tolist())]
         self._pen_key, self._pens = key, pens
@@ -779,7 +789,7 @@ class Backdrop:
 
     def _render_frame(self) -> None:
         """Compose one live frame at the current loop phase: base blit, the
-        live iris/glint glyphs, the reticle overlay, the blink wedges."""
+        live iris glyphs, the reticle overlay, the blink wedges."""
         pm = self._frame
         step = int(round(self._loop / ascii_art.LOOP_T * _STEPS)) % _STEPS
         pens = self._pen_list(step)

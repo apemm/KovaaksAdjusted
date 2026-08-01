@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from kovadapt.gui import ascii_art  # noqa: E402
+from kovadapt.gui import backdrop as bkd  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +45,8 @@ INK = QColor("#dcdee6")
 
 
 def _live_cells():
-    cells = [c for c in ascii_art.stencil() if c.role in ("iris", "glint")]
-    assert cells, "stencil must contain live iris/glint cells"
+    cells = [c for c in ascii_art.stencil() if c.role in bkd._LIVE_ROLES]
+    assert cells, "stencil must contain live cells"
     return cells
 
 
@@ -97,16 +98,13 @@ def test_gamer_rainbow_rotates_exactly_one_cycle_per_loop():
     assert abs((h_half - h0) % 1.0 - 0.5) < 1e-3
 
 
-def test_glints_twinkle_out_of_phase():
-    glints = [c for c in _live_cells() if c.role == "glint"]
-    left = next(c for c in glints if c.col < (ascii_art.COLS - 1) / 2.0)
-    right = next(c for c in glints if c.col > (ascii_art.COLS - 1) / 2.0)
-    T = ascii_art.LOOP_T
-    la = ascii_art.loop_cell_color(left, T / 8, is_dark=True, iris_hue=0.62,
-                                   ink=INK).alphaF()
-    ra = ascii_art.loop_cell_color(right, T / 8, is_dark=True, iris_hue=0.62,
-                                   ink=INK).alphaF()
-    assert la != ra                        # one swells while the other fades
+def test_the_backdrop_has_no_highlight_cells_left_to_animate():
+    """The twin glints used to twinkle out of phase here. The glint role is
+    gone from the art (one iris everywhere), so what is pinned now is its
+    absence — including from the live set, which is what the loop animates."""
+    assert not [c for c in ascii_art.stencil() if c.role == "glint"]
+    assert bkd._LIVE_ROLES == ("iris",)
+    assert all(c.role == "iris" for c in _live_cells())
 
 
 # ----------------------------------------------------------------- blink
@@ -227,6 +225,6 @@ def test_backdrop_rebuilds_on_theme_and_resize_notify(qapp):
 
 def test_exclude_roles_strips_everything(qapp):
     pm = ascii_art.render_pixmap(
-        200, exclude_roles=("iris", "glint", "outline", "lash", "shade",
+        200, exclude_roles=("iris", "outline", "lash", "shade",
                             "reticle", "hub"))
     assert not any(bytes(pm.toImage().constBits()))    # fully transparent

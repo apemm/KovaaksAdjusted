@@ -125,8 +125,8 @@ def test_every_beat_still_fires_in_order_inside_the_window(logo, art):
         ("blink", art.BLINK_T),
         ("blink shut", art.BLINK_T + art.BLINK_CLOSE),
         ("blink reopened", logo._BLINK_END),
-        ("gleam", art.GLEAM_T),
-        ("gleam swept", art.GLEAM_T + art.GLEAM_LEN),
+        ("crosshair strikes", art.RETICLE_T),
+        ("crosshair steady", art.RETICLE_T + art.RETICLE_LEN),
         ("breathe", art.BREATHE_T),
         ("settled", art.TOTAL),
     ]
@@ -144,11 +144,76 @@ def test_no_beat_is_crushed_below_a_couple_of_frames(logo, art):
         "ignition -> pupil": (art._SPARK, art.PUPIL_T0),
         "fill": (art.PUPIL_T0, art.BLINK_T),
         "blink": (art.BLINK_T, logo._BLINK_END),
-        "gleam": (art.GLEAM_T, art.GLEAM_T + art.GLEAM_LEN),
+        "crosshair strike": (art.RETICLE_T, art.RETICLE_T + art.RETICLE_LEN),
     }
     for name, (c0, c1) in spans.items():
         seconds = _wall_of(logo, c1) - _wall_of(logo, c0)
         assert seconds > 4 * 0.033, f"{name} collapsed to {seconds:.3f}s"
+
+
+def test_the_crosshair_flickers_rather_than_fades(art):
+    """A fade is monotonic; a flicker is not. That is the whole difference
+    Arjun asked for, so it is the thing worth pinning: the level must go DOWN
+    again after going up, at least twice, and must reach full dark after
+    first lighting — a tube that catches, drops out, and catches again."""
+    t0, t1 = art.RETICLE_T, art.RETICLE_T + art.RETICLE_LEN
+    xs = [t0 + i * 0.005 for i in range(int((t1 - t0) / 0.005) + 1)]
+    lv = [art.reticle_flicker(x) for x in xs]
+
+    assert art.reticle_flicker(t0 - 0.01) == 0.0, "lit before its cue"
+    assert lv[0] > 0.0, "the strike must begin lit — it does not ramp in"
+
+    drops = sum(1 for a, b in zip(lv, lv[1:]) if b < a - 1e-9)
+    assert drops >= 2, f"only {drops} downward steps — that is a fade"
+    lit_then_dark = [b for a, b in zip(lv, lv[1:]) if a > 0.4 and b == 0.0]
+    assert lit_then_dark, "never fully drops out; a flicker must cut to black"
+    assert max(lv) > 1.0, "no overshoot at the moment it holds"
+
+
+def test_the_crosshair_holds_steady_once_struck(art):
+    """It settles ON and stays on — an opening that ends mid-flicker would
+    read as a fault rather than a finish."""
+    end = art.RETICLE_T + art.RETICLE_LEN
+    for t in (end, end + 0.5, end + 5.0, 60.0):
+        assert art.reticle_flicker(t) == 1.0, t
+
+
+def test_no_flicker_step_is_shorter_than_two_frames(art):
+    """The splash paints at 33 ms. A step shorter than that gets sampled at
+    an arbitrary phase and some steps would simply never be drawn — which
+    looks like dropped frames, not like a strike. Two frames is the floor.
+
+    This is also why the crosshair sits after logo._WARP's last knot: at the
+    old 0.8x compression these steps would each lose a fifth of their length.
+    """
+    ats = [at for at, _ in art._FLICKER]
+    gaps = [b - a for a, b in zip(ats, ats[1:])]
+    assert gaps, "the flicker table has no steps"
+    assert min(gaps) >= 2 * 0.033 - 1e-9, f"shortest step {min(gaps):.3f}s"
+
+
+def test_the_whole_crosshair_shares_one_level(art):
+    """It strikes whole. If reticle cells had per-cell timings the shape
+    would appear to be drawn in, which is exactly what was asked against."""
+    ret = [c for c in art.stencil() if c.role in ("reticle", "hub")]
+    assert len(ret) > 20, "no crosshair in the stencil"
+    for t in (art.RETICLE_T + 0.02, art.RETICLE_T + 0.21,
+              art.RETICLE_T + 0.55, art.RETICLE_T + 2.0):
+        levels = {round(art.led_state(c, t), 9) for c in ret}
+        assert len(levels) == 1, f"crosshair not uniform at t={t}: {levels}"
+
+
+def test_the_eye_has_no_highlight_cells_anywhere(art):
+    """The glint role is gone from the art entirely — one iris, everywhere.
+
+    Pinned at both resolutions because the two used to disagree: the splash
+    asked for an intact iris plus overlay glints while every static render
+    got the highlights subtracted out of the fiber detail.
+    """
+    for cols, rows in ((art.COLS, art.ROWS), (255, 121)):
+        roles = {c.role for c in art.stencil(cols, rows)}
+        assert "glint" not in roles, f"{cols}x{rows} still emits glint cells"
+        assert "iris" in roles and "reticle" in roles
 
 
 def test_pupil_resolves_before_the_blink_and_well_before_the_end(logo, art):

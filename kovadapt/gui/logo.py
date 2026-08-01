@@ -6,11 +6,19 @@ running a high-resolution build of gui/ascii_art.py's character stencil.
 Choreography: a heartbeat gathering at the pupil almost from the first
 frame — lightning ignition along seeded iris fibers — the glow escapes
 the rim into lids, lashes and shading — the completed eye blinks once,
-slow and deliberate — on reopen a specular flash — a slanted reflection
-streak — glances across the whole eye, and the twin glints shimmer in
-behind it before settling into a live twinkle while the eye breathes.
-There is no crosshair in the opening (the reticle cells stay in the
-stencil for static renders, excluded here by role).
+slow and deliberate — and on reopen the red crosshair FLICKERS on and
+holds, which is where the opening ends.
+
+The crosshair is the finale because what came before it was not one. The
+opening used to close on a specular reflection streak sweeping the eye,
+lighting two glints that then twinkled; those highlights have been removed
+from the art entirely (see ascii_art — they described the iris differently
+depending on which caller asked for the stencil). The crosshair was already
+in the stencil for static renders and was the one thing the opening
+excluded. Now it is the payoff, drawn in the app's own reticle red, and it
+flickers rather than fades: ascii_art.reticle_flicker is a hard-stepped
+strike, so the shape is whole on its first lit frame and only its power is
+unsteady.
 
 The whole show runs ~5 s of wall clock. ascii_art owns the beat times and
 the live backdrop shares that module, so the tightening is done here, on a
@@ -68,31 +76,36 @@ from . import ascii_art
 _WORD = "kovadapt"
 _BG = QColor("#0a0a0e")
 _INK = QColor("#d8dae2")
+_RETICLE = QColor(ascii_art._RETICLE_RED)   # the app's own crosshair red
 _BG_F = np.array([_BG.redF(), _BG.greenF(), _BG.blueF()])
 _INK_F = np.array([_INK.redF(), _INK.greenF(), _INK.blueF()])
 
 _BLINK_END = (ascii_art.BLINK_T + ascii_art.BLINK_CLOSE
               + ascii_art.BLINK_HOLD + ascii_art.BLINK_OPEN)      # 5.85
-_GLEAM_END = ascii_art.GLEAM_T + ascii_art.GLEAM_LEN + 0.30       # 7.00
 
 # ---- the opening clock: wall seconds -> choreography seconds --------------
-# ascii_art owns every beat time (_SPARK, PUPIL_T0/T1, BLINK_T, GLEAM_T,
+# ascii_art owns every beat time (_SPARK, PUPIL_T0/T1, BLINK_T, RETICLE_T,
 # BREATHE_T, TOTAL) and the live backdrop shares that module, so tightening
 # the opening cannot mean moving those constants. The splash instead drives
 # the field on a WARPED clock: a piecewise-linear map whose knots are the
 # beats themselves. Every beat still fires, in order, keeping its own
 # internal shape — only the air between them is squeezed, and each beat gets
-# its own rate, so the blink and the reflection flash surrender less of their
-# length than the fill does. The tail runs at 1:1 (the breathing is a loop,
-# not a beat, and warping it would leave a visible speed seam at the knot).
+# its own rate, so the blink surrenders less of its length than the fill does.
+#
+# The LAST knot is the crosshair's cue, deliberately, so everything from
+# RETICLE_T onward runs at 1:1. The flicker is a hard-stepped table whose
+# steps are already close to the 33 ms frame — compressing it, as the old
+# final knot did at 0.8x, would have shortened every step by a fifth and put
+# some of them under a single frame, where they simply never get drawn. The
+# breathing tail wants 1:1 for its own reason anyway: it is a loop, not a
+# beat, and warping it leaves a visible speed seam at the knot.
 _WARP: tuple[tuple[float, float], ...] = (
     (0.00, 0.00),
     (0.95, ascii_art._SPARK),          # 1.15  heartbeat gathers, pupil ignites
     (1.85, ascii_art.PUPIL_T0),        # 2.60  bolts have raced the fibers
     (2.90, ascii_art.BLINK_T),         # 4.55  fill escapes the rim, echo, pupil
     (3.77, _BLINK_END),                # 5.85  the deliberate blink
-    (3.87, ascii_art.GLEAM_T),         # 6.00  reflection flash starts
-    (4.67, _GLEAM_END),                # 7.00  flash + glints in, eye settles
+    (3.87, ascii_art.RETICLE_T),       # 6.00  the crosshair strikes; 1:1 after
 )
 
 # The heartbeat is the opening's FIRST beat and it plays alone on a
@@ -163,10 +176,10 @@ class _EyeField:
 
     def __init__(self, cols: int, rows: int) -> None:
         self.cols, self.rows = cols, rows
-        cells = ascii_art.stencil(cols, rows, subtract_glints=False)
+        cells = ascii_art.stencil(cols, rows)
         eye = [c for c in cells
                if c.role in ("iris", "outline", "lash", "shade")]
-        gls = [c for c in cells if c.role == "glint"]
+        ret = [c for c in cells if c.role in ("reticle", "hub")]
         half = cols / 2.0
         code = {"iris": 0, "outline": 1, "lash": 2, "shade": 3}
         n = len(eye)
@@ -233,29 +246,26 @@ class _EyeField:
             self._iris,
             ascii_art._PUPIL_V + (1.0 - ascii_art._PUPIL_V) * pdim, 1.0)
 
-        # ---- the twin glints: born from the gleam sweep ------------------
-        m = len(gls)
-        gcol = np.fromiter((c.col for c in gls), dtype=float, count=m)
-        self._gg = np.fromiter((c.ink for c in gls), dtype=float, count=m)
-        self._gseed = np.fromiter((c.seed for c in gls), dtype=float, count=m)
-        gx = ((gcol - (cols - 1) / 2.0) / half) / ascii_art._RI
-        self._g_left = gx < 0.0
-        xn = np.clip(gx, -1.3, 1.3)
-        self._g_ign = ascii_art.GLEAM_T \
-            + ascii_art.GLEAM_LEN * (xn + 1.3) / 2.6
+        # ---- the crosshair: the closing beat -----------------------------
+        # It is drawn on TOP of the eye and hides whatever eye cell sits at
+        # the same position, the way the static reticle overlay does. There
+        # is no per-cell ignition schedule here on purpose: the crosshair
+        # strikes whole (ascii_art.reticle_flicker), so one scalar drives
+        # every cell and the shape can never appear to be drawn in.
         pos = {(int(cc), int(rr)): i
                for i, (cc, rr) in enumerate(zip(col, row))}
-        self._g_under = np.fromiter(
-            (pos.get((c.col, c.row), -1) for c in gls), dtype=int, count=m)
-        self._gcells = gls
+        self._r_under = np.fromiter(
+            (pos.get((c.col, c.row), -1) for c in ret), dtype=int,
+            count=len(ret))
+        self._rcells = ret
 
         # geometry + glyph caches, filled by prepare()
         self._cw = self._ch = 1.0
         self._st: dict[str, QStaticText] = {}
         self._pts: list[QPointF] = []
         self._sts: list[QStaticText] = []
-        self._gpts: list[QPointF] = []
-        self._gsts: list[QStaticText] = []
+        self._rpts: list[QPointF] = []
+        # (crosshair glyphs are drawn directly; see prepare)
         self._lid_qc: dict[tuple[str, int], QColor] = {}
         # Every cell's origin, flat (r * cols + c). The lids can cover most of
         # a 381x181 grid, and building ~21k QPointF per blink frame cost more
@@ -280,9 +290,11 @@ class _EyeField:
         self._pts = [QPointF(c * cell_w, r * cell_h)
                      for c, r in zip(self._col, self._row)]
         self._sts = [self._st_of(ch) for ch in self._chs]
-        self._gpts = [QPointF(c.col * cell_w, c.row * cell_h)
-                      for c in self._gcells]
-        self._gsts = [self._st_of(c.ch) for c in self._gcells]
+        # The crosshair draws through drawText, not the QStaticText cache: it
+        # needs a bold face and a sub-pixel second strike, and a QStaticText
+        # binds the layout it was built with.
+        self._rpts = [QPointF(c.col * cell_w, c.row * cell_h)
+                      for c in self._rcells]
 
     # ------------------------------------------------------------- frame
     def paint(self, p: QPainter, t: float) -> None:
@@ -326,22 +338,6 @@ class _EyeField:
         over = np.clip(b - 1.0, 0.0, 0.5)[:, None]
         rgb = rgb + (1.0 - rgb) * over
 
-        # ---- the reflection flash: a slanted specular streak glancing
-        #      across the whole eye, sharp and quick like light catching a
-        #      curved lens; the glints shimmer in behind it ---------------
-        g_end = ascii_art.GLEAM_T + ascii_art.GLEAM_LEN + 0.30
-        if ascii_art.GLEAM_T <= t <= g_end:
-            prog = (t - ascii_art.GLEAM_T) / (g_end - ascii_art.GLEAM_T)
-            env = math.sin(math.pi * min(prog, 1.0)) ** 0.7  # fast rise, linger
-            band = -1.55 + prog * 3.1
-            # slant the streak (u = x tilted by y) so it reads as a reflection
-            # sliding across a domed surface, not a flat vertical wipe
-            u = (self._x - 0.5 * self._y) / ascii_art._RI
-            streak = env * np.exp(-((u - band) / 0.22) ** 2)
-            on_eye = self._iris | (rad <= 1.14)   # iris + onto the rim
-            boost = np.where(on_eye, streak, 0.0)
-            rgb = rgb + (1.0 - rgb) * (0.95 * boost[:, None])
-
         visible = b > 0.02
         if k > 0.0:
             um, lm = ascii_art.lid_margins(self._x, k)
@@ -351,20 +347,10 @@ class _EyeField:
                    & (self._y <= -self._rest_u - 0.01))
             visible &= ~covered
 
-        # glint intensities (born left-to-right as the band crosses them)
-        inten = None
-        if t >= ascii_art.GLEAM_T:
-            gage = t - self._g_ign
-            ga = np.clip(gage / 0.12, 0.0, 1.0)
-            ga = ga * np.where((gage > 0.0) & (gage < 0.30),
-                               1.35 - 0.35 * (gage / 0.30), 1.0)
-            tw = 0.86 + 0.14 * np.sin(
-                2.0 * math.pi * 0.5 * t
-                + np.where(self._g_left, 0.0, math.pi)) \
-                + 0.05 * np.sin(2.0 * math.pi * 1.1 * t + self._gseed * 6.0)
-            ga = ga * np.where(gage > 0.35, tw, 1.0)
-            inten = np.clip(ga * (0.55 + 0.45 * self._gg), 0.0, 1.0)
-            hide = self._g_under[(ga > 0.5) & (self._g_under >= 0)]
+        # the crosshair strike: one level for every reticle cell, hard-stepped
+        flick = ascii_art.reticle_flicker(t)
+        if flick > 0.0:
+            hide = self._r_under[self._r_under >= 0]
             visible[hide] = False
 
         # ---- draw: one cached QStaticText per glyph ----------------------
@@ -395,11 +381,49 @@ class _EyeField:
                 p.setPen(qc)
                 p.drawStaticText(pts_all[rr * cols + cc], st)
 
-        if inten is not None:                   # the glints, on top
-            for j in np.nonzero(inten > 0.05)[0].tolist():
-                v = float(inten[j])
-                p.setPen(QColor.fromRgbF(*(_BG_F + (1.0 - _BG_F) * v)))
-                p.drawStaticText(self._gpts[j], self._gsts[j])
+        if flick > 0.0:                         # the crosshair, on top
+            # One pen for the whole cross — every cell is at the same level,
+            # which is what makes it read as a tube striking rather than as
+            # something being drawn. Below 1.0 the red is mixed DOWN toward
+            # the stage (a dim tube, not a transparent one); the overshoot
+            # above 1.0 is mixed UP toward white, matching the convention
+            # led_state's _pop uses for the eye.
+            base = np.array([_RETICLE.redF(), _RETICLE.greenF(),
+                             _RETICLE.blueF()])
+            if flick <= 1.0:
+                rgb_r = _BG_F + (base - _BG_F) * flick
+            else:
+                rgb_r = base + (1.0 - base) * min(flick - 1.0, 1.0)
+            pen = QColor.fromRgbF(*np.clip(rgb_r, 0.0, 1.0))
+
+            # Backing + bold double-strike, exactly what paint_grid does for
+            # the static reticle. Without it the crosshair is a ONE CELL wide
+            # hairline laid over the most detailed, highest-contrast part of
+            # the picture, and it simply does not read — rendered at 255x121
+            # it was invisible against the iris even at full strike. The
+            # backing is what separates it from the fibers; the double-strike
+            # is what gives a 4.7 px glyph enough weight to be a line.
+            cw, chh = self._cw, self._ch
+            back = QColor(_BG)
+            back.setAlphaF(0.55 * min(flick, 1.0))
+            p.setPen(Qt.NoPen)
+            p.setBrush(back)
+            for pt in self._rpts:
+                p.drawRoundedRect(
+                    QRectF(pt.x() - cw * 0.15, pt.y(), cw * 1.3, chh * 1.05),
+                    2, 2)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(pen)
+            plain = p.font()
+            bold = QFont(plain)
+            bold.setBold(True)
+            p.setFont(bold)
+            for pt, c in zip(self._rpts, self._rcells):
+                r = QRectF(pt.x(), pt.y(), cw * 1.8, chh * 1.25)
+                p.drawText(r, Qt.AlignLeft | Qt.AlignTop, c.ch)
+                r.translate(0.7, 0.0)
+                p.drawText(r, Qt.AlignLeft | Qt.AlignTop, c.ch)
+            p.setFont(plain)
 
 
 class SplashScreen(QWidget):

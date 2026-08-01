@@ -5,20 +5,29 @@ converted to characters through the Bourke density ramp — 141x67 cells by
 default, supersampled, intensity-driven alpha; stencil() also builds
 higher-resolution grids for the splash. The iris is macro-photography
 grade: a deep soft-edged pupil, a wavy collarette ring, two layers of
-radial fiber striations with crypts between them, a dark limbal ring,
-ambient shadow from the upper lid, and layered highlights. On top of the
-rainbow hue that runs around the iris, every cell carries its own seeded
-color detail — per-fiber-bundle hue jitter, radial color banding,
-heterochromatic flecks, value jitter — so the iris never reads as one
-smooth wheel.
+radial fiber striations with crypts between them, a dark limbal ring, and
+ambient shadow from the upper lid. On top of the rainbow hue that runs
+around the iris, every cell carries its own seeded color detail — per-
+fiber-bundle hue jitter, radial color banding, heterochromatic flecks,
+value jitter — so the iris never reads as one smooth wheel.
 
-Opening choreography (no crosshair — the reticle cells remain in the
-stencil for static renders, and the opening excludes them): darkness, a
-heartbeat gathering at the pupil, lightning ignition along seeded fiber
-angles, the glow escaping the rim into lids/lashes/shading, one slow
-deliberate blink (lids as rows of characters with lash silhouettes — see
-blink_cells), then a gleam sweeping the iris that settles into the twin
-glints, which keep a live twinkle while everything breathes.
+There are NO specular highlights, and that is a deliberate removal rather
+than an omission. They existed as four overlapping gaussians (specular,
+halo, catchlight, lower sheen) that behaved differently depending on the
+caller: for static renders they SUBTRACTED ink, carving the highlight out
+of the fiber detail, while the splash asked for an intact iris and got the
+same highlights back as separate overlay cells so they could animate in.
+One eye, two irises, and in both cases the brightest thing on screen sat
+where the detail had been erased. The iris is now described the same way
+everywhere.
+
+Opening choreography: darkness, a heartbeat gathering at the pupil,
+lightning ignition along seeded fiber angles, the glow escaping the rim
+into lids/lashes/shading, one slow deliberate blink (lids as rows of
+characters with lash silhouettes — see blink_cells), and then the red
+crosshair FLICKERS on — see reticle_flicker, which is a hard-stepped strike
+and not a fade, because the crosshair is meant to read as having been there
+all along.
 """
 
 from __future__ import annotations
@@ -96,7 +105,7 @@ class Cell:
     col: int
     row: int
     ch: str
-    role: str        # outline | lash | iris | reticle | hub | glint | shade
+    role: str        # outline | lash | iris | reticle | hub | shade
     order: float     # 0..1 within the role's animation
     hue: float       # rainbow hue for iris cells
     ink: float       # 0..1 field intensity (drives alpha / value)
@@ -178,7 +187,7 @@ def _lash_points(frac: float, curl: float, length: float) -> np.ndarray:
         + (s ** 2) * curl * np.array([tx, ty])
 
 
-def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
+def _render(cols: int, rows: int, ss: int) -> list[Cell]:
     X, Y = _grid(cols, rows, ss)
     ink = np.zeros_like(X)
 
@@ -259,21 +268,17 @@ def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
     ink = np.where(in_iris, np.maximum(ink, iris_ink), ink)
     ink = np.where(in_iris, np.maximum(ink, pupil), ink)
 
-    # ---- highlights subtract ink (light against the detail) --------------
-    g1 = np.exp(-(((DX + 0.36 * _RI) / (0.15 * _RI)) ** 2
-                  + ((DY + 0.44 * _RI) / (0.20 * _RI)) ** 2))       # specular
-    g1h = 0.45 * np.exp(-(((DX + 0.36 * _RI) / (0.30 * _RI)) ** 2
-                          + ((DY + 0.44 * _RI) / (0.40 * _RI)) ** 2))  # halo
-    g2 = 0.8 * np.exp(-(((DX - 0.50 * _RI) / (0.09 * _RI)) ** 2
-                        + ((DY - 0.52 * _RI) / (0.12 * _RI)) ** 2))  # catchlight
-    sheen = 0.22 * np.exp(-((rr - 0.72) / 0.16) ** 2) \
-        * np.clip(-np.cos(ang), 0.0, 1.0)                            # lower sheen
-    glint = np.clip(g1 + g1h + g2 + sheen, 0.0, 1.2)
-    if subtract_glints:
-        # highlights carve light out of the detail (static renders); the
-        # splash keeps the iris whole and overlays glint cells instead, so
-        # the highlight can APPEAR later as part of the animation
-        ink = np.clip(ink - glint * 0.85, 0.0, 1.0)
+    # NO HIGHLIGHTS. There were four — a specular blob, its halo, a catchlight
+    # and a lower sheen — and they carried a second, contradictory description
+    # of the same iris: in static renders they SUBTRACTED ink (carving light
+    # out of the fiber detail), while the splash kept the iris whole and
+    # overlaid separate "glint" cells so the highlight could animate in. So
+    # the eye had two different irises depending on where you met it, and the
+    # highlight read as a bright smear over detail that was missing underneath
+    # it. Removing the whole layer is what makes one iris: the fibers,
+    # collarette, crypts and limbal ring now describe it everywhere, and the
+    # opening's finale is the crosshair (see reticle_flicker) rather than a
+    # highlight arriving late.
 
     # ---- reduce to cells + classify --------------------------------------
     cell_ink = ink.reshape(rows, ss, cols, ss).mean(axis=(1, 3))
@@ -284,7 +289,6 @@ def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
     cdx, cdy = cx, cyv - _CY
     cdist = np.hypot(cdx, cdy) / _RI
     cang = np.arctan2(cdx, -cdy) % (2 * math.pi)
-    glint_cell = glint.reshape(rows, ss, cols, ss).mean(axis=(1, 3))
     fc, fr = cc.astype(float), rr_i.astype(float)
     seeds = _seed_arr(fc, fr)
 
@@ -310,22 +314,11 @@ def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
     for r in range(rows):
         for c in range(cols):
             v = float(cell_ink[r, c])
-            g = float(glint_cell[r, c])
             d = float(cdist[r, c])
             if v < _MIN_INK:
-                # the glint core has near-zero ink BY DESIGN (highlights are
-                # subtractive) — emit solid bright cells there instead of an
-                # empty hole, so the highlight reads white on dark grounds
-                if subtract_glints and g > 0.35 and d <= 1.04:
-                    ch = _RAMP[min(int((0.45 + 0.55 * g) * (len(_RAMP) - 1)),
-                                   len(_RAMP) - 1)]
-                    cells.append(Cell(c, r, ch, "glint", 0.0, 0.0, g, d,
-                                      float(seeds[r, c])))
                 continue
             ch = _RAMP[min(int(v * (len(_RAMP) - 1) + 0.5), len(_RAMP) - 1)]
-            if subtract_glints and d <= 1.04 and g > 0.5:
-                role, order, hue = "glint", 0.0, 0.0
-            elif d <= 1.02:
+            if d <= 1.02:
                 hue = float(cang[r, c]) / (2 * math.pi)
                 role, order = "iris", hue
             elif near_outline[r, c] or above_lid[r, c]:
@@ -345,20 +338,9 @@ def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
                 cells.append(Cell(c, r, ch, role, order, hue, v, d,
                                   float(seeds[r, c])))
 
-    if not subtract_glints:
-        # overlay glint cells co-located with the (whole) iris beneath —
-        # the animation crossfades between the two at each position
-        for r in range(rows):
-            for c in range(cols):
-                g = float(glint_cell[r, c])
-                if g > 0.35 and float(cdist[r, c]) <= 1.04:
-                    ch = _RAMP[min(int((0.45 + 0.55 * g) * (len(_RAMP) - 1)),
-                                   len(_RAMP) - 1)]
-                    cells.append(Cell(c, r, ch, "glint", 0.0, 0.0, g,
-                                      float(cdist[r, c]), float(seeds[r, c])))
-
-    # ---- the crosshair: overlay cells for STATIC renders (icon, backdrop
-    # reticle layer) — the opening excludes the "reticle"/"hub" roles
+    # ---- the crosshair: overlay cells drawn in _RETICLE_RED everywhere the
+    # eye appears — static renders, the live backdrop's reticle layer, AND
+    # the opening, where it is now the closing beat (see reticle_flicker)
     cc_mid = (cols - 1) // 2
     rr_mid = (rows - 1) // 2 + round(_CY * cols / 4.0)
     for r in range(rows):
@@ -376,19 +358,23 @@ def _render(cols: int, rows: int, ss: int, subtract_glints: bool) -> list[Cell]:
     return cells
 
 
-_STENCILS: dict[tuple[int, int, bool], list[Cell]] = {}
+_STENCILS: dict[tuple[int, int], list[Cell]] = {}
 
 
-def stencil(cols: int = COLS, rows: int = ROWS, *,
-            subtract_glints: bool = True) -> list[Cell]:
+def stencil(cols: int = COLS, rows: int = ROWS) -> list[Cell]:
     """The character stencil at a given grid resolution (cached). The
     default 141x67 grid feeds every static render and the live backdrop;
     the splash asks for a denser grid (supersampling drops to 2x there —
-    small cells need it less and the build must stay start-up friendly)."""
-    key = (cols, rows, subtract_glints)
+    small cells need it less and the build must stay start-up friendly).
+
+    There is ONE stencil per resolution now. It used to take a
+    `subtract_glints` flag that produced two materially different irises
+    from the same call — highlights carved out of the detail for static
+    renders, an intact iris plus overlay cells for the splash — so the eye
+    did not look like itself in two of the places it appeared."""
+    key = (cols, rows)
     if key not in _STENCILS:
-        _STENCILS[key] = _render(cols, rows, _SS if cols <= COLS else 2,
-                                 subtract_glints)
+        _STENCILS[key] = _render(cols, rows, _SS if cols <= COLS else 2)
     return _STENCILS[key]
 
 
@@ -410,9 +396,59 @@ _RETICLE_RED = "#ff3b30"
 # and Animating Eye Blinks)
 BLINK_T = 4.55
 BLINK_CLOSE, BLINK_HOLD, BLINK_OPEN = 0.38, 0.22, 0.70
-GLEAM_T = 6.0          # the reflection flash sweeps in only after the reopen
-GLEAM_LEN = 0.7        # quick — a light streak glancing across the eye
+RETICLE_T = 6.0        # the crosshair strikes only after the reopen
+RETICLE_LEN = 0.80     # how long the strike takes to settle
 BREATHE_T = 6.9
+
+# The crosshair FLICKERS in — it does not draw in, sweep in, or fade in. The
+# distinction is the whole point: a fade says "this is being created", a
+# flicker says "this was always here and the power is only now holding". So
+# the shape arrives whole on its first lit frame and the level cuts hard
+# between steps; nothing here interpolates.
+#
+# The pattern is the one a gas tube makes striking: a weak catch, a dropout,
+# a bright overshoot, two rapid stutters, then steady. It is a fixed table
+# rather than noise because the opening must be identical every launch (the
+# same reason the backdrop's blink track is seeded), and because a random
+# flicker sampled at 30 fps is as likely to look like dropped frames as like
+# a strike.
+#
+# Every segment is at least 0.07 s. The splash paints at 33 ms, so that is
+# ~2 frames minimum: shorter steps get sampled at an arbitrary phase and
+# some would simply never be drawn, which is the artifact the backdrop's
+# _DUR_BAND comment describes for lids. The flicker also deliberately sits
+# AFTER the last warp knot in logo.py, so it plays at 1:1 wall time — these
+# durations are real seconds, not choreography seconds.
+_FLICKER: tuple[tuple[float, float], ...] = (
+    (0.00, 0.55),      # the tube catches, weakly
+    (0.09, 0.00),      # and drops out
+    (0.20, 1.00),      # a full strike
+    (0.28, 0.00),
+    (0.37, 0.72),
+    (0.45, 0.10),      # nearly out, not quite
+    (0.54, 1.25),      # overshoot: the moment it holds
+    (0.63, 0.85),
+    (0.72, 1.00),      # steady from here
+)
+
+
+def reticle_flicker(t: float) -> float:
+    """Crosshair brightness 0..1.25 at choreography time t.
+
+    0 before RETICLE_T (the opening has no crosshair until the eye is open),
+    a hard-stepped strike through the table above, then a steady 1.0. Values
+    over 1.0 are an overshoot the caller is expected to clip toward white,
+    the same convention led_state uses for its own pop.
+    """
+    u = t - RETICLE_T
+    if u < 0.0:
+        return 0.0
+    level = _FLICKER[0][1]
+    for at, lv in _FLICKER:
+        if u < at:
+            break
+        level = lv
+    return level
 
 
 def splash_blink(t: float) -> float:
@@ -436,11 +472,11 @@ def splash_blink(t: float) -> float:
 def led_state(cell: Cell, t: float) -> float:
     """Brightness 0..~1.6 at time t. Out of total darkness, a spark at the
     pupil pulses rainbow outward along the iris veins; the fill escapes the
-    rim into the lids, lashes and shading; after the blink the gleam band
-    ignites the glints left to right. cell.rad is radial distance from the
-    pupil, so every role's timing is 'when the pulse reaches me'. No
-    crosshair: reticle/hub cells only get a token late timing here — the
-    opening excludes those roles outright."""
+    rim into the lids, lashes and shading; after the blink the crosshair
+    flickers on. cell.rad is radial distance from the pupil, so every role's
+    timing is 'when the pulse reaches me' — except the reticle, which has no
+    such timing because it does not travel: it strikes whole (see
+    reticle_flicker)."""
     s = cell.seed
 
     if cell.role == "iris":
@@ -457,17 +493,16 @@ def led_state(cell: Cell, t: float) -> float:
                 return 1.55 if int(age * 26) % 3 != 0 else 0.25
         else:
             lit_at = _SPARK + 0.40 + cell.rad * 0.95 + d_bolt * 0.5
-    elif cell.role == "glint":
-        # ignited by the gleam band as it sweeps the iris left to right
-        xn = ((cell.col - (COLS - 1) / 2.0) / (COLS / 2.0)) / _RI
-        lit_at = GLEAM_T + GLEAM_LEN * (min(max(xn, -1.3), 1.3) + 1.3) / 2.6
     elif cell.role in ("outline", "lash", "shade"):
         # the energy escapes the rim and keeps travelling outward
         reach = max(cell.rad - 1.0, 0.0)
         base = {"outline": 2.85, "lash": 3.0, "shade": 3.25}[cell.role]
         lit_at = base + reach * 0.55 + 0.1 * s
-    else:  # reticle/hub: static renders only; never part of the opening
-        lit_at = 3.2 + 0.3 * cell.order
+    else:
+        # reticle/hub: the crosshair does not propagate, it strikes. Every
+        # cell shares one level so the shape appears whole, which is what
+        # separates a flicker from something being drawn in.
+        return reticle_flicker(t)
     age = t - lit_at
 
     if age <= 0.0:
@@ -484,10 +519,6 @@ def led_state(cell: Cell, t: float) -> float:
     if cell.role == "iris" and 3.0 < t < 3.9:
         echo = math.exp(-((t - 3.05 - cell.rad * 0.8) / 0.12) ** 2)
         b += 0.35 * echo
-    if cell.role == "glint" and age > 0.35:
-        left = cell.col < (COLS - 1) / 2.0
-        b *= 0.86 + 0.14 * math.sin(
-            2.0 * math.pi * 0.5 * t + (0.0 if left else math.pi))
     if t > BREATHE_T:
         b *= 0.93 + 0.07 * math.sin(2.0 * math.pi * 0.35 * t + s * 1.2)
     return b
@@ -514,8 +545,8 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
     the crosshair reads against the iris detail. `iris_hue` locks the iris
     to one hue (the theme accent drives the backdrop's iris); None keeps
     the full rainbow. `exclude_roles` skips whole roles — the live
-    backdrop renders its base without the iris/glint cells and redraws
-    only those each frame."""
+    backdrop renders its base without the iris cells and redraws only
+    those each frame."""
     cw = rect.width() / COLS
     ch = rect.height() / ROWS
     font = _mono()
@@ -552,9 +583,6 @@ def paint_grid(p: QPainter, rect: QRectF, t: float | None,
                 s_mod *= 1.0 - p_mix * (1.0 - (_PUPIL_S + (1.0 - _PUPIL_S) * dim))
                 v_mod *= 1.0 - p_mix * (1.0 - (_PUPIL_V + (1.0 - _PUPIL_V) * dim))
             col = QColor.fromHsvF(hue, s_mod, v_mod)
-        elif cell.role == "glint":
-            col = QColor("#ffffff") if is_dark else QColor(ink)
-            col.setAlphaF(min(0.55 + 0.45 * cell.ink, 1.0) if is_dark else 0.35)
         elif cell.role == "shade":
             col = QColor(ink)
             col.setAlphaF(min(0.28 + 0.45 * cell.ink, 1.0))
@@ -646,7 +674,7 @@ def render_pixmap(width: int, *, is_dark: bool | None = None,
 
 
 # ------------------------------------------------------ live backdrop loop
-# The backdrop animates the iris/glints on a perfect loop. Every temporal
+# The backdrop animates the iris on a perfect loop. Every temporal
 # term below is built from integer multiples of 2*pi*phase/LOOP_T, and each
 # helper reduces phase mod LOOP_T first — so state at phase LOOP_T is
 # bit-identical to state at phase 0 (T % T == 0.0 exactly in IEEE floats).
@@ -660,10 +688,10 @@ def loop_cell_color(cell: Cell, phase: float, *, is_dark: bool,
     """Pure per-cell color for the live backdrop at loop `phase` seconds.
 
     Mirrors paint_grid's static colors, animated: a brightness ripple
-    travelling around the iris, a radial saturation breath, the two glints
-    swelling out of phase — and, when `iris_hue` is None (Gamer/rgb mode),
-    the full rainbow rotated by exactly one hue cycle per loop. Roles other
-    than iris/glint get their static ink color. Exactly periodic:
+    travelling around the iris, a radial saturation breath — and, when
+    `iris_hue` is None (Gamer/rgb mode), the full rainbow rotated by exactly
+    one hue cycle per loop. Roles other than iris get their static ink
+    color. Exactly periodic:
     loop_cell_color(c, 0) == loop_cell_color(c, LOOP_T)."""
     phase = phase % LOOP_T
     w = 2.0 * math.pi * phase / LOOP_T           # one turn per loop
@@ -684,14 +712,6 @@ def loop_cell_color(cell: Cell, phase: float, *, is_dark: bool,
         s_mod *= _PUPIL_S + (1.0 - _PUPIL_S) * dim
         v_mod *= _PUPIL_V + (1.0 - _PUPIL_V) * dim
         return QColor.fromHsvF(hue, s_mod, v_mod)
-    if cell.role == "glint":
-        # the two glints (specular left of center, catchlight right)
-        # twinkle out of phase: two gentle swells per loop each
-        left = cell.col < (COLS - 1) / 2.0
-        tw = math.sin(2.0 * w + (0.0 if left else math.pi))
-        col = QColor("#ffffff") if is_dark else QColor(ink)
-        col.setAlphaF((0.9 if is_dark else 0.35) * (0.82 + 0.18 * tw))
-        return col
     col = QColor(ink)                            # non-live roles: static
     col.setAlphaF(min(0.35 + 0.65 * cell.ink, 1.0))
     return col
