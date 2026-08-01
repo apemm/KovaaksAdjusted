@@ -2310,6 +2310,12 @@ class ChangesView(QWidget):
         file_lay.addWidget(_caption(_LEDGER_CAPTION))
 
         lay = QVBoxLayout(self)
+        # ZERO, explicitly. Every section view inherited Qt's ~9px default
+        # layout margin, while the section's own H1, its divider rule and
+        # every panel sit flush to shell._Section's column — so bare page
+        # text was the only thing indented, and lined up with nothing on the
+        # screen. The column IS the measure; panels pad their own contents.
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
         lay.addWidget(HintBar(settings, (
             "Every number on this page carries the runs behind it. A criterion "

@@ -542,6 +542,12 @@ class MLPage(QWidget):
         self.cited_ids: set[str] = set()
 
         self._lay = QVBoxLayout(self)
+        # ZERO, explicitly. Every section view inherited Qt's ~9px default
+        # layout margin, while the section's own H1, its divider rule and
+        # every panel sit flush to shell._Section's column — so bare page
+        # text was the only thing indented, and lined up with nothing on the
+        # screen. The column IS the measure; panels pad their own contents.
+        self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setSpacing(12)
         self._lay.addWidget(HintBar(settings, (
             "This page is the model documenting itself. Every part ends in a dim "

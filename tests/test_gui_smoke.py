@@ -423,3 +423,36 @@ def test_theme_switch_does_not_resurrect_a_previous_runs_coach_cards(qapp, setti
     view.restyle()
     assert view.coach_box.isHidden(), "theme switch resurrected stale Coach cards"
     assert view.coach_lay.count() == 0
+
+
+def test_no_section_view_leaves_its_page_margin_to_qt(qapp, settings):
+    """Every section's top-level layout states its horizontal margins.
+
+    None of the seven did, so each inherited Qt's ~9px default while the
+    section's own H1, its divider rule and every panel sit flush to
+    shell._Section's column — which gave one screen three different left
+    edges, with bare page text the only thing indented and lined up with
+    nothing. The column IS the measure; panels pad their own contents.
+    """
+    from kovadapt.gui.analysis_view import AnalysisView
+    from kovadapt.gui.browser import ScenarioBrowser
+    from kovadapt.gui.config_view import ConfigView
+    from kovadapt.gui.dashboard import Dashboard
+    from kovadapt.gui.optimizer_view import OptimizerView
+
+    (settings.scenarios_dir / "Alpha.sce").write_text("[Scenario]\n")
+    views = [Dashboard(settings), ScenarioBrowser(settings),
+             AnalysisView(settings), ConfigView(settings),
+             OptimizerView(settings)]
+    try:
+        for v in views:
+            m = v.layout().contentsMargins()
+            assert (m.left(), m.right()) == (0, 0), (
+                f"{type(v).__name__} indents its page by "
+                f"({m.left()}, {m.right()}) — it will not line up with the "
+                f"section header, the divider or any panel")
+    finally:
+        for v in views:
+            if hasattr(v, "shutdown"):
+                v.shutdown()
+            v.deleteLater()
