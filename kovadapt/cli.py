@@ -74,6 +74,12 @@ def cmd_generate(args) -> None:
 
     s = _settings()
     scenario = _base_scenario(args.scenario)
+    base_sce = s.scenarios_dir / f"{scenario}.sce"
+    # cmd_watch has always guarded this; cmd_generate did not, so a typo'd
+    # or missing scenario surfaced as an 11-frame FileNotFoundError traceback
+    # out of SceFile.read.
+    if not base_sce.is_file():
+        sys.exit(f"scenario file not found: {base_sce}")
     adaptive = scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
@@ -112,7 +118,13 @@ def cmd_status(args) -> None:
         cells = []
         for c in range(s.region_cols):
             post = profile.regions.get(f"r{r}c{c}")
-            cells.append(f"{post.mean:+.2f}({post.n})" if post else "  --  ")
+            # Gated on EVIDENCE, not on the arm object existing. plan()
+            # materializes all region_cols*region_rows arms the first time it
+            # runs, so after a single `kovadapt generate` every cell had an
+            # object with n == 0 and the map printed "+0.00(0)" 25 times — a
+            # measured-looking zero for regions nothing has ever observed.
+            cells.append(f"{post.mean:+.2f}({post.n})"
+                         if post is not None and post.n else "  --  ")
         print("   " + "  ".join(f"{x:>10}" for x in cells))
 
 
@@ -247,6 +259,12 @@ def main(argv: list[str] | None = None) -> None:
     _utf8_stdio()
     p = argparse.ArgumentParser(prog="kovadapt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    # There was no way to ask a running install what it is. `--version` exited
+    # 2 with an argparse usage error, and the frozen exe carries no version
+    # resource either — so a bug report could not name a build.
+    from . import __version__
+    p.add_argument("-V", "--version", action="version",
+                   version=f"kovadapt {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sc = sub.add_parser("scenarios", help="list installed scenarios")

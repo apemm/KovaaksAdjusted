@@ -5,6 +5,7 @@ built by the helpers in tests/test_watcher.py.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -201,3 +202,54 @@ def test_help_lists_every_subcommand(capsys):
     for name in ("scenarios", "gui", "watchdog", "checkup",
                  "watch", "generate", "status", "replay"):
         assert name in out
+
+
+def test_version_flag_names_the_build(capsys):
+    """There was no way to ask a running install what it is: `--version` exited
+    2 with an argparse usage error, and the frozen exe carried no version
+    resource either, so a bug report could not name a build."""
+    from kovadapt import __version__
+
+    for flag in ("--version", "-V"):
+        with pytest.raises(SystemExit) as e:
+            cli.main([flag])
+        assert e.value.code == 0, flag
+        assert capsys.readouterr().out.strip() == f"kovadapt {__version__}"
+
+
+def test_generate_on_a_missing_scenario_says_so_without_a_traceback(env, capsys):
+    """cmd_watch has always guarded this; cmd_generate did not, so a typo
+    surfaced as an 11-frame FileNotFoundError out of SceFile.read."""
+    with pytest.raises(SystemExit) as e:
+        cli.cmd_generate(SimpleNamespace(scenario="No Such Scenario"))
+    msg = str(e.value)
+    assert "scenario file not found" in msg
+    assert "No Such Scenario.sce" in msg
+    assert "Traceback" not in msg
+
+
+def test_status_heatmap_shows_a_dash_for_regions_with_no_evidence(env, capsys):
+    """`plan()` materializes every region arm the first time it runs, so after
+    a single `generate` the map printed "+0.00(0)" for all 25 cells — a
+    measured-looking zero for regions nothing has ever observed. The sentinel
+    was gated on the arm OBJECT existing rather than on its evidence."""
+    from kovadapt.config import ADAPTIVE_SUFFIX
+    from kovadapt.profile.player import PlayerProfile
+
+    # status needs a profile with runs before it reaches the heatmap at all
+    write_stats_csv(env.stats_dir, BASE, ts="2026.05.27-20.25.38")
+    cli.cmd_replay(SimpleNamespace(scenario=BASE))
+    cli.cmd_generate(SimpleNamespace(scenario=BASE))
+    capsys.readouterr()
+    cli.cmd_status(SimpleNamespace(scenario=BASE))
+    grid = capsys.readouterr().out
+    assert "+0.00(0)" not in grid, "an unobserved region reported a measurement"
+    assert grid.count("--") >= 25
+
+    # ...and an arm that HAS evidence still prints its number
+    prof = PlayerProfile.load(BASE + ADAPTIVE_SUFFIX, env.profile_path)
+    prof.region("r1c1").update(0.4)
+    prof.save(env.profile_path)
+    cli.cmd_status(SimpleNamespace(scenario=BASE))
+    out = capsys.readouterr().out
+    assert "(1)" in out and out.count("--") < 25

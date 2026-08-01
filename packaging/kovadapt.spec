@@ -13,6 +13,37 @@
 
 from PySide6 import __file__ as pyside_file  # noqa: F401 (assert import works)
 
+# --- version resource -------------------------------------------------------
+# The shipped exe carried NO version metadata: Windows reported 0.0.0.0, so a
+# user could not tell which build they were running and a bug report could not
+# name one. Read from the package so it can never drift from `kovadapt -V`.
+import sys as _sys
+_sys.path.insert(0, "..")
+from kovadapt import __version__ as _v  # noqa: E402
+# These are NOT injected into the spec namespace — import them.
+from PyInstaller.utils.win32.versioninfo import (  # noqa: E402
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
+    VarStruct, VSVersionInfo,
+)
+
+_parts = tuple(int(x) for x in _v.split(".")[:3]) + (0,)
+_vs = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_parts, prodvers=_parts, mask=0x3F, flags=0x0,
+                      OS=0x40004, fileType=0x1, subtype=0x0),
+    kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "kovadapt"),
+            StringStruct("FileDescription", "kovadapt - adaptive KovaaK's"),
+            StringStruct("FileVersion", _v),
+            StringStruct("InternalName", "kovadapt"),
+            StringStruct("OriginalFilename", "kovadapt.exe"),
+            StringStruct("ProductName", "kovadapt"),
+            StringStruct("ProductVersion", _v),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [0x409, 1200])]),
+    ],
+)
+
 a = Analysis(
     ["../packaging/entry.py"],
     pathex=[".."],
@@ -62,5 +93,6 @@ exe = EXE(
     name="kovadapt",
     console=False,          # GUI app; the watchdog entry re-uses this exe
     icon=None,
+    version=_vs,            # so Windows and bug reports can name the build
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="kovadapt")
