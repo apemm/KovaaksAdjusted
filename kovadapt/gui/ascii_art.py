@@ -897,9 +897,33 @@ def _cat_coat(pal) -> tuple[QColor, QColor, QColor]:
     Reads the preset NAME off the palette — matching pal.accent against hex
     literals stopped working the moment accent colors became derived rather
     than hand-picked.
+
+    The coat is then LIFTED OFF THE PAGE if it would otherwise disappear
+    into it. The table is hand-picked hex that never consulted pal.is_dark,
+    so the default black cat sat on the dark themes' near-black page at
+    1.06:1 and mint's cream-white cat sat on cream at 1.17:1 — measured
+    against theme.py's own 3.0 control floor. This cat is not decoration:
+    CatSlider replaced QSlider as the overlay-opacity control, so the coat
+    IS the handle, and on three of the four themes the only part of it a
+    user could see was the 2px eyes.
     """
+    from . import color
+
     key = getattr(pal, "accent_name", "indigo")
     body, edge, eye = _CAT_COATS.get(key, _CAT_COATS["indigo"])
+    page = getattr(pal, "bg_alt", "#ffffff")
+    if color.contrast_ratio(body, page) < 3.0:
+        # Move away from the page, keeping the coat's hue: toward paper on a
+        # dark theme, toward ink on a light one.
+        target = "#ffffff" if getattr(pal, "is_dark", True) else "#000000"
+        for t in (0.25, 0.4, 0.55, 0.7, 0.85):
+            lifted = color.mix(body, target, t)
+            if color.contrast_ratio(lifted, page) >= 3.0:
+                body = lifted
+                edge = color.mix(edge, target, t * 0.7)
+                break
+        else:
+            body, edge = color.mix(body, target, 0.85), color.mix(edge, target, 0.6)
     return QColor(body), QColor(edge), QColor(eye)
 
 

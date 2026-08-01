@@ -238,13 +238,23 @@ class ScenarioBrowser(QWidget):
         The table used to take all the section's stretch, so four scenarios
         left ~500px of empty ruled box below them; a full library still needs
         room to scroll, hence the ceiling rather than a pure fit.
+
+        BOTH bounds, not just the maximum. Setting only a maximum made this
+        fit work downward and never upward: a QVBoxLayout gives a
+        non-stretched child its sizeHint, and QTableWidget.sizeHint() is
+        Qt's content-independent QSize(256, 192), so raising a MAXIMUM above
+        192 changes nothing. Measured at 80 scenarios: height 192, viewport
+        156, FIVE rows painted, with 531px of empty page below it — a
+        porthole over the whole library, while the docstring above described
+        a fit that never happened.
         """
         visible = sum(1 for r in range(self.table.rowCount())
                       if not self.table.isRowHidden(r))
         row_h = self.table.verticalHeader().defaultSectionSize()
         header_h = self.table.horizontalHeader().height()
-        wanted = header_h + row_h * max(visible, 1) + 8
-        self.table.setMaximumHeight(max(150, min(wanted, 620)))
+        wanted = max(150, min(header_h + row_h * max(visible, 1) + 8, 620))
+        self.table.setMinimumHeight(wanted)
+        self.table.setMaximumHeight(wanted)
 
     def _apply_filter(self) -> None:
         text = self.search.text().strip().lower()

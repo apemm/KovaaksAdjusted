@@ -188,3 +188,25 @@ def test_accent_name_survives_on_the_palette():
     for accent in ACCENTS:
         assert build_palette(dark=True, accent=accent).accent_name == accent
     assert build_palette(dark=False, accent="nonexistent").accent_name == "indigo"
+
+
+@pytest.mark.parametrize("mode,accent", [(m, a) for m, _ in MODES for a in ACCENTS])
+def test_the_overlay_sliders_cat_is_visible_on_its_panel(mode, accent):
+    """CatSlider replaced QSlider as the overlay-opacity control, so the cat
+    IS the handle — the one element showing where the value sits.
+
+    Its coat came from a hand-picked hex table keyed on the accent NAME that
+    never consulted pal.is_dark, so the default black cat sat on the dark
+    themes' near-black page at 1.06:1 and mint's cream-white cat on cream at
+    1.17:1. On three of the four themes the only visible part was its 2px
+    eyes. theme.py's own control floor is 3.0.
+    """
+    pytest.importorskip("PySide6")
+    from kovadapt.gui.ascii_art import _cat_coat
+
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    body, _edge, _eye = _cat_coat(pal)
+    ratio = color.contrast_ratio(body.name(), pal.bg_alt)
+    assert ratio >= CONTROL_CONTRAST, (
+        f"{mode}/{accent}: cat {body.name()} on panel {pal.bg_alt} "
+        f"is {ratio:.2f}:1 — the slider handle is invisible")

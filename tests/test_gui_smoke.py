@@ -252,6 +252,36 @@ def test_scenario_browser_lists_and_filters(qapp, settings):
     assert len(fired) == 1
 
 
+def test_a_large_library_gets_a_table_taller_than_five_rows(qapp, settings):
+    """_fit_table_height set only a MAXIMUM, so it could only ever shrink.
+
+    A QVBoxLayout gives a non-stretched child its sizeHint, and
+    QTableWidget.sizeHint() is Qt's content-independent QSize(256, 192), so
+    raising the maximum above 192 did nothing at all. Measured at 80
+    scenarios: 192px tall, 5 rows painted, 531px of empty page underneath —
+    a porthole over the whole library, while the method's own docstring
+    described a fit that never happened.
+    """
+    from kovadapt.gui.browser import ScenarioBrowser
+
+    for i in range(80):
+        (settings.scenarios_dir / f"Scenario {i:03d}.sce").write_text("[Scenario]\n")
+    b = ScenarioBrowser(settings)
+    assert b.table.rowCount() == 80
+    assert b.table.height() >= 600, (
+        f"table is {b.table.height()}px for 80 scenarios")
+    # 14 at the 620px ceiling on this row height; the defect painted 5
+    rows_shown = b.table.viewport().height() // b.table.rowHeight(0)
+    assert rows_shown >= 12, f"only {rows_shown} rows visible"
+
+    # ...and it still shrinks to fit a short list rather than leaving a
+    # ruled box full of nothing, which is what the ceiling was for.
+    b.search.setText("Scenario 007")
+    b._fit_table_height()
+    assert b.table.height() <= 260, b.table.height()
+    b.deleteLater()
+
+
 def test_config_sensitivity_group_computes_cm360(qapp, settings):
     """Mouse & sensitivity group: DPI/sens spins drive the live cm/360
     readout (KovaaK's yaw 0.022°/count) and save onto Settings."""
