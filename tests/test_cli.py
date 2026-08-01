@@ -253,3 +253,37 @@ def test_status_heatmap_shows_a_dash_for_regions_with_no_evidence(env, capsys):
     cli.cmd_status(SimpleNamespace(scenario=BASE))
     out = capsys.readouterr().out
     assert "(1)" in out and out.count("--") < 25
+
+
+def test_replay_with_no_stats_does_not_destroy_the_learned_profile(env, capsys):
+    """DATA LOSS. cmd_replay builds a FRESH empty PlayerProfile — it never
+    loads the existing one, because rebuilding from scratch is the whole
+    point — and then saved it unconditionally. So a misspelled scenario, or a
+    stats folder the user had cleared, wrote an empty profile over everything
+    that scenario had learned, printed "replayed 0 runs" and exited 0.
+    """
+    from kovadapt.config import ADAPTIVE_SUFFIX
+    from kovadapt.profile.player import PlayerProfile
+
+    # a profile worth losing
+    prof = PlayerProfile(scenario=BASE + ADAPTIVE_SUFFIX)
+    prof.run_count = 42
+    prof.ewma_accuracy = 0.88
+    prof.region("r1c1").update(0.3)
+    path = prof.save(env.profile_path)
+    before = path.read_bytes()
+
+    with pytest.raises(SystemExit) as e:
+        cli.cmd_replay(SimpleNamespace(scenario="Nonexistent Scenario"))
+    assert "no stats found" in str(e.value)
+
+    assert path.read_bytes() == before, "the learned profile was overwritten"
+    assert PlayerProfile.load(BASE + ADAPTIVE_SUFFIX,
+                             env.profile_path).run_count == 42
+
+    # ...and a real replay still rebuilds
+    write_stats_csv(env.stats_dir, BASE, ts="2026.05.27-20.25.38")
+    cli.cmd_replay(SimpleNamespace(scenario=BASE))
+    assert "replayed 1 runs" in capsys.readouterr().out
+    assert PlayerProfile.load(BASE + ADAPTIVE_SUFFIX,
+                              env.profile_path).run_count == 1

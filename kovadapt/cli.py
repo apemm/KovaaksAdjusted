@@ -140,6 +140,18 @@ def cmd_replay(args) -> None:
     runs = [run for name in (scenario, adaptive)
             for run in iter_runs(s.stats_dir, scenario=name)]
     runs.sort(key=lambda r: r.started)
+    if not runs:
+        # Replay REBUILDS from scratch — `profile` above is deliberately a
+        # fresh empty one — so saving it with nothing folded in overwrites
+        # everything the scenario had learned. A misspelled name, or a stats
+        # folder the user has cleared out, silently destroyed the profile and
+        # exited 0 reporting "replayed 0 runs". Refusing to write is the only
+        # safe answer: there is nothing here to rebuild FROM.
+        existing = PlayerProfile.path_for(adaptive, s.profile_path)
+        sys.exit(
+            f"no stats found for {scenario!r} in {s.stats_dir}\n"
+            + (f"{existing} left untouched — check the scenario name"
+               if existing.is_file() else "nothing to replay"))
     for run in runs:
         engine.observe(profile, run)
     profile.save(s.profile_path)
