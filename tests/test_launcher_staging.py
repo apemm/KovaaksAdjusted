@@ -102,3 +102,53 @@ def test_play_adaptive_stages_when_opted_in(fake_game, monkeypatch):
     assert ok and "staged to resume" in msg
     assert b"kovadapt adaptive" in target.read_bytes()
     assert target.with_suffix(".json.kovadapt.bak").read_bytes() == THEIRS
+
+
+def test_two_play_clicks_a_second_apart_keep_the_genuine_backup(fake_game,
+                                                               monkeypatch):
+    """The bug the existing pins could not see, because they call the private
+    helper twice WITHOUT re-running write_playlist in between.
+
+    `play_adaptive` writes the playlist on every click and `write_playlist`
+    stamps `"updated": int(time.time())`, so two clicks more than a second
+    apart produce DIFFERENT BYTES. The old guard tested byte identity, so the
+    second staging judged kovadapt's own file to be the user's and rotated it
+    over `.kovadapt.prev.bak` — the copy of their genuine playlist. The
+    one-shot `.kovadapt.bak` did not save them either: it frequently latches
+    our own payload, because the game leaves the file empty between playlists.
+
+    Driven through the PUBLIC entry point, with a clock that really advances.
+    """
+    s, target = fake_game
+    monkeypatch.setenv(launcher.STAGE_ENV, "1")
+    monkeypatch.setattr(launcher, "_open_steam_url", lambda url: ("", True))
+    monkeypatch.setattr(launcher, "game_is_running", lambda: False)
+    # play_adaptive refuses without the variant on disk
+    (s.scenarios_dir / f"X{ADAPTIVE_SUFFIX}.sce").write_text("[Scenario]\n")
+
+    clock = iter(range(1_700_000_000, 1_700_000_600, 7))    # strictly advancing
+    monkeypatch.setattr(launcher.time, "time", lambda: next(clock))
+
+    target.write_bytes(THEIRS)
+    for click in (1, 2, 3):
+        launcher.play_adaptive(s, "X")
+        assert THEIRS in _backups(target), (
+            f"after click {click} the user's playlist exists in no backup")
+    # ...and our own staging never accumulated backups of itself
+    assert len([b for b in _backups(target) if launcher._is_our_playlist(b)]) == 0
+
+
+def test_our_own_marker_survives_the_game_annotating_it(fake_game):
+    """A staged copy the game has updated with progress is still OURS, and
+    must not trigger a rotation. Fails closed the other way too: anything
+    unparseable, or authored by someone else, counts as the user's."""
+    import json
+
+    ours = json.loads((launcher._playlist_path(fake_game[0])).read_bytes())
+    ours["currentIndex"] = 2                      # the game annotating it
+    assert launcher._is_our_playlist(json.dumps(ours).encode())
+
+    assert not launcher._is_our_playlist(THEIRS)
+    assert not launcher._is_our_playlist(b"not json at all")
+    assert not launcher._is_our_playlist(b"[]")
+    assert not launcher._is_our_playlist(b'{"authorName": "someone else"}')

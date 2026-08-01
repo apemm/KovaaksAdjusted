@@ -36,6 +36,7 @@ STEAM_APP_ID = 824270
 GAME_PROCESS = "FPSAimTrainer"          # matches optimize.watchdog.GAME_PROCESS
 PLAYLIST_NAME = "kovadapt adaptive"     # one well-known playlist, overwritten per task
 STAGE_ENV = "KOVADAPT_STAGE_PLAYLIST"   # opt-in for the experimental resume staging
+AUTHOR = "kovadapt"     # write_playlist stamps it; _is_our_playlist reads it back
 
 WINDOWS = sys.platform == "win32"
 
@@ -190,7 +191,9 @@ def write_playlist(
         "playlistName": name,
         "playlistId": 0,
         "authorSteamId": "",
-        "authorName": "kovadapt",
+        # Load-bearing: _is_our_playlist reads this back to tell our own
+        # staged file from the user's, so the two must never drift apart.
+        "authorName": AUTHOR,
         "scenarioList": [
             {"scenario_name": s, "play_Count": max(int(c), 1)} for s, c in scenarios
         ],
@@ -256,6 +259,20 @@ def _staging_opted_in() -> bool:
     return os.environ.get(STAGE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_our_playlist(blob: bytes) -> bool:
+    """Whether `blob` is a playlist kovadapt wrote.
+
+    Deliberately fails CLOSED: anything unparseable, or authored by anyone
+    else, is treated as the user's and therefore backed up before it is
+    replaced. The cost of a false negative is one redundant backup file; the
+    cost of a false positive is destroying a playlist.
+    """
+    try:
+        return json.loads(blob).get("authorName") == AUTHOR
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def _stage_playlist_in_progress(settings: Settings) -> bool:
     """Experimental (opt-in, see `_staging_opted_in`): the game tracks its
     resumable playlist in SaveGames/PlaylistInProgress.json. Staging ours
@@ -276,8 +293,23 @@ def _stage_playlist_in_progress(settings: Settings) -> bool:
     * ``.kovadapt.prev.bak`` keeps whatever *this* write is replacing, so the
       bytes about to be destroyed always survive somewhere.
 
-    Content byte-identical to what we are writing is our own staging, so it
-    never rotates over a genuine prev backup.
+    Our own staging is recognised by its CONTENT MARKER, not by byte
+    identity. Byte identity was the original test and it was broken by
+    construction: `write_playlist` stamps `"updated": int(time.time())`, so
+    any two Play clicks more than a second apart produce different bytes. The
+    second staging therefore judged kovadapt's own file to be the user's,
+    rotated it over `.kovadapt.prev.bak` — which held the copy of their
+    genuine PlaylistInProgress.json — and the one-shot `.kovadapt.bak` did
+    not save them either, because that slot frequently latches our own
+    payload (the game leaves the file empty between playlists, so click 1
+    writes no backup and click 2 freezes our bytes in as "the original").
+    The genuine bytes then existed in no file on disk while the app reported
+    that it had staged safely.
+
+    Both failure directions of the marker are safe: content we cannot parse,
+    or that carries someone else's author, is treated as the user's and gets
+    backed up; a copy the game has annotated with progress still carries
+    ours.
     """
     target = settings.root / "Saved" / "SaveGames" / "PlaylistInProgress.json"
     source = _playlist_path(settings)
@@ -286,7 +318,7 @@ def _stage_playlist_in_progress(settings: Settings) -> bool:
     try:
         payload = source.read_bytes()
         existing = target.read_bytes() if target.is_file() else b""
-        if existing.strip() and existing != payload:
+        if existing.strip() and not _is_our_playlist(existing):
             first = target.with_suffix(".json.kovadapt.bak")
             if not (first.is_file() and first.stat().st_size):
                 first.write_bytes(existing)
