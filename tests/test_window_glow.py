@@ -203,3 +203,43 @@ def test_the_glow_is_the_composite_the_alpha_asked_for():
                     < color.contrast_ratio(pal.accent, pal.bg)), f"{mode}/{accent}"
             assert _glow(pal) != color.mix(pal.bg, pal.accent, t), (
                 f"{mode}/{accent}: linear-light mix crept back in")
+
+
+def test_the_help_button_actually_renders_its_glyph(qapp):
+    """The nav bar's "?" rendered COMPLETELY BLANK — zero inked pixels.
+
+    The sheet gives every QPushButton `padding: 7px 18px` plus a 1px border,
+    which is 38px of chrome inside a 30px fixed width, so
+    SE_PushButtonContents comes back with a NEGATIVE width and Qt draws no
+    text at all. The only ink left was the menu chevron, so the single entry
+    point to the guide, the hints toggle and the data folder read as a third
+    unlabelled dropdown next to "Auto theme" and "Indigo".
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    pal = build_palette(dark=False, accent="indigo")
+    sheet = build_qss(pal)
+
+    def ink_rows(extra: str) -> int:
+        b = QPushButton("?")
+        b.setStyleSheet(sheet + extra)
+        b.setFixedWidth(30)
+        b.resize(30, b.sizeHint().height())
+        img = b.grab().toImage()
+        fg = QColor(pal.fg)
+        n = 0
+        for y in range(img.height()):
+            for x in range(2, img.width() - 2):
+                c = QColor(img.pixel(x, y))
+                if (abs(c.red() - fg.red()) + abs(c.green() - fg.green())
+                        + abs(c.blue() - fg.blue())) < 200:
+                    n += 1
+                    break
+        b.deleteLater()
+        return n
+
+    assert ink_rows("") == 0, (
+        "the 30px button now draws something with the shipped padding — "
+        "re-check whether app.py still needs its override")
+    assert ink_rows("\nQPushButton { padding: 7px 0px; }") >= 5, (
+        "the override no longer restores the glyph")

@@ -1757,7 +1757,11 @@ class KnobLadder(_Art):
                 p.setPen(QColor(pal.fg_dim))
                 p.drawText(QRectF(x_read, y, base_w, line_h),
                            Qt.AlignRight | Qt.AlignVCenter, base_txt)
-                p.setPen(QColor(pal.border))
+                # border_control, not border: this arrow IS the before/after
+                # operator. `border` is documented as a hairline that "may be
+                # low contrast" — it measured 1.07-1.36:1 here, while the same
+                # glyph in the column header 20px above is fg_dim at 5.12:1.
+                p.setPen(QColor(pal.border_control))
                 p.drawText(QRectF(x_arrow, y, arrow_w + 2, line_h),
                            Qt.AlignLeft | Qt.AlignVCenter, "->")
                 p.setPen(QColor(pal.fg))
@@ -1787,7 +1791,10 @@ class KnobLadder(_Art):
             # contiguous (stagger is monotonic in distance from the anchor), so
             # consecutive dots batch into one string in the same mono cells.
             p.setFont(num_f)
-            dot_col = QColor(pal.border)
+            # The unfilled track is the CONTROLLER RANGE scale the caption
+            # names — it is the reader's only sense of how far the value
+            # moved, so it is a control, not a rule.
+            dot_col = QColor(pal.border_control)
             span = max(abs(marker - anchor), 1)
             dots: list[int] = []
             for col in range(cells + 1):
@@ -2006,7 +2013,9 @@ class SpawnGrid(_Art):
                     # Cannot be emphasised: the generator reuses original
                     # coordinates and never invents them.
                     p.setBrush(Qt.NoBrush)
-                    p.setPen(QColor(pal.border))
+                    # "outlined cells hold no spawn point" — the outline is
+                    # the whole claim, so it carries border_control's floor.
+                    p.setPen(QColor(pal.border_control))
                     p.drawRoundedRect(rect, 4, 4)
                     continue
                 # An untouched layout has no emphasis to draw, and cell_density
@@ -2180,7 +2189,7 @@ class FileLedger(_Art):
             arrow_delay = self._delay(motion.grid_distance(i, 2, (0, 0)))
             if self._lit(arrow_delay):
                 p.setFont(num_f)
-                p.setPen(QColor(pal.border))
+                p.setPen(QColor(pal.border_control))     # the -> operator
                 p.drawText(QRectF(x_arrow, y, 24.0, line_h),
                            Qt.AlignLeft | Qt.AlignVCenter, "->")
 

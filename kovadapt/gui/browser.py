@@ -272,6 +272,13 @@ class ScenarioBrowser(QWidget):
                 (arch != "All types" and row_arch != arch)
             self.table.setRowHidden(i, hide)
         self._fit_table_height()
+        # Hiding the selected row drops it out of selectedItems(), so
+        # selected() goes empty — but nothing RE-ASKED, and the three action
+        # buttons stayed enabled with the detail line still describing a
+        # scenario no longer on screen. Play sat filled and clickable over an
+        # empty table and emitted nothing. `_rebuild` already re-asks; the
+        # typing and archetype-filter path did not.
+        self._selection_changed()
 
     # -------------------------------------------------------------- actions
     def selected(self) -> str:

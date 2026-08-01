@@ -1016,8 +1016,11 @@ class CatSlider(QWidget):
         knob_x = 4 + frac * span
         mid_y = self.height() / 2
 
-        # empty remainder of the track
-        p.setPen(QColor(pal.border))
+        # empty remainder of the track. border_control, not border:
+        # theme.py already made this exact fix for QSlider ("Tracks,
+        # handles and chunks are CONTROLS, not rules") and CatSlider is
+        # the widget that REPLACED QSlider on the Dashboard.
+        p.setPen(QColor(pal.border_control))
         p.drawLine(int(knob_x + 24), int(mid_y), self.width() - 2, int(mid_y))
 
         # the RGB trail behind the cat: scrolling dashed bands
@@ -1142,8 +1145,11 @@ class AsciiProgress(QWidget):
                 if x + w > x0 and w > 0:
                     p.fillRect(QRectF(max(x, x0), y, w, bh - 0.4), col)
                 x += 12
-        # empty remainder of the track
-        p.setPen(QColor(pal.border))
+        # empty remainder of the track. border_control, not border:
+        # theme.py already made this exact fix for QSlider ("Tracks,
+        # handles and chunks are CONTROLS, not rules") and CatSlider is
+        # the widget that REPLACED QSlider on the Dashboard.
+        p.setPen(QColor(pal.border_control))
         p.drawLine(int(x0 + filled + 22), y0 + 3 * bh,
                    int(x0 + track), y0 + 3 * bh)
 

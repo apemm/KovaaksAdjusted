@@ -456,3 +456,35 @@ def test_no_section_view_leaves_its_page_margin_to_qt(qapp, settings):
             if hasattr(v, "shutdown"):
                 v.shutdown()
             v.deleteLater()
+
+
+def test_filtering_the_selection_off_screen_disarms_the_actions(qapp, settings):
+    """Typing a filter that hides the selected row left Play, Start adapting
+    and Generate all ENABLED for a scenario no longer on screen, with the
+    detail line still describing it.
+
+    Qt does drop a hidden row out of selectedItems() (measured — I had
+    assumed the opposite and written a guard for it), so `selected()` goes
+    empty on its own. What was missing is that nothing RE-ASKED: `_rebuild`
+    calls `_selection_changed`, the typing and archetype-filter path did not.
+    """
+    from kovadapt.gui.browser import ScenarioBrowser
+
+    for n in ("Alpha Track Long", "Beta 1wall Click", "Gamma Switch"):
+        (settings.scenarios_dir / f"{n}.sce").write_text("[Scenario]\n")
+    b = ScenarioBrowser(settings)
+    b.table.selectRow(0)
+    assert b.selected()
+    assert b.play_btn.isEnabled()
+
+    b.search.setText("zzzzzz")                 # hides every row
+    assert all(b.table.isRowHidden(r) for r in range(b.table.rowCount()))
+    assert b.selected() == "", "a hidden row is still reported as selected"
+    for btn in (b.play_btn, b.watch_btn, b.gen_btn):
+        assert not btn.isEnabled(), "armed for something invisible"
+    assert b.detail.text() == "select a scenario"
+
+    b.search.setText("")                       # and it comes back
+    assert b.selected()
+    assert b.play_btn.isEnabled()
+    b.deleteLater()

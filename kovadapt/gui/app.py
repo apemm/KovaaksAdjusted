@@ -207,6 +207,15 @@ class MainWindow(QMainWindow):
 
         help_btn = QPushButton("?")
         help_btn.setFixedWidth(30)
+        # The sheet gives every QPushButton `padding: 7px 18px` plus a 1px
+        # border — 38px of chrome inside a 30px button, which makes
+        # SE_PushButtonContents a NEGATIVE-width rect and drops the "?"
+        # entirely. The only ink left was the menu chevron, so the single
+        # entry point to the guide, the hints toggle and the data folder
+        # rendered as a third unlabelled dropdown beside "Auto theme" and
+        # "Indigo". Overriding the horizontal padding restores the glyph at
+        # this width; keep the two in step if either changes.
+        help_btn.setStyleSheet("padding: 7px 0px;")
         help_btn.setToolTip("Guide, hints, and your data")
         menu = QMenu(help_btn)
         menu.addAction("Startup guide…", self._show_guide)
