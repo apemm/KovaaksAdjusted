@@ -434,3 +434,37 @@ def test_readiness_will_not_say_dialed_in_without_bias_evidence(qapp, settings):
         "the bias clause must count measurements, not runs")
     dash.shutdown()
     dash.deleteLater()
+
+
+def test_the_state_word_sits_on_the_numerals_baseline(qapp, settings):
+    """Qt.AlignBottom aligns bottom EDGES, and a label's bottom edge is one
+    DESCENT below its baseline — so the 13px state word hung 8px below the
+    48px hero numeral it qualifies, and a 12px KPI unit hung 3px below its
+    24px value.
+
+    The fonts are passed to theme.align_baselines explicitly rather than read
+    off the widgets, and that is load-bearing: theme.py's app-wide
+    `* { font-size: 13px }` outranks setFont(), so widget.font() reports 13px
+    for BOTH labels and the correction computes to zero.
+    """
+    from PySide6.QtGui import QFontMetricsF
+
+    from kovadapt.gui import theme
+
+    prof = _profile("Baseline", [0.6] * 6, regions=4, bias_obs=2)
+    prof.save(settings.profile_path)
+    dash = _dashboard(settings, "Baseline")
+    try:
+        for key in dash.heroes:
+            h = dash.heroes[key]
+            numeral = theme.mono(24)
+            numeral.setPixelSize(h.NUMERAL_PX)
+            drop = round(QFontMetricsF(numeral).descent()
+                         - QFontMetricsF(theme.body_font()).descent())
+            assert drop > 0, "the fonts stopped differing; this test is moot"
+            assert h.word.contentsMargins().bottom() == drop, (
+                f"{key}: word margin {h.word.contentsMargins().bottom()} "
+                f"!= the {drop}px descent difference")
+    finally:
+        dash.shutdown()
+        dash.deleteLater()

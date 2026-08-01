@@ -71,6 +71,11 @@ CONTROL_CONTRAST = 3.0
 # in build_palette.
 SELECTION_CONTRAST = 2.6
 
+# The body size the app-wide sheet sets. Named because align_baselines
+# has to reproduce it: `widget.font()` cannot be trusted for it (that
+# sheet outranks setFont), so the value has to exist in one place.
+BODY_PX = 13
+
 # (base lightness, chroma, hue) per theme — the whole palette derives from it.
 _BASES = {
     "light": (0.967, 0.024, 90.0),     # warm paper; 0.024 chroma is the whole
@@ -346,6 +351,40 @@ CELL_SIZES = (12, 14, 20, 24)
 _MONO_FAMILY: str | None = None
 
 
+def body_font():
+    """The font the app-wide sheet actually gives ordinary widgets."""
+    from PySide6.QtGui import QFont
+
+    f = QFont("Segoe UI")
+    f.setPixelSize(BODY_PX)
+    return f
+
+
+def align_baselines(small_widget, big_font, small_font) -> None:
+    """Sit `small_widget`'s text on the same baseline as `big_font`'s.
+
+    A layout's Qt.AlignBottom aligns bottom EDGES, not baselines, and a
+    label's bottom edge sits one DESCENT below its baseline. Pair a 48px
+    hero numeral with a 13px state word and the descents differ by 8px, so
+    the word hangs 8px below the number it qualifies; a 24px KPI value beside
+    its 12px unit differs by 3px. Qt's layouts do not implement baseline
+    alignment, so the correction is a bottom content margin.
+
+    THE FONTS ARE PASSED IN, not read off the widgets, and that is the whole
+    subtlety. theme.py's app-wide `* { font-size: 13px }` outranks
+    setFont(), so `widget.font()` reports 13px for BOTH labels and the drop
+    computes to zero — which is exactly what my first version did, silently
+    and only on the tiles whose stylesheet had not resolved yet. The caller
+    knows which faces it means; ask it.
+    """
+    from PySide6.QtGui import QFontMetricsF
+
+    drop = round(QFontMetricsF(big_font).descent()
+                 - QFontMetricsF(small_font).descent())
+    m = small_widget.contentsMargins()
+    small_widget.setContentsMargins(m.left(), m.top(), m.right(), max(drop, 0))
+
+
 def mono_family() -> str:
     """The app's monospace family, probed once.
 
@@ -391,7 +430,7 @@ def build_qss(p: Palette) -> str:
     return f"""
 * {{
     font-family: "Segoe UI", sans-serif;
-    font-size: 13px;
+    font-size: {BODY_PX}px;
     color: {p.fg};
 }}
 QMainWindow, QDialog, QWidget {{ background: {p.bg}; }}
@@ -442,7 +481,13 @@ QGroupBox {{
     /* The title lives in this margin (subcontrol-origin: margin), so the
        margin IS the clearance between the label and the box's top border.
        At 16px an 11px label sat right on the line. */
-    margin-top: 26px; padding-top: 12px; background: {_rgba(p.bg_alt, 214)};
+    /* padding-left/right match the 14px every card and panel in the app
+       uses for its own contents (dashboard.py, analysis_view.py,
+       overlay.py). Only padding-top was stated, so the sides fell back to
+       Qt's default and group-box contents sat ~4px closer to the border
+       than identical content in a card. */
+    margin-top: 26px; padding: 12px 14px 12px 14px;
+    background: {_rgba(p.bg_alt, 214)};
 }}
 /* A panel's label outranks its contents: it was set in the DIM role, which
    inverted the hierarchy on every section of the app. Small and tracked is

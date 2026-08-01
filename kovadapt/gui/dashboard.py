@@ -277,6 +277,11 @@ class HeroStat(QFrame):
         row.setSpacing(10)
         row.addWidget(self.value, 0, Qt.AlignBottom)
         row.addWidget(self.word, 1, Qt.AlignBottom)
+        # AlignBottom aligns bottom EDGES, and a label's bottom edge is one
+        # DESCENT below its baseline — so the state word hung well below the
+        # 48px numeral it qualifies. The gap is largest here of anywhere in
+        # the app, because the numeral is the biggest text there is.
+        theme.align_baselines(self.word, numeral, theme.body_font())
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 12)

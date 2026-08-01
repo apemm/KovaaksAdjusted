@@ -213,7 +213,13 @@ class ScenarioBrowser(QWidget):
             # on one grid and the column scans vertically. In a proportional
             # face "27" and "115" are different widths and a long list stops
             # being comparable at a glance.
-            num_font = theme.mono(13)
+            # 14, not 13: mono() SNAPS to CELL_SIZES (12, 14, 20, 24) and 13
+            # is not on that grid, so it silently became 12 — a size smaller
+            # than the 13px row it sits in, with its baseline 3.0px high.
+            # Measured against Segoe UI 13: mono12 is cap -0.8px / baseline
+            # -3.0px, mono14 is cap +0.6px / baseline -1.0px. The 13 here
+            # meant "match the row", and 14 is the neighbour that does.
+            num_font = theme.mono(14)
             for col, item in enumerate((name, arch, runs, acc, cal, last)):
                 if col:
                     item.setForeground(theme_color(pal.fg_dim if col in (1, 5)

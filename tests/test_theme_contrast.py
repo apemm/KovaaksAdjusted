@@ -210,3 +210,34 @@ def test_the_overlay_sliders_cat_is_visible_on_its_panel(mode, accent):
     assert ratio >= CONTROL_CONTRAST, (
         f"{mode}/{accent}: cat {body.name()} on panel {pal.bg_alt} "
         f"is {ratio:.2f}:1 — the slider handle is invisible")
+
+
+def test_no_caller_asks_for_a_mono_size_off_the_grid():
+    """`theme.mono()` SNAPS to CELL_SIZES rather than honouring its argument,
+    and the snap is silent — so `mono(13)` returned 12px, a size smaller than
+    the 13px body row it sat in, with its baseline 3.0px high. Measured
+    against Segoe UI 13: mono12 is cap -0.8px / baseline -3.0px, mono14 is
+    cap +0.6px / baseline -1.0px.
+
+    Ties round DOWN (`min` keeps the first minimum), so an off-grid size
+    always lands on the smaller neighbour — the wrong direction for text that
+    has to sit level with body copy. Callers must name a real cell size, so
+    that choice is visible in the source instead of happening silently.
+    """
+    import re
+    from pathlib import Path
+
+    from kovadapt.gui.theme import CELL_SIZES
+
+    gui = Path(__file__).resolve().parents[1] / "kovadapt" / "gui"
+    pattern = re.compile(r"\b(?:theme\.)?(?:mono|_mono_css)\((\d+)")
+    offenders = []
+    for path in sorted(gui.glob("*.py")):
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in pattern.finditer(line):
+                px = int(m.group(1))
+                if px not in CELL_SIZES:
+                    offenders.append(f"{path.name}:{n} asks for {px}px")
+    assert not offenders, (
+        "mono sizes must be on theme.CELL_SIZES "
+        f"{CELL_SIZES}; these snap silently: {offenders}")

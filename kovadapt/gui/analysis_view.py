@@ -190,6 +190,10 @@ class _KpiTile(QFrame):
         self.value.setFont(theme.mono(24, bold=True))
         self.unit.setFont(theme.mono(12))
         self.read.setFont(theme.mono(12))
+        # AlignBottom aligns bottom EDGES; a 12px unit beside a 24px numeral
+        # therefore hung 3px below the number it belongs to.
+        theme.align_baselines(self.unit, theme.mono(24, bold=True),
+                              theme.mono(12))
 
 
 # ---------------------------------------------------------------- takeaways
