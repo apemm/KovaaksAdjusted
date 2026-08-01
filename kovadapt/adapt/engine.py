@@ -243,3 +243,33 @@ class AdaptationEngine:
             dodge_bias=dodge_bias,
             fatigue=fatigue,
         )
+
+
+def settle_focus(profile: PlayerProfile, plan: AdaptationPlan) -> bool:
+    """Drop a focus region the emitted `.sce` could not actually express.
+
+    Call this after `generate_adaptive_variant()` and BEFORE `profile.save()`,
+    at every site that pairs a `plan()` with a generate. Returns True when the
+    focus was cleared, so callers can say so.
+
+    `plan()` stamps `profile.last_focus` unconditionally, but the generator
+    only learns whether the focus survived once it has tried to resample
+    spawns — `resample_spawns()` returns nothing when the layout has fewer
+    target spawns than `region_cols * region_rows` (25 by default), or when
+    the focus region holds no candidate. On the next run `credit_focus_region`
+    books that run's accuracy deficit against an emphasis the player was never
+    shown: evidence for or against a change that was silently dropped. It is
+    not display-only — `bandit.spawn_weights` softmaxes the arm posteriors, so
+    contaminated arms steer the spawn mass written into future variants.
+
+    This lived inline in `SessionWatcher.process_run` and NOWHERE ELSE, while
+    four other sites (`SessionWatcher.bootstrap`, `cli.cmd_generate`,
+    `ScenarioBrowser._generate`, and the dashboard's Start via bootstrap) did
+    the same plan/generate/save without it. Measured against a real install,
+    19 of 31 `.sce` files carry fewer than 25 target spawns and 8 have none at
+    all, so on those layouts no focus is ever actionable.
+    """
+    if plan.focus_applied:
+        return False
+    profile.last_focus = None
+    return True

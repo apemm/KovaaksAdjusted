@@ -285,7 +285,11 @@ class MouseRecorder:
         if thread is None:
             return True
         if self._hwnd:
-            user32.PostMessageW(self._hwnd, WM_CLOSE, 0, 0)
+            # A failed post means the pump will never be asked to quit, so the
+            # join below is guaranteed to time out. Report it rather than
+            # spending the full timeout pretending otherwise.
+            if not user32.PostMessageW(self._hwnd, WM_CLOSE, 0, 0):
+                return False
         thread.join(timeout=timeout)
         if thread.is_alive():
             return False            # caller decides how loud to be
@@ -297,7 +301,23 @@ class MouseRecorder:
         return True
 
     def stop(self) -> MouseTrace:
-        self._teardown()
+        """End the recording and return what was captured.
+
+        The teardown result is HONOURED, not discarded. It used to be
+        dropped, so a pump that outlived the join was reported as a clean
+        stop while `_thread` still pointed at a running pump with its
+        message-only window alive and the process-wide class still
+        registered — and `watcher._stop_capture` then dropped the last
+        reference to it, putting it beyond any future PostMessageW.
+
+        It records the failure rather than raising: stop() runs from
+        `watch()`'s finally, where raising would mask whatever ended the
+        session. `_orphaned` is the existing channel for exactly this — the
+        next start() on this recorder refuses loudly instead of returning a
+        silent "already running".
+        """
+        if not self._teardown():
+            self._orphaned = True
         with self._lock:
             return self._buf.to_trace()
 
@@ -371,6 +391,18 @@ class MouseRecorder:
                 0, wc.lpszClassName, None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, hinst, None
             )
 
+            if not self._hwnd:
+                # NULL window: RIDEV_INPUTSINK needs a real hwndTarget, so
+                # registration fails and NOT ONE PACKET is ever recorded.
+                # Setting _ready here anyway made start() succeed, and then
+                # _teardown could not post WM_CLOSE (`if self._hwnd` is
+                # falsy) so the join timed out against a thread parked in
+                # GetMessageW forever — a leaked daemon thread pinning the
+                # recorder and its whole retention buffer (hundreds of MB at
+                # 30 min and 8 kHz) for the life of the process, silently.
+                # Leaving _ready unset makes start() raise, which is the
+                # honest outcome: capture did not start.
+                return
             rid = RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, self._hwnd)  # generic mouse
             user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
             self._ready.set()

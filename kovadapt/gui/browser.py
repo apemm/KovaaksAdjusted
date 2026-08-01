@@ -296,7 +296,7 @@ class ScenarioBrowser(QWidget):
         if not name:
             return
         from ..adapt.archetype import detect_archetype as detect
-        from ..adapt.engine import AdaptationEngine
+        from ..adapt.engine import AdaptationEngine, settle_focus
         from ..scenario.generator import generate_adaptive_variant
 
         adaptive = name + ADAPTIVE_SUFFIX
@@ -309,6 +309,7 @@ class ScenarioBrowser(QWidget):
             out = generate_adaptive_variant(
                 self.s.scenarios_dir / f"{name}.sce", plan, self.s,
                 self.s.scenarios_dir / f"{adaptive}.sce")
+            settle_focus(profile, plan)
             profile.save(self.s.profile_path)
             msg = f"wrote {out.name} — {plan.describe()}"
         except OSError as exc:

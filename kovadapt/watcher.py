@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .adapt.archetype import detect_archetype
-from .adapt.engine import AdaptationEngine
+from .adapt.engine import AdaptationEngine, settle_focus
 from .analysis.fatigue import SessionFatigueTracker
 from .analysis.report import RunReport, build_report, run_time_window
 from .config import ADAPTIVE_SUFFIX, Settings
@@ -260,16 +260,7 @@ class SessionWatcher:
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
-        if not plan.focus_applied:
-            # The chosen region has no spawn points in this layout, so the
-            # emitted .sce could not emphasize it and the next run will not be
-            # a test of that arm. plan() already stored it as last_focus, and
-            # credit_focus_region() would then book the next run's accuracy
-            # deficit against an emphasis the player never saw — evidence for
-            # or against a region invented from a change that was silently
-            # dropped. Clearing it makes the bandit skip that credit (it
-            # early-returns when last_focus is None).
-            profile.last_focus = None
+        if settle_focus(profile, plan):
             self.log(f"  note: region {plan.focus_region} has no spawns here — "
                      "focus not applied, arm not credited")
         profile.save(self.s.profile_path)
@@ -296,6 +287,10 @@ class SessionWatcher:
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
+        # Harmless on a genuinely fresh profile (credit_focus_region
+        # early-returns at run_count 0), but bootstrap also runs when a
+        # profile WITH runs finds its [Adaptive] file deleted.
+        settle_focus(profile, plan)
         profile.save(self.s.profile_path)
         self.log(f"created {out.name} — play it in KovaaK's; I'll adapt after each run")
         return out

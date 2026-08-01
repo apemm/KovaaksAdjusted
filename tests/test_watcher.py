@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -364,6 +365,53 @@ def test_unactionable_focus_is_not_credited_to_the_bandit(env: Settings):
     saved = PlayerProfile.load(w2.adaptive_name, env.profile_path)
     assert saved.last_focus is None, "an unactionable focus was still persisted"
     assert any("focus not applied" in m for m in logs)
+
+
+def test_every_generate_path_clears_an_unactionable_focus(env: Settings,
+                                                          monkeypatch):
+    """The guard lived inline in process_run and NOWHERE else.
+
+    Four other sites pair a plan() with a generate and then save: the
+    watcher's own bootstrap (which the dashboard's Start calls directly),
+    `kovadapt generate`, and the Scenarios browser's Generate button. Each
+    persisted a last_focus the emitted .sce provably could not express, and
+    the next run then booked its accuracy deficit against that arm — which
+    reaches the bandit's spawn weights, not just the display.
+
+    Measured against a real install: 19 of 31 .sce files carry fewer than
+    5x5 target spawns and 8 carry none, so this is the common layout, not
+    the exotic one. Same too-few-spawns fixture as the test above.
+    """
+    from kovadapt.gui import browser as browser_mod          # noqa: F401
+    from kovadapt.profile.player import RegionPosterior
+
+    def seed_profile(w: SessionWatcher) -> None:
+        """A profile with runs, so credit_focus_region does not early-return
+        and last_focus is a value with consequences."""
+        p = PlayerProfile.load(w.adaptive_name, env.profile_path)
+        p.run_count = 5
+        p.ewma_accuracy = 0.8
+        p.regions["r0c0"] = RegionPosterior(mean=0.1, var=0.2, n=3)
+        p.save(env.profile_path)
+
+    # --- bootstrap (also the dashboard's Start path) --------------------
+    w = SessionWatcher(env, BASE)
+    w.bootstrap()
+    seed_profile(w)
+    w.bootstrap()
+    assert PlayerProfile.load(w.adaptive_name, env.profile_path).last_focus is None, \
+        "bootstrap persisted a focus the layout cannot express"
+
+    # --- cli.cmd_generate ----------------------------------------------
+    from kovadapt import cli
+
+    # cmd_generate resolves its own Settings; without this it reaches the
+    # developer's real KovaaK's install (same pattern as tests/test_cli.py).
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, path=None: env))
+    seed_profile(w)
+    cli.cmd_generate(SimpleNamespace(scenario=BASE))
+    assert PlayerProfile.load(w.adaptive_name, env.profile_path).last_focus is None, \
+        "kovadapt generate persisted an unactionable focus"
 
 
 def test_an_actionable_focus_is_still_credited(env: Settings):

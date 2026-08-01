@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .adapt.engine import AdaptationEngine
+from .adapt.engine import AdaptationEngine, settle_focus
 from .config import ADAPTIVE_SUFFIX, Settings
 from .profile.player import PlayerProfile
 from .scenario.generator import generate_adaptive_variant
@@ -84,6 +84,7 @@ def cmd_generate(args) -> None:
         s.scenarios_dir / f"{scenario}.sce", plan, s,
         s.scenarios_dir / f"{adaptive}.sce",
     )
+    settle_focus(profile, plan)
     profile.save(s.profile_path)
     print(f"wrote {out}\nplan: {plan.describe()}")
 

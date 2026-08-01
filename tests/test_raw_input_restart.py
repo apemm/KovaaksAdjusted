@@ -92,6 +92,74 @@ def test_stop_clears_thread_when_pump_already_exited(win32, monkeypatch):
     assert len(runs) == 2
 
 
+def test_stop_reports_a_pump_it_could_not_kill(win32, monkeypatch):
+    """stop() used to DISCARD _teardown()'s result.
+
+    start() has always honoured it — a pump that outlives the join is marked
+    orphaned so the next start() refuses loudly. stop() dropped it, so a
+    pump that would not die was reported as a clean stop while _thread still
+    pointed at it, its message-only window alive and the process-wide class
+    still registered. watcher._stop_capture then set `self.recorder = None`,
+    putting that pump beyond any future PostMessageW for the life of the
+    process.
+    """
+    stuck = threading.Event()
+
+    def _run(self) -> None:
+        self._ready.set()
+        stuck.wait(10.0)            # ignores WM_CLOSE, like a wedged pump
+
+    monkeypatch.setattr(MouseRecorder, "_run", _run)
+    rec = MouseRecorder()
+    rec.start()
+    try:
+        trace = rec.stop()          # must not pretend this worked
+        assert trace is not None
+        assert rec._orphaned is True, "a pump that outlived the join went unrecorded"
+        assert rec._thread is not None
+        with pytest.raises(RuntimeError, match="did not shut down"):
+            rec.start()
+    finally:
+        stuck.set()
+        if rec._thread is not None:
+            rec._thread.join(timeout=2.0)
+
+
+def test_a_null_window_never_reports_a_live_capture(win32, monkeypatch):
+    """_run set _ready straight after CreateWindowExW without checking it.
+
+    On a NULL HWND, RIDEV_INPUTSINK has no target so not one packet is ever
+    recorded — yet start() succeeded. Worse, _teardown then skipped
+    PostMessageW (`if self._hwnd` is falsy) and the join timed out against a
+    thread parked in GetMessageW forever: a leaked daemon thread pinning the
+    recorder and its entire retention buffer, silently.
+    """
+    def _run(self) -> None:
+        self._hwnd = None           # CreateWindowExW returned 0
+        if not self._hwnd:
+            return
+        self._ready.set()           # unreachable, and that is the fix
+
+    monkeypatch.setattr(MouseRecorder, "_run", _run)
+    rec = MouseRecorder()
+    rec._ready = _NeverReady()
+    with pytest.raises(RuntimeError, match="failed to initialize"):
+        rec.start()
+    assert rec._thread is None
+
+
+def test_the_real_run_guards_the_window_handle():
+    """The pins above use a fake pump, so they cannot see the production
+    code drift. Assert the guard is in _run itself."""
+    import inspect
+
+    src = inspect.getsource(MouseRecorder._run)
+    body = src.split("CreateWindowExW", 1)[1]
+    guard = body.index("if not self._hwnd")
+    ready = body.index("self._ready.set()")
+    assert guard < ready, "_ready is set before the HWND is checked"
+
+
 def test_start_off_windows_still_raises(monkeypatch):
     monkeypatch.setattr(raw_input, "RAW_INPUT_AVAILABLE", False)
     rec = MouseRecorder()
