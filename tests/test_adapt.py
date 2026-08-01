@@ -390,3 +390,60 @@ def test_hitting_the_size_ceiling_does_not_give_back_earned_scale():
 
     assert prof.target_scale == pytest.approx(s.max_target_scale), (
         f"earned scale ratcheted down to {prof.target_scale}")
+
+
+def test_one_bad_run_cannot_cross_the_whole_scale_range(fixtures):
+    """A single unrepresentative run used to traverse the entire clamp range.
+
+    Measured before the cap: a 15-shot run at 6.7% — wrong sensitivity after a
+    config change, wrong scenario loaded, spraying to end a run — gives
+    excess -0.783, so scale *= exp(0.987) = 2.68x and clips straight to
+    max_target_scale in ONE step. The error term is structurally asymmetric:
+    accuracy is bounded in [0,1] with the band at 0.85-0.95, so excess below
+    can reach -0.85 while above it caps at +0.05, and the 1.4/0.8 gain split
+    compounds that rather than compensating. The best possible correction
+    afterwards is 3.5% per run, so the excursion costs ~25-30 runs — a whole
+    session training against targets that are trivially easy.
+
+    (It does self-heal: a player facing 2.5x targets really does hit ~100%,
+    which drives the controller back down. So this bounds the step rather
+    than rejecting the run.)
+    """
+    from kovadapt.adapt.engine import _MAX_SIZE_STEP, _MIN_SIZE_STEP
+
+    s = _settings()
+    engine = AdaptationEngine(s, rng=np.random.default_rng(0))
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+
+    def step(hits: int, misses: int, start: float = 1.0) -> float:
+        run.summary["Hit Count:"] = str(hits)
+        run.summary["Miss Count:"] = str(misses)
+        prof = PlayerProfile(scenario="t")
+        prof.target_scale = start
+        engine.plan(prof, run)
+        return prof.target_scale
+
+    # the reported case: nowhere near the 2.5 clamp any more
+    aborted = step(1, 14)
+    assert aborted == pytest.approx(_MAX_SIZE_STEP, abs=1e-6)
+    assert aborted < s.max_target_scale * 0.6
+
+    # the commoner case: one wrong-sensitivity run
+    assert step(16, 24) <= _MAX_SIZE_STEP + 1e-9
+
+    # no single run may leave the band in either direction
+    for hits, misses in ((0, 12), (1, 15), (16, 40), (40, 0), (100, 0), (0, 100)):
+        moved = step(hits, misses)
+        assert _MIN_SIZE_STEP - 1e-9 <= moved <= _MAX_SIZE_STEP + 1e-9, (
+            f"{hits}/{hits + misses} moved scale to {moved}")
+
+    # ...but a genuinely struggling player still REACHES the ceiling, over
+    # several runs rather than one — the cap must not disable the controller
+    prof = PlayerProfile(scenario="t")
+    run.summary["Hit Count:"], run.summary["Miss Count:"] = "2", "38"
+    for _ in range(8):
+        engine.plan(prof, run)
+    assert prof.target_scale == pytest.approx(s.max_target_scale, abs=1e-6)
+
+    # and an in-band run still moves nothing at all
+    assert step(36, 4) == pytest.approx(1.0, abs=1e-9)

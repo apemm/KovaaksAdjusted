@@ -33,6 +33,15 @@ from .stochastic import (
     squash,
 )
 
+# How far the size controller may move target scale in ONE run. See the long
+# note at the call site: without a cap a single unrepresentative run (wrong
+# sensitivity, wrong scenario, spraying to end a run) traverses the entire
+# 0.4-2.5 range in one step, and the best possible correction afterwards is
+# 3.5% per run. The band is deliberately asymmetric in the same direction as
+# the gains — growing targets after a bad run is the accuracy-first call, so
+# it gets more room than shrinking them after a good one.
+_MIN_SIZE_STEP, _MAX_SIZE_STEP = 0.80, 1.35
+
 
 @dataclass
 class AdaptationPlan:
@@ -154,7 +163,29 @@ class AdaptationEngine:
                 # band grows targets 1.4x harder than sitting above it shrinks
                 # them, so the model recovers accuracy before it chases speed.
                 gain = s.size_learning_rate * (1.4 if excess < 0 else 0.8)
-                scale *= math.exp(-gain * excess)
+                # ONE RUN MAY NOT CROSS THE WHOLE RANGE. Measured: a 15-shot
+                # run at 6.7% (wrong sensitivity after a config change, wrong
+                # scenario loaded, spraying to end a run) gives excess -0.783
+                # and exp(0.987) = 2.68x in a SINGLE step, which clips
+                # straight to max_target_scale. The error term is structurally
+                # asymmetric — accuracy is bounded in [0,1] with the band at
+                # 0.85-0.95, so excess below can reach -0.85 while above it
+                # caps at +0.05, a 17x asymmetry the 1.4/0.8 gain split
+                # compounds rather than compensates. The best possible
+                # down-step is 3.5%/run, so the excursion costs ~25-30 runs —
+                # a whole session of training against targets that are
+                # trivially easy, which is the opposite of the product.
+                #
+                # It does self-heal (a player facing 2.5x targets really does
+                # hit ~100%, which drives the controller back down), so this
+                # bounds the step rather than rejecting the run: a genuinely
+                # struggling player still reaches the ceiling, over several
+                # runs, and the deadband keeps intermediate values to work
+                # from. observe()'s zero-shot guard already handles the case
+                # where there is no evidence at all; this handles the case
+                # where the evidence is real but wildly unrepresentative.
+                step = math.exp(-gain * excess)
+                scale *= min(max(step, _MIN_SIZE_STEP), _MAX_SIZE_STEP)
             elif (s.fitts_control_gain > 0 and profile.fitts_obs >= 5
                   and profile.ewma_fitts_ms >= profile.slow_fitts_ms):
                 # Fitts throughput sub-controller: comfortable in the band but
