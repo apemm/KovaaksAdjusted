@@ -40,6 +40,13 @@ class Palette:
     # outlined at 1.29:1.
     border_control: str = ""
     accent_name: str = "indigo"   # the preset key, so nothing reverse-maps hex
+    # The primary button's PRESSED fill. It needs its own token because the
+    # generic `QPushButton:pressed` rule cannot reach an accent button: an
+    # attribute selector and a pseudo-state carry equal CSS2 specificity, so
+    # the later `QPushButton[accent="true"]` declaration wins and the fill
+    # never changed. Measured: byte-identical up and down, all 20 theme x
+    # accent combos.
+    accent_press: str = ""
 
 
 # Accent presets as OKLCH (hue degrees, chroma). Lightness is NOT fixed here:
@@ -58,6 +65,11 @@ ACCENTS: dict[str, tuple[float, float]] = {
 TEXT_CONTRAST = 4.5
 DIM_CONTRAST = 4.5
 CONTROL_CONTRAST = 3.0
+# A selected row must separate from the surface it sits on WITHOUT pushing the
+# text on top of it under the 4.5:1 floor — at 3.0 the fit drives `fg` on
+# selection down to 4.08:1 (measured, every theme x accent). See `selection`
+# in build_palette.
+SELECTION_CONTRAST = 2.6
 
 # (base lightness, chroma, hue) per theme — the whole palette derives from it.
 _BASES = {
@@ -129,21 +141,44 @@ def build_palette(dark: bool, accent: str = "indigo",
     hover = color.fit_contrast(acc_l, acc_c, acc_h, against=bg,
                                target=TEXT_CONTRAST + 1.0,
                                prefer_lighter=is_dark)
+    # Pressed is a proportional darkening of the ACCENT AS FITTED, and that
+    # is the whole subtlety: `acc_l` above is only the PREFERRED lightness,
+    # and _fit_text walks away from it as far as the contrast floor demands.
+    # Deriving the press from acc_l instead produced a 2.4-luminance step on
+    # mint, whose accent is fitted all the way down to #008057 — invisible.
+    # Scaling the fitted colour cannot drift from it. It also always darkens,
+    # on light and dark alike, so a press reads as a press rather than as
+    # more hover: on dark, accent -> accent_hover is only 7-13 per channel.
+    press = "#{:02x}{:02x}{:02x}".format(
+        *(int(round(int(acc[i:i + 2], 16) * 0.78)) for i in (1, 3, 5)))
     # Text ON the accent fill: whichever of paper/ink actually contrasts.
     ink = color.oklch_to_hex(0.16, base_c, base_h)
     paper = color.oklch_to_hex(0.98, base_c * 0.4, base_h)
     accent_fg = paper if color.contrast_ratio(paper, acc) >= \
         color.contrast_ratio(ink, acc) else ink
-    # Selection is DERIVED IN OKLCH, not mixed toward the accent. Mixing is
-    # what it used to do, and mixing a warm cream page toward indigo in
-    # linear light lands on #e8e2e1 — a cold neutral grey. On warm paper it
-    # read as the Windows system highlight the tables were fixed for, which
-    # is exactly the impression it gave: "the theme picker has a colour
-    # disparity". Stating the lightness and the accent's own hue instead
-    # keeps a selection that is visibly a TINT of the accent at every theme,
-    # and keeps it warm where the page is warm.
+    # Selection is DERIVED IN OKLCH at the accent's hue, and then FITTED
+    # against the surface it is actually painted on.
+    #
+    # It used to be mix(bg, accent) in linear light, which on warm cream
+    # landed at #e8e2e1 — a cold neutral that read as the Windows system
+    # highlight the table rules were written to kill. Moving to a stated
+    # hue fixed that, but a stated LIGHTNESS then broke the other end: a
+    # fixed +0.095 offset put dark's selection 1.21:1 from bg_alt where the
+    # old mix had 3.11:1, so a selected row stopped being distinguishable
+    # from an unselected one on three of the four themes. Getting the hue
+    # right is not worth losing the separation.
+    #
+    # Fitting solves both at once, and against `bg_alt` rather than `bg`
+    # because that is the surface selections are drawn on — table rows, list
+    # items, the combo popup. SELECTION_CONTRAST is 2.6 rather than the 3.0
+    # control floor for a measured reason: at 3.0 the fit drives the
+    # selection far enough from the page that `fg` on top of it falls to
+    # 4.08:1, under the 4.5:1 text floor. 2.6 holds text at 4.75:1 worst
+    # case across every theme x accent while keeping the highlight obvious.
     sel_l = base_l + (0.095 if is_dark else -0.055)
-    selection = color.oklch_to_hex(sel_l, 0.055 if is_dark else 0.045, acc_h)
+    selection = color.fit_contrast(
+        sel_l, 0.055 if is_dark else 0.045, acc_h,
+        against=bg_alt, target=SELECTION_CONTRAST, prefer_lighter=is_dark)
 
     good = _fit_text(150.0, 0.130, bg, is_dark, TEXT_CONTRAST)
     warn = _fit_text(85.0, 0.130, bg, is_dark, TEXT_CONTRAST)
@@ -155,7 +190,7 @@ def build_palette(dark: bool, accent: str = "indigo",
         border_control=border_control, fg=fg, fg_dim=fg_dim,
         accent=acc, accent_hover=hover, accent_fg=accent_fg,
         selection=selection, good=good, warn=warn, bad=bad,
-        accent_name=name,
+        accent_name=name, accent_press=press,
     )
 
 
@@ -434,6 +469,15 @@ QPushButton[accent="true"] {{
     font-weight: 600;
 }}
 QPushButton[accent="true"]:hover {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
+/* The generic QPushButton:pressed rule above CANNOT reach this button: an
+   attribute selector and a pseudo-state carry equal CSS2 specificity, so the
+   later QPushButton[accent="true"] declaration wins and the accent fill was
+   never replaced. Measured byte-identical up and down across all 20 theme x
+   accent combos — the app's primary call to action, which writes a playlist
+   and launches Steam, acknowledged a click with nothing at all. */
+QPushButton[accent="true"]:pressed {{
+    background: {p.accent_press}; border-color: {p.accent_press};
+}}
 QPushButton[accent="true"]:disabled {{ background: {p.bg_raised}; color: {p.fg_dim}; }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 4px 8px; }}
 QPushButton[flat="true"]:hover {{ color: {p.accent}; }}

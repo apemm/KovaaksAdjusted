@@ -140,6 +140,44 @@ def test_the_combo_caret_is_a_triangle_not_a_block(qapp, mode, accent):
     box.deleteLater()
 
 
+@pytest.mark.parametrize("mode,accent", CASES)
+def test_the_primary_button_acknowledges_a_click(qapp, mode, accent):
+    """The Play button had NO pressed state, in every theme and accent.
+
+    `QPushButton:pressed` is declared before `QPushButton[accent="true"]`,
+    and an attribute selector and a pseudo-state carry equal CSS2
+    specificity — so the later declaration won and the accent fill was never
+    replaced. The app's primary call to action, which writes a playlist and
+    launches Steam, was byte-identical up and down while every ordinary
+    button beside it darkened.
+
+    Rendered, and compared over the button's whole rect: hover cannot stand
+    in for this, because on the dark themes accent -> accent_hover is only
+    7-13 per channel.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    btn = QPushButton("Play adaptive task")
+    btn.setProperty("accent", True)
+    btn.setStyleSheet(build_qss(pal))
+    btn.resize(200, 34)
+
+    up = btn.grab().toImage()
+    btn.setDown(True)
+    down = btn.grab().toImage()
+
+    changed = sum(1 for x in range(btn.width()) for y in range(btn.height())
+                  if up.pixel(x, y) != down.pixel(x, y))
+    assert changed > 0.5 * btn.width() * btn.height(), (
+        f"{mode}/{accent}: only {changed}px of "
+        f"{btn.width() * btn.height()} changed when pressed")
+    # and the change must be a real step, not a rounding wobble
+    mid = (btn.width() // 2, btn.height() // 2)
+    assert abs(_lum(QColor(up.pixel(*mid))) - _lum(QColor(down.pixel(*mid)))) > 8.0
+    btn.deleteLater()
+
+
 def test_the_glow_is_the_composite_the_alpha_asked_for():
     """What replaced the alpha reproduces Qt's own SourceOver, in sRGB.
 

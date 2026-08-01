@@ -128,6 +128,40 @@ def test_text_stays_readable_on_a_selected_row(mode, accent):
 
 
 @pytest.mark.parametrize("mode,accent", [(m, a) for m, _ in MODES for a in ACCENTS])
+def test_a_selected_row_separates_from_the_surface_it_sits_on(mode, accent):
+    """Both ends of this have been wrong, in opposite directions.
+
+    Mixing bg toward the accent in linear light gave dark 3.11:1 against
+    bg_alt but made light a 1.21:1 cold grey. Fixing the hue with a fixed
+    LIGHTNESS offset fixed light's colour and dropped dark to 1.21:1 — a
+    selected row you could not pick out of a list. Only fitting against the
+    surface holds both, so this asserts against `bg_alt`: that is what
+    selections are painted on (table rows, list items, the combo popup),
+    not `bg`.
+    """
+    from kovadapt.gui.theme import SELECTION_CONTRAST
+
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    ratio = color.contrast_ratio(pal.selection, pal.bg_alt)
+    assert ratio >= SELECTION_CONTRAST - 0.01, (
+        f"{mode}/{accent}: selection {pal.selection} is {ratio:.2f}:1 from "
+        f"the panel {pal.bg_alt} — a selected row would not read as selected")
+
+
+def test_the_selection_floor_leaves_room_for_the_text_on_top():
+    """SELECTION_CONTRAST is 2.6, not the 3.0 control floor, and that is a
+    measured trade rather than a soft target: at 3.0 the fit pushes the
+    selection far enough from the page that `fg` on top of it lands at
+    4.08:1, under the text floor. Raising it must fail here, not on screen.
+    """
+    from kovadapt.gui.theme import SELECTION_CONTRAST
+
+    assert SELECTION_CONTRAST < CONTROL_CONTRAST
+    for _mode, _accent, pal in _palettes():
+        assert color.contrast_ratio(pal.fg, pal.selection) >= TEXT_CONTRAST
+
+
+@pytest.mark.parametrize("mode,accent", [(m, a) for m, _ in MODES for a in ACCENTS])
 def test_the_selection_is_a_tint_of_the_accent_not_a_grey(mode, accent):
     """It used to be mix(bg, accent) in LINEAR light, which on warm cream
     landed at #e8e2e1 — a cold neutral. On paper that reads as the Windows
