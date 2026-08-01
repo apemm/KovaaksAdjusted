@@ -454,11 +454,17 @@ def test_the_axis_prints_one_word_per_band_the_vocabulary_distinguishes(qapp, pa
     assert viz._label_groups(cols)[1] == ("center", 1, 3)
 
 
-def test_the_renderer_reads_the_shared_words_and_not_the_legacy_table(qapp, pal,
-                                                                     monkeypatch):
+def test_the_renderer_reads_the_shared_words(qapp, pal, monkeypatch):
     """A rendered pin, because the words are only a lie once they are on
-    screen: patching the shared vocabulary changes the picture, patching
-    viz.py's legacy tables cannot, and the legacy helper is never called."""
+    screen: patching the shared vocabulary must change the picture.
+
+    This test used to also prove that viz.py's OWN second vocabulary never
+    reached the pixels — the lattice axes and the Coach called the same zone
+    two different things, one finding presented as two. That vocabulary is
+    now deleted rather than merely unused, so the half of this test that
+    patched it is gone: a table that does not exist cannot be rendered, which
+    is a stronger guarantee than a test that it is not.
+    """
     grid, labels = viz.region_grid(
         {f"r{r}c{c}": 0.4 * (r - 2) for r in range(5) for c in range(5)}, 5, 5)
 
@@ -468,12 +474,8 @@ def test_the_renderer_reads_the_shared_words_and_not_the_legacy_table(qapp, pal,
         return _image(hm, pal, 900, 340)
 
     before = render()
-    monkeypatch.setattr(viz, "_ROW_WORDS", {5: ("z1", "z2", "z3", "z4", "z5")})
-    monkeypatch.setattr(viz, "_COL_WORDS", {5: ("q1", "q2", "q3", "q4", "q5")})
-    monkeypatch.setattr(viz, "_band_words",
-                        lambda *a, **k: pytest.fail("the legacy words were rendered"))
-    assert render() == before, "viz.py's own vocabulary reached the pixels"
-
+    assert not hasattr(viz, "zone_words"), "the legacy vocabulary came back"
+    assert not hasattr(viz, "_band_words")
     monkeypatch.setattr(viz, "_axis_words",
                         lambda rows, cols: (("A",) * rows, ("B",) * cols))
     assert render() != before, "the axis does not read the shared vocabulary"

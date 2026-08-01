@@ -324,19 +324,6 @@ def test_heatmap_prints_each_measured_value(qapp, pal):
     assert _image(a, pal, 690, 300) != _image(b, pal, 690, 300)
 
 
-def test_heatmap_axis_words_say_where_a_zone_is(qapp, pal):
-    assert viz.zone_words(0, 0, 5, 5) == "bottom far left"
-    assert viz.zone_words(4, 4, 5, 5) == "top far right"
-    assert viz.zone_words(2, 2, 5, 5) == "middle centre"
-    assert viz.zone_words(0, 2, 3, 3) == "low right"
-    assert viz.zone_words(9, 9, 5, 5) == ""        # off the grid says nothing
-    # past the tabulated grids the words keep their band index, so a label can
-    # never claim a position it does not hold
-    words = viz._band_words(7, viz._ROW_WORDS, viz._ROW_THIRDS)
-    assert len(words) == 7 and words[0].startswith("low") and words[-1].startswith("high")
-    assert words[0].endswith("1") and words[-1].endswith("7")
-
-
 def test_heatmap_counts_the_zones_it_measured(qapp, pal):
     """25 hollow outlines with no explanation read as a broken chart."""
     hm = viz.AsciiHeatmap(title="weakness by wall region")

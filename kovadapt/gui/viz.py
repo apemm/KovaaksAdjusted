@@ -265,67 +265,6 @@ def _label_groups(words: Sequence[str]) -> list[tuple[str, int, int]]:
     return out
 
 
-# --- LEGACY position words -------------------------------------------------
-# viz.py's own five-band words (bottom/low/middle/high/top x far left/left/
-# centre/right/far right). They are a SECOND vocabulary for one grid and
-# NOTHING RENDERS THEM any more: the lattice axes and zone_words' callers were
-# reading them while the Coach, on the same screen, called the same zone
-# "upper left" — one finding presented as two. Kept only because
-# tests/test_viz_legibility.py pins the strings; use _axis_words instead, and
-# do not put these on a surface.
-_COL_WORDS: dict[int, tuple[str, ...]] = {
-    1: ("centre",),
-    2: ("left", "right"),
-    3: ("left", "centre", "right"),
-    4: ("far left", "left", "right", "far right"),
-    5: ("far left", "left", "centre", "right", "far right"),
-}
-_ROW_WORDS: dict[int, tuple[str, ...]] = {
-    1: ("middle",),
-    2: ("low", "high"),
-    3: ("low", "middle", "high"),
-    4: ("bottom", "low", "high", "top"),
-    5: ("bottom", "low", "middle", "high", "top"),
-}
-_COL_THIRDS = ("left", "centre", "right")
-_ROW_THIRDS = ("low", "middle", "high")
-
-
-def _band_words(n: int, table: dict[int, tuple[str, ...]],
-                thirds: tuple[str, str, str]) -> tuple[str, ...]:
-    """LEGACY (see above): position words for `n` bands in viz.py's own
-    vocabulary, bottom/left first. Nothing renders these — _axis_words is what
-    the lattice draws.
-
-    Past the tabulated grids the words fall back to thirds plus the band's
-    own 1-based index, so a label never claims a position it does not hold.
-    """
-    if n in table:
-        return table[n]
-    if n <= 0:
-        return ()
-    out = []
-    for i in range(n):
-        pos = (i + 0.5) / n
-        word = thirds[0] if pos < 1 / 3 else (thirds[1] if pos < 2 / 3 else thirds[2])
-        out.append(f"{word} {i + 1}")
-    return tuple(out)
-
-
-def zone_words(row: int, col: int, rows: int, cols: int) -> str:
-    """LEGACY (see above): 'r2c4' territory in viz.py's own words, joined
-    ('high far left'). Row 0 is the BOTTOM row.
-
-    Not rendered anywhere and not to be: for a zone in words use
-    _region_words(key, settings), the vocabulary the axes and the Coach share.
-    """
-    rw = _band_words(rows, _ROW_WORDS, _ROW_THIRDS)
-    cw = _band_words(cols, _COL_WORDS, _COL_THIRDS)
-    if not (0 <= row < len(rw) and 0 <= col < len(cw)):
-        return ""
-    return f"{rw[row]} {cw[col]}"
-
-
 def _paint_title(p: QPainter, pal, title: str, width: int) -> float:
     """Dim uppercase mono header line; returns the content top y.
 
