@@ -64,8 +64,14 @@ def settings(tmp_path):
 
 def _profile(scenario: str, accs: list[float], *, regions: int = 0,
              ewma: float | None = None, when: datetime | None = None,
-             ) -> PlayerProfile:
-    """A profile with `accs` worth of history, stamped `when` (default now)."""
+             bias_obs: int = 0) -> PlayerProfile:
+    """A profile with `accs` worth of history, stamped `when` (default now).
+
+    `bias_obs` is explicit because readiness counts directional-bias
+    MEASUREMENTS, not runs: a profile can log a hundred runs and never
+    produce one (the watcher needs 8+ flicks with 3+ per side, and `replay`
+    supplies none at all).
+    """
     from kovadapt.profile.player import RegionPosterior
 
     ts = (when or datetime.now()).isoformat()
@@ -75,6 +81,9 @@ def _profile(scenario: str, accs: list[float], *, regions: int = 0,
     prof.history = [{"ts": ts, "accuracy": round(a, 4)} for a in accs]
     for i in range(regions):
         prof.regions[f"r{i // 5}c{i % 5}"] = RegionPosterior(mean=0.1, var=0.2, n=4)
+    if bias_obs:
+        prof.bias_obs = bias_obs
+        prof.ewma_bias = 0.2
     return prof
 
 
@@ -391,11 +400,37 @@ def test_restyle_repaints_heroes_across_theme_switches(qapp, settings):
 
 def test_profile_json_round_trips_into_the_heroes(qapp, settings):
     """The dashboard reads the on-disk profile, not an in-memory shortcut."""
-    prof = _profile("Upsilon", [0.6] * 24, regions=25)
+    prof = _profile("Upsilon", [0.6] * 24, regions=25, bias_obs=8)
     path = prof.save(settings.profile_path)
     assert json.loads(path.read_text())["run_count"] == 24
     dash = _dashboard(settings, "Upsilon")
     assert dash.heroes["readiness"].value.text() == "100%"
     assert dash.heroes["readiness"].word.text() == "dialed in"
+    dash.shutdown()
+    dash.deleteLater()
+
+
+def test_readiness_will_not_say_dialed_in_without_bias_evidence(qapp, settings):
+    """This test previously asserted the OPPOSITE, by accident.
+
+    A profile with 24 runs and all 25 regions mapped but no directional-bias
+    measurement used to render 100% / "dialed in", because the bias term read
+    `1.0 if (run_count >= BIAS_RUNS and ewma_bias) else min(run_count/8, 1)` —
+    an expression identically equal to `min(run_count/8, 1)`, since the else
+    branch is already 1.0 once run_count reaches 8. It was a run counter
+    labelled as evidence, and `kovadapt replay` reaches this state on real
+    data because it never supplies a bias measurement at all.
+    """
+    prof = _profile("Nu", [0.6] * 24, regions=25)      # bias_obs == 0
+    assert prof.bias_obs == 0 and prof.ewma_bias == 0.0
+    prof.save(settings.profile_path)
+    dash = _dashboard(settings, "Nu")
+    hero = dash.heroes["readiness"]
+    assert hero.value.text() == "85%", "the missing 15% is the bias component"
+    assert hero.word.text() != "dialed in"
+    because = hero.because.text().lower()
+    assert "bias evidence 0/8 measurements" in because, because
+    assert "run" not in because.split("bias evidence")[1][:24], (
+        "the bias clause must count measurements, not runs")
     dash.shutdown()
     dash.deleteLater()

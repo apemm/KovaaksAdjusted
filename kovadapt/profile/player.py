@@ -210,15 +210,35 @@ class PlayerProfile:
                     controllers trust their baseline from here on)
           regions   region arms with >= REGION_OBS observations (bandit
                     exploitation beats exploration once arms carry evidence)
-          bias      |EWMA| distinguishable after BIAS_RUNS of smoothing
+          bias      MEASUREMENTS of directional bias folded in, vs BIAS_RUNS
                     (dodge direction stays neutral until then — correct)
+
+        The bias term counts `bias_obs`, not runs, and the distinction is not
+        cosmetic. It used to read
+
+            1.0 if (run_count >= BIAS_RUNS and abs(ewma_bias) > 0.0) else
+            min(run_count / BIAS_RUNS, 1.0)
+
+        which is identically `min(run_count / BIAS_RUNS, 1.0)`: once
+        run_count reaches BIAS_RUNS the else branch is ALREADY 1.0, so the
+        ewma_bias conjunct could not change the result at any input. It was a
+        run counter wearing an evidence label, and it said "bias evidence
+        collected" on profiles that had never taken a single directional-bias
+        measurement. Bias is measurable far less often than a run happens —
+        the watcher supplies one only at >= 8 flicks with >= 3 per side, and
+        `kovadapt replay` never supplies one at all — so a 30-run replay
+        produced exactly that state from a documented command, while the
+        "What changed" ledger on the same screen correctly said no run had
+        yet produced a usable measurement.
+
+        Legacy profiles predate bias_obs, so a non-zero EWMA still counts as
+        evidence — the same allowance observe_bias makes.
         """
         baseline = min(self.run_count / float(self.BASELINE_RUNS), 1.0)
         observed = sum(1 for p in self.regions.values() if p.n >= self.REGION_OBS)
         regions = min(observed / max(region_count, 1), 1.0)
-        bias = 1.0 if (self.run_count >= self.BIAS_RUNS
-                       and abs(self.ewma_bias) > 0.0) else \
-            min(self.run_count / float(self.BIAS_RUNS), 1.0)
+        bias_obs = self.bias_obs or (self.BIAS_RUNS if self.ewma_bias else 0)
+        bias = min(bias_obs / float(self.BIAS_RUNS), 1.0)
         score = 0.5 * baseline + 0.35 * regions + 0.15 * bias
 
         if score >= 0.999:
@@ -235,7 +255,8 @@ class PlayerProfile:
             f"regions {observed}/{region_count} mapped "
             f"({self.REGION_OBS}+ observations each)",
             ("bias evidence collected" if bias >= 1.0 else
-             f"bias evidence {min(self.run_count, self.BIAS_RUNS)}/{self.BIAS_RUNS} runs"),
+             f"bias evidence {min(bias_obs, self.BIAS_RUNS)}/{self.BIAS_RUNS} "
+             "measurements"),
         ]
         missing: list[str] = []
         if baseline < 1.0:
@@ -244,6 +265,15 @@ class PlayerProfile:
         if regions < 1.0:
             missing.append(f"{max(region_count - observed, 0)} wall regions "
                            "still need evidence")
+        # Bias needs its own entry or the fix just moves the contradiction:
+        # `missing` is what builds `message`, so without this a profile with
+        # no bias measurement still reported "dialed in — adaptation is
+        # running on settled evidence".
+        if bias < 1.0:
+            missing.append(
+                f"{self.BIAS_RUNS - min(bias_obs, self.BIAS_RUNS)} more runs "
+                "with a usable directional-bias measurement "
+                "(8+ flicks, 3+ per side)")
         if not missing:
             msg = "dialed in — adaptation is running on settled evidence"
         else:

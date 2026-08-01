@@ -483,10 +483,21 @@ class AnalysisView(QWidget):
         if self._last_insights is not None:
             self._fill_insights(*self._last_insights)   # cards bake colors
         if self.report is not None:
-            for i in range(self.moments.count()):
-                it = self.moments.item(i)
-                kind = self.report.notable[i]["kind"] if i < len(self.report.notable) else ""
-                it.setForeground(QColor(_kind_color(kind)))
+            for r in range(self.moments.count()):
+                it = self.moments.item(r)
+                # By ROW this painted every moment in the NEXT moment's kind
+                # colour and dropped the caption's dim grey. The list is
+                # severity-sorted and the clean reference flick scores 1.0,
+                # so a theme switch on a degraded run rendered "this is your
+                # benchmark" in the BAD colour. On this page the colour IS
+                # the evidence.
+                i = self._moment_index(r)
+                if i < 0:
+                    # the caption row: re-dim it to the NEW palette, since
+                    # skipping would leave the old theme's grey behind
+                    it.setForeground(QColor(theme.current().fg_dim))
+                    continue
+                it.setForeground(QColor(_kind_color(self.report.notable[i]["kind"])))
 
     # ------------------------------------------------------------------
     def set_trends(self, trends) -> None:
@@ -525,7 +536,7 @@ class AnalysisView(QWidget):
             self.replay.clear()
         elif self.moments.currentRow() < 0:
             self.replay.load(self.trace, label="full run", flicks=self.flicks)
-        self._update_clip_state(self.moments.currentRow())
+        self._update_clip_state(self._moment_index(self.moments.currentRow()))
 
     def load_report_file(self, path: Path | str) -> None:
         self.show_report(RunReport.load(path))
@@ -835,11 +846,19 @@ class AnalysisView(QWidget):
             return "pip install kovadapt[clips] — dxcam/opencv are not installed"
         return None
 
-    def _update_clip_state(self, row: int) -> None:
+    def _update_clip_state(self, moment_idx: int) -> None:
         """Enable the clip button when the selected moment has a clip; when it
-        doesn't, the disabled button's tooltip says exactly why."""
-        has_clip = (self.report is not None and row >= 0
-                    and str(row) in (self.report.clip_files or {}))
+        doesn't, the disabled button's tooltip says exactly why.
+
+        The parameter is a MOMENT index, never a list row. It was called
+        `row`, and that name was the whole bug: `clip_files` is keyed by
+        moment (watcher.py enumerates rep.notable), one caller correctly
+        passed an index into a parameter called row, the other passed an
+        actual row, and on clean runs the two are equal — so nothing ever
+        caught it.
+        """
+        has_clip = (self.report is not None and moment_idx >= 0
+                    and str(moment_idx) in (self.report.clip_files or {}))
         self.clip_btn.setEnabled(has_clip)
         off = self._clips_off_reason()
         self.clip_btn.setToolTip(
@@ -848,10 +867,10 @@ class AnalysisView(QWidget):
         self.clip_hint.setVisible(off is not None)
 
     def _play_clip(self) -> None:
-        row = self.moments.currentRow()
-        if self.report is None or row < 0:
+        idx = self._moment_index(self.moments.currentRow())
+        if self.report is None or idx < 0:
             return
-        p = (self.report.clip_files or {}).get(str(row))
+        p = (self.report.clip_files or {}).get(str(idx))
         if p and Path(p).is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(p))))
 

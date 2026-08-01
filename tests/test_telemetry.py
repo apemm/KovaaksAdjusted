@@ -405,6 +405,57 @@ def test_readiness_below_old_ceiling_is_not_full():
     assert r["stage"] != "dialed in"
 
 
+def test_readiness_bias_counts_measurements_not_runs():
+    """The bias term used to be dead code that read as evidence.
+
+        1.0 if (run_count >= BIAS_RUNS and abs(ewma_bias) > 0.0) else
+        min(run_count / BIAS_RUNS, 1.0)
+
+    is identically `min(run_count / BIAS_RUNS, 1.0)` — once run_count reaches
+    BIAS_RUNS the else branch is already 1.0, so the ewma_bias conjunct could
+    not change the answer at any input. A fully-run profile that had never
+    produced a single directional-bias measurement reported "bias evidence
+    collected", 100%, "dialed in — adaptation is running on settled
+    evidence". `kovadapt replay` reaches that state on real data, because it
+    never supplies a bias measurement at all.
+    """
+    prof = PlayerProfile(scenario="r")
+    prof.run_count = PlayerProfile.BASELINE_RUNS
+    for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
+        for _ in range(PlayerProfile.REGION_OBS):
+            prof.region(k).update(0.1)
+
+    r = prof.readiness(9)                       # bias_obs 0, ewma_bias 0.0
+    assert r["bias"] == 0.0
+    assert r["score"] < 1.0 and r["stage"] != "dialed in"
+    assert "bias evidence 0/8 measurements" in r["detail"][2]
+    assert "directional-bias measurement" in r["message"], r["message"]
+
+    # rate-independence: runs alone must never buy the component
+    prof.run_count = 100
+    prof.observe_bias(0.3)
+    prof.observe_bias(0.3)
+    assert prof.readiness(9)["bias"] == 2 / PlayerProfile.BIAS_RUNS
+
+    for _ in range(PlayerProfile.BIAS_RUNS):
+        prof.observe_bias(0.3)
+    r2 = prof.readiness(9)
+    assert r2["bias"] == 1.0
+    assert "bias evidence collected" in r2["detail"][2]
+    assert r2["stage"] == "dialed in"
+
+
+def test_readiness_bias_legacy_profiles_keep_their_credit():
+    """Profiles written before bias_obs existed carry only the EWMA. Losing
+    their credit would be a silent regression on every existing install, so
+    a non-zero EWMA still counts — the same allowance observe_bias makes."""
+    prof = PlayerProfile(scenario="r")
+    prof.run_count = 30
+    prof.ewma_bias = 0.4            # legacy: no bias_obs key in the JSON
+    assert prof.bias_obs == 0
+    assert prof.readiness(9)["bias"] == 1.0
+
+
 # ------------------------------------------------ v0.3.x hardening regressions
 def test_smooth_matches_reference_recurrence():
     """_smooth was vectorized (truncated exponential FIR); it must stay

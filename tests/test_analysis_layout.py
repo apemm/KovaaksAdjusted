@@ -23,7 +23,9 @@ if sys.platform == "win32":
     # the offscreen platform has no system font database of its own
     os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
+from pathlib import Path  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from test_telemetry import TraceBuilder  # noqa: E402
 
@@ -483,6 +485,99 @@ def test_no_surface_gives_a_microstructure_verdict_on_a_noisy_run(qapp, settings
     # and the caption row must not steal the selection or shift the mapping
     row = view.moments.currentRow()
     assert view._moment_index(row) == 0
+    view.deleteLater()
+
+
+def _degraded_two_moments(tmp_path, clips: dict) -> RunReport:
+    """A noisy run with two notable moments, so _fill_moments prepends the
+    caption row and every list row sits one below its moment."""
+    return _report(
+        n_flicks=40, overshoot_rate=0.55, mean_corrections=3.0,
+        input_health={"jitter_ms": 99.0, "polling_hz_est": 1000.0},
+        notable=[{"kind": "clean", "text": "kill 3: your benchmark flick",
+                  "t_start": 0.0, "t_end": 0.2},
+                 {"kind": "overshoot", "text": "kill 7: overshot 38%",
+                  "t_start": 0.4, "t_end": 0.6}],
+        clip_files=clips)
+
+
+def test_the_clip_button_plays_the_moment_that_is_selected(qapp, settings,
+                                                           tmp_path,
+                                                           monkeypatch):
+    """clip_files is keyed by MOMENT (watcher.py enumerates rep.notable), but
+    three sites read the list ROW. On a degraded run the caption row shifts
+    every row one past its moment, so Play opened the NEXT moment's video
+    while the highlighted row and the trajectory replay both showed the one
+    before it. `input_degraded` trips on a 500 Hz mouse, so this is not an
+    exotic state."""
+    from kovadapt.gui import analysis_view as av
+
+    p0 = tmp_path / "m0.mp4"
+    p1 = tmp_path / "m1.mp4"
+    for p in (p0, p1):
+        p.write_bytes(b"x")
+
+    opened = []
+    monkeypatch.setattr(av.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toLocalFile()))
+
+    view = AnalysisView(settings)
+    view.show_report(_degraded_two_moments(tmp_path,
+                                           {"0": str(p0), "1": str(p1)}),
+                     profile=_profile())
+    assert view._moment_index(view.moments.currentRow()) == 0
+    view._play_clip()
+    assert opened and Path(opened[-1]) == p0, (
+        f"played {opened} — the row, not the selected moment")
+
+    # ...and the LAST moment, whose row index is never a clip key at all
+    view.moments.setCurrentRow(view.moments.count() - 1)
+    assert view._moment_index(view.moments.currentRow()) == 1
+    view._play_clip()
+    assert Path(opened[-1]) == p1
+    view.deleteLater()
+
+
+def test_the_clip_button_is_not_greyed_out_for_a_moment_that_has_a_clip(
+        qapp, settings, tmp_path):
+    """show_report's trailing _update_clip_state passed a ROW, and it runs
+    last — so it overwrote the correct state computed by _select_moment and
+    claimed 'No clip was captured for this moment' about a moment with one."""
+    p0 = tmp_path / "m0.mp4"
+    p0.write_bytes(b"x")
+    view = AnalysisView(settings)
+    view.show_report(_degraded_two_moments(tmp_path, {"0": str(p0)}),
+                     profile=_profile())
+    assert view._moment_index(view.moments.currentRow()) == 0
+    assert view.clip_btn.isEnabled(), view.clip_btn.toolTip()
+    assert view.clip_btn.toolTip() == ""
+    view.deleteLater()
+
+
+def test_a_theme_switch_keeps_every_moment_its_own_colour(qapp, settings,
+                                                          tmp_path):
+    """restyle indexed report.notable by ROW. The list is severity-sorted and
+    the clean reference flick scores 1.0, so on a degraded run a theme change
+    painted 'your benchmark flick' in the BAD colour and dropped the
+    caption's dim grey. On this page the colour IS the evidence.
+
+    Needs no clips extra and no checkbox — a degraded run plus a theme switch
+    is the whole reproduction.
+    """
+    from kovadapt.gui import theme
+    from kovadapt.gui.analysis_view import _kind_color
+
+    view = AnalysisView(settings)
+    view.show_report(_degraded_two_moments(tmp_path, {}), profile=_profile())
+    assert view.moments.count() == 3            # caption + two moments
+    view.restyle(theme.current())
+
+    pal = theme.current()
+    assert view.moments.item(0).foreground().color().name() == pal.fg_dim
+    for row, kind in ((1, "clean"), (2, "overshoot")):
+        got = view.moments.item(row).foreground().color().name()
+        assert got == QColor(_kind_color(kind)).name(), (
+            f"row {row} took another moment's colour: {got}")
     view.deleteLater()
 
 
