@@ -304,8 +304,26 @@ class PlayerProfile:
         p = cls.path_for(scenario, profile_dir)
         if not p.is_file():
             return cls(scenario=scenario)
-        d = json.loads(p.read_text())
-        regions = {k: RegionPosterior(**r) for k, r in d.pop("regions", {}).items()}
-        prof = cls(**d)
+        try:
+            d = json.loads(p.read_text(encoding="utf-8-sig"))
+            if not isinstance(d, dict):
+                raise ValueError("profile root is not an object")
+            regions = {k: RegionPosterior(**r)
+                       for k, r in d.pop("regions", {}).items()}
+            prof = cls(**d)
+        except (ValueError, TypeError, AttributeError, KeyError, OSError):
+            # A corrupt profile must never brick the app. `Settings.load` has
+            # always quarantined and booted on defaults; this did not, so one
+            # truncated or zero-byte profile JSON — a power cut mid-save, a
+            # half-synced cloud folder — raised out of every path that loads
+            # one, including MainWindow construction, and the app would not
+            # start at all. Losing one scenario's learning is recoverable
+            # (`kovadapt replay` rebuilds it from the stats history); losing
+            # the app is not.
+            try:
+                p.replace(p.with_suffix(".json.bad"))
+            except OSError:
+                pass
+            return cls(scenario=scenario)
         prof.regions = regions
         return prof

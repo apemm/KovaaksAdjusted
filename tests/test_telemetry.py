@@ -576,3 +576,40 @@ def test_buffers_windowed_snapshot_matches_full(monkeypatch):
     assert np.array_equal(full.dy, fast.dy)
     assert np.array_equal(full.clicks, fast.clicks)
     assert np.array_equal(full.clicks_up, fast.clicks_up)
+
+
+def test_a_corrupt_profile_is_quarantined_instead_of_bricking_the_app(tmp_path):
+    """Settings.load has always set a broken settings.json aside and booted on
+    defaults. PlayerProfile.load did not, so one truncated or zero-byte
+    profile JSON raised out of every path that loads one — including
+    MainWindow construction — and the app would not start at all.
+
+    Losing one scenario's learning is recoverable (`kovadapt replay` rebuilds
+    it from the stats history). Losing the app is not.
+    """
+    import json
+
+    d = tmp_path / "state"
+    (d / "profiles").mkdir(parents=True)
+    name = "Wall Task [Adaptive]"
+    path = PlayerProfile.path_for(name, d)
+
+    for broken in (b"", b"{ truncated", b"[]", b"null", b'{"regions": 3}'):
+        path.write_bytes(broken)
+        prof = PlayerProfile.load(name, d)          # must not raise
+        assert prof.scenario == name and prof.run_count == 0
+        assert not path.exists(), "the corrupt file was left in place"
+        assert path.with_suffix(".json.bad").is_file()
+        path.with_suffix(".json.bad").unlink()
+
+    # a healthy profile is untouched, BOM tolerated
+    good = PlayerProfile(scenario=name)
+    good.run_count = 7
+    good.region("r1c1").update(0.3)
+    good.save(d)
+    raw = path.read_text(encoding="utf-8")
+    path.write_text("\ufeff" + raw, encoding="utf-8")
+    back = PlayerProfile.load(name, d)
+    assert back.run_count == 7
+    assert back.region("r1c1").n == 1
+    assert isinstance(json.loads(path.read_text(encoding="utf-8-sig")), dict)
