@@ -44,7 +44,26 @@ from PySide6.QtWidgets import QWidget
 from . import theme
 
 COLS, ROWS = 141, 67         # odd x odd: true center column/row for the reticle
-_SS = 3                      # supersamples per cell axis
+_SS = 3                      # supersamples per cell axis (the 141x67 default)
+# Supersampling for the SPLASH's denser grids. It was 2, on the reasoning that
+# small cells need it less; the opposite is true. A cell's glyph is chosen from
+# its MEAN INK, so 2x supersampling decides each character from four samples,
+# and measured at the shipped 255x121 tier that picks a different glyph for
+# **37% of cells** than 4x does. Those are not cosmetic disagreements — they
+# are cells landing on the wrong rung of the density ramp, which is exactly
+# the fiber texture the iris is made of.
+#
+# 4 rather than 6: ss2->ss4 moves 37.0% of cells, ss2->ss6 only 39.3%, so the
+# estimate has essentially converged by 4 and further samples buy noise.
+#
+# The cost is real and lands where it is most visible — the field is built in
+# SplashScreen.__init__, before show(), so this is 0.24 s of black screen on
+# launch (construction 0.133 s -> 0.376 s). It is worth it only because
+# DENSITY cannot be raised instead: on a 1080p stage 381x181 gives 2.22 px
+# glyphs, which is dither rather than finer art, and costs 32.2 ms against a
+# 33 ms frame budget. Sharpening the tier we do use is the whole of the
+# available gain. Per-frame cost is unchanged; this is paid once.
+_SS_DENSE = 4
 _ASPECT = 2.0                # cell height : width
 
 # light -> dense (Paul Bourke's standard grayscale ramp, reversed)
@@ -374,7 +393,7 @@ def stencil(cols: int = COLS, rows: int = ROWS) -> list[Cell]:
     did not look like itself in two of the places it appeared."""
     key = (cols, rows)
     if key not in _STENCILS:
-        _STENCILS[key] = _render(cols, rows, _SS if cols <= COLS else 2)
+        _STENCILS[key] = _render(cols, rows, _SS if cols <= COLS else _SS_DENSE)
     return _STENCILS[key]
 
 

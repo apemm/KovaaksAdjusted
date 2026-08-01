@@ -388,3 +388,16 @@ def test_paint_event_runs_on_the_choreography_clock(qapp, logo, splash):
     splash.render(QPixmap(400, 300))
     assert splash._field.last_t == pytest.approx(splash._ct)
     assert splash._frame_ms > 0.0
+
+
+def test_the_splash_supersamples_enough_to_choose_its_glyphs(art):
+    """The dense grids supersample at 4, and the number is load-bearing.
+
+    A cell's character is chosen from its MEAN INK, so 2x decides each glyph
+    from four samples — measured at the shipped 255x121 tier that disagrees
+    with 4x on 37% of cells. Those are cells landing on the wrong rung of
+    the density ramp, i.e. the fiber texture itself. Pinned as a floor, not
+    an equality, so raising it further stays allowed.
+    """
+    assert art._SS_DENSE >= 4
+    assert art.stencil(255, 121) is not art.stencil(art.COLS, art.ROWS)
