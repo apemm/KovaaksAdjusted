@@ -161,6 +161,42 @@ def _rgba(hex_color: str, alpha: int) -> str:
     return f"rgba({r}, {g}, {b}, {alpha})"
 
 
+# Weight of the accent in the window's corner glow. It reads as an alpha and
+# it used to BE one; it is now a mix ratio, and _glow() is why.
+_GLOW_T = {True: 26 / 255.0, False: 18 / 255.0}     # keyed on is_dark
+
+
+def _glow(p: Palette) -> str:
+    """The corner glow, ALREADY COMPOSITED onto the page — never a
+    translucent gradient stop.
+
+    A QMainWindow's background brush is the bottom of the paint stack: there
+    is nothing behind it to blend into, so Qt fills a translucent stop from
+    the cleared backing store, which is black. The 7% accent stop this
+    replaces therefore drew a near-black blob in the top-right corner at
+    every theme. On dark it landed within a few luminance points of the page
+    and went unseen for two versions; on cream it measured luminance 20
+    against the page's 244 — a charcoal box, which is how it was finally
+    caught, by looking. Compositing here means the stop states its result
+    instead of asking the compositor for one it cannot supply.
+
+    The blend is a straight sRGB lerp and deliberately NOT `color.mix`,
+    which interpolates in linear light. Linear light is the better model of
+    how light adds, and it is wrong for this one job: the number being
+    replaced is a Qt ALPHA, and Qt composites 8-bit sRGB. Mixing in linear
+    light honoured the ratio but not the operation — it favours the brighter
+    colour, and a 10% accent came out at luminance 76 on a page of 23, four
+    times the glow the alpha asked for. Reproducing SourceOver keeps the
+    dark themes looking exactly as they always have, so this fix changes
+    only the theme that was broken.
+    """
+    t = _GLOW_T[p.is_dark]
+    top = (int(p.accent[i:i + 2], 16) for i in (1, 3, 5))
+    bot = [int(p.bg[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#{:02x}{:02x}{:02x}".format(
+        *(max(0, min(255, round(b + (a - b) * t))) for a, b in zip(top, bot)))
+
+
 def current() -> Palette:
     """The active palette. Read at use time; never cache across switches."""
     return _current
@@ -228,7 +264,7 @@ QMainWindow, QDialog, QWidget {{ background: {p.bg}; }}
 QMainWindow {{
     background: qradialgradient(cx: 0.9, cy: 0.05, radius: 1.4,
         fx: 0.9, fy: 0.05,
-        stop: 0 {_rgba(p.accent, 26 if p.is_dark else 18)},
+        stop: 0 {_glow(p)},
         stop: 0.45 {p.bg}, stop: 1 {p.bg});
 }}
 
