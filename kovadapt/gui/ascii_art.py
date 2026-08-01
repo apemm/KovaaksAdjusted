@@ -444,7 +444,13 @@ _FLICKER: tuple[tuple[float, float], ...] = (
     (0.20, 1.00),      # a full strike
     (0.28, 0.00),
     (0.37, 0.72),
-    (0.45, 0.10),      # nearly out, not quite
+    # This beat was 0.10 — "nearly out, not quite" — and that reads on the
+    # stage but not on the EYE. The crosshair is drawn over the iris, which
+    # composites around luminance 0.3-0.5, so a 0.10 red at luminance 0.075
+    # is DARKER than what it covers: a dark slash erasing iris detail rather
+    # than a dim crosshair. Every level here is now either off or bright
+    # enough to read as lit against the thing it sits on.
+    (0.45, 0.00),
     (0.54, 1.25),      # overshoot: the moment it holds
     (0.63, 0.85),
     (0.72, 1.00),      # steady from here

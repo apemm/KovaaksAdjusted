@@ -279,15 +279,22 @@ def _arrow_url(hex_color: str, *, up: bool) -> str:
             row += bytes((r, g, b, a))
         rows.append(bytes(row))
 
-    path = Path(tempfile.gettempdir()) / "kovadapt-ui"
-    path.mkdir(parents=True, exist_ok=True)
-    f = path / f"caret-{'up' if up else 'dn'}-{hex_color.lstrip('#')}.png"
+    # The whole filesystem interaction is inside the guard, not just the
+    # write. gettempdir() consults TMP/TEMP and raises if the environment
+    # points at something unusable, and mkdir() raises on a read-only or
+    # full volume — both sat OUTSIDE the try, so on a locked-down machine
+    # build_qss() would raise and take the app's startup with it, for a
+    # decoration. A missing caret is a cosmetic loss; a crash is not.
     data = _png(w, h, rows)
     try:
+        path = Path(tempfile.gettempdir()) / "kovadapt-ui"
+        path.mkdir(parents=True, exist_ok=True)
+        f = path / f"caret-{'up' if up else 'dn'}-{hex_color.lstrip('#')}.png"
         if not f.is_file() or f.read_bytes() != data:
             f.write_bytes(data)
-    except OSError:
-        return ""            # no caret beats a crash; the sheet just omits it
+    except (OSError, ValueError):
+        _ARROWS[key] = ""    # cache the failure: retrying per rule is pointless
+        return ""
     url = str(f).replace("\\", "/")
     _ARROWS[key] = url
     return url

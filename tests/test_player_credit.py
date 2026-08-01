@@ -81,7 +81,9 @@ def test_legacy_profile_with_bias_evidence_is_not_reseeded(tmp_path):
     PlayerProfile.path_for("t", d).write_text(json.dumps(legacy))
 
     prof = PlayerProfile.load("t", d)
-    assert prof.bias_obs == 0
+    # load() migrates the legacy EWMA into explicit credit, so readiness has
+    # one rule (count measurements) and cannot fall when a real one arrives
+    assert prof.bias_obs == PlayerProfile.BIAS_RUNS
     prof.observe_bias(-0.2)
     assert prof.ewma_bias == pytest.approx(0.4 + _alpha() * (-0.2 - 0.4))
 

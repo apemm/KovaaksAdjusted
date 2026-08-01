@@ -366,6 +366,7 @@ def test_readiness_progression():
     # v0.4 raised the ceiling: full calibration needs BASELINE_RUNS runs and
     # REGION_OBS observations per arm — a training week, not a warm-up.
     prof.run_count = PlayerProfile.BASELINE_RUNS
+    prof.bias_obs = PlayerProfile.BIAS_RUNS      # measurements, not runs
     prof.ewma_bias = 0.2
     for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
         post = prof.region(k)
@@ -395,6 +396,7 @@ def test_readiness_below_old_ceiling_is_not_full():
     state — must no longer read as done."""
     prof = PlayerProfile(scenario="r")
     prof.run_count = 10
+    prof.bias_obs = PlayerProfile.BIAS_RUNS
     prof.ewma_bias = 0.2
     for k in [f"r{r}c{c}" for r in range(3) for c in range(3)]:
         post = prof.region(k)
@@ -445,15 +447,32 @@ def test_readiness_bias_counts_measurements_not_runs():
     assert r2["stage"] == "dialed in"
 
 
-def test_readiness_bias_legacy_profiles_keep_their_credit():
+def test_readiness_bias_legacy_profiles_keep_their_credit(tmp_path):
     """Profiles written before bias_obs existed carry only the EWMA. Losing
-    their credit would be a silent regression on every existing install, so
-    a non-zero EWMA still counts — the same allowance observe_bias makes."""
-    prof = PlayerProfile(scenario="r")
-    prof.run_count = 30
-    prof.ewma_bias = 0.4            # legacy: no bias_obs key in the JSON
-    assert prof.bias_obs == 0
+    their credit would be a silent regression on every existing install.
+
+    The credit is stamped by `load` — the path every real profile takes —
+    rather than granted inside readiness(). Doing it in readiness() made the
+    score go BACKWARDS the moment such a profile took its first real
+    measurement: the allowance stopped applying the instant bias_obs became
+    1, so 100% "dialed in" fell to 87% "calibrating".
+    """
+    import json
+
+    d = tmp_path / "prof"
+    (d / "profiles").mkdir(parents=True)
+    legacy = {"scenario": "r", "run_count": 30, "ewma_bias": 0.4}
+    PlayerProfile.path_for("r", d).write_text(json.dumps(legacy))
+
+    prof = PlayerProfile.load("r", d)
+    assert prof.bias_obs == PlayerProfile.BIAS_RUNS
     assert prof.readiness(9)["bias"] == 1.0
+
+    # ...and it does not fall when a real measurement finally lands
+    before = prof.readiness(9)["score"]
+    prof.observe_bias(0.3)
+    assert prof.readiness(9)["bias"] == 1.0
+    assert prof.readiness(9)["score"] >= before
 
 
 # ------------------------------------------------ v0.3.x hardening regressions

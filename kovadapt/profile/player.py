@@ -231,14 +231,14 @@ class PlayerProfile:
         "What changed" ledger on the same screen correctly said no run had
         yet produced a usable measurement.
 
-        Legacy profiles predate bias_obs, so a non-zero EWMA still counts as
-        evidence — the same allowance observe_bias makes.
+        Legacy profiles predate bias_obs and are migrated at LOAD (see
+        `load`), so this can simply count measurements — no allowance, and no
+        way for the score to fall when one arrives.
         """
         baseline = min(self.run_count / float(self.BASELINE_RUNS), 1.0)
         observed = sum(1 for p in self.regions.values() if p.n >= self.REGION_OBS)
         regions = min(observed / max(region_count, 1), 1.0)
-        bias_obs = self.bias_obs or (self.BIAS_RUNS if self.ewma_bias else 0)
-        bias = min(bias_obs / float(self.BIAS_RUNS), 1.0)
+        bias = min(self.bias_obs / float(self.BIAS_RUNS), 1.0)
         score = 0.5 * baseline + 0.35 * regions + 0.15 * bias
 
         if score >= 0.999:
@@ -255,7 +255,7 @@ class PlayerProfile:
             f"regions {observed}/{region_count} mapped "
             f"({self.REGION_OBS}+ observations each)",
             ("bias evidence collected" if bias >= 1.0 else
-             f"bias evidence {min(bias_obs, self.BIAS_RUNS)}/{self.BIAS_RUNS} "
+             f"bias evidence {min(self.bias_obs, self.BIAS_RUNS)}/{self.BIAS_RUNS} "
              "measurements"),
         ]
         missing: list[str] = []
@@ -271,7 +271,7 @@ class PlayerProfile:
         # running on settled evidence".
         if bias < 1.0:
             missing.append(
-                f"{self.BIAS_RUNS - min(bias_obs, self.BIAS_RUNS)} more runs "
+                f"{self.BIAS_RUNS - min(self.bias_obs, self.BIAS_RUNS)} more runs "
                 "with a usable directional-bias measurement "
                 "(8+ flicks, 3+ per side)")
         if not missing:
@@ -311,6 +311,16 @@ class PlayerProfile:
             regions = {k: RegionPosterior(**r)
                        for k, r in d.pop("regions", {}).items()}
             prof = cls(**d)
+            # MIGRATION: profiles written before `bias_obs` existed carry only
+            # the EWMA. Crediting them inside readiness() instead made the
+            # score go BACKWARDS the moment such a profile took its first real
+            # measurement — 100% "dialed in" falling to 87% "calibrating",
+            # because the legacy allowance stopped applying the instant
+            # bias_obs became 1. Stamping the credit here means there is one
+            # rule downstream (count the measurements) and the number only
+            # ever moves forward.
+            if prof.bias_obs == 0 and prof.ewma_bias:
+                prof.bias_obs = cls.BIAS_RUNS
         except (ValueError, TypeError, AttributeError, KeyError, OSError):
             # A corrupt profile must never brick the app. `Settings.load` has
             # always quarantined and booted on defaults; this did not, so one
