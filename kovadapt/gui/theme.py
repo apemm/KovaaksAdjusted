@@ -134,7 +134,16 @@ def build_palette(dark: bool, accent: str = "indigo",
     paper = color.oklch_to_hex(0.98, base_c * 0.4, base_h)
     accent_fg = paper if color.contrast_ratio(paper, acc) >= \
         color.contrast_ratio(ink, acc) else ink
-    selection = color.mix(bg, acc, 0.30 if is_dark else 0.18)
+    # Selection is DERIVED IN OKLCH, not mixed toward the accent. Mixing is
+    # what it used to do, and mixing a warm cream page toward indigo in
+    # linear light lands on #e8e2e1 — a cold neutral grey. On warm paper it
+    # read as the Windows system highlight the tables were fixed for, which
+    # is exactly the impression it gave: "the theme picker has a colour
+    # disparity". Stating the lightness and the accent's own hue instead
+    # keeps a selection that is visibly a TINT of the accent at every theme,
+    # and keeps it warm where the page is warm.
+    sel_l = base_l + (0.095 if is_dark else -0.055)
+    selection = color.oklch_to_hex(sel_l, 0.055 if is_dark else 0.045, acc_h)
 
     good = _fit_text(150.0, 0.130, bg, is_dark, TEXT_CONTRAST)
     warn = _fit_text(85.0, 0.130, bg, is_dark, TEXT_CONTRAST)
@@ -164,6 +173,89 @@ def _rgba(hex_color: str, alpha: int) -> str:
 # Weight of the accent in the window's corner glow. It reads as an alpha and
 # it used to BE one; it is now a mix ratio, and _glow() is why.
 _GLOW_T = {True: 26 / 255.0, False: 18 / 255.0}     # keyed on is_dark
+
+
+def _png(width: int, height: int, rows: list[bytes]) -> bytes:
+    """A minimal RGBA PNG. Deliberately hand-rolled rather than QPixmap:
+    build_qss() must stay callable with no QGuiApplication (the contrast
+    tests do exactly that), and this needs no Qt at all."""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + r for r in rows)      # filter byte 0 per scanline
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6,
+                                         0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9))
+            + chunk(b"IEND", b""))
+
+
+_ARROWS: dict[tuple[str, bool], str] = {}
+_ARROW_W, _ARROW_H, _ARROW_SS = 11, 6, 4
+
+
+def _arrow_url(hex_color: str, *, up: bool) -> str:
+    """Path to a caret image, as a QSS url().
+
+    QT STYLE SHEETS CANNOT DRAW A TRIANGLE. The CSS trick — zero width and
+    height, transparent left/right borders, a solid border on one side — is
+    a browser idiom that Qt parses and gets wrong: it drew a SOLID
+    RECTANGLE in fg_dim. Every combo box and all 25+ spin controls in
+    Adaptability were rendering a filled block where their caret should be,
+    including the spin rule whose own comment said it existed to stop the
+    app looking like a stock Qt dialog. Removing the rule is not a fix
+    either — once a widget is styled, Qt draws no arrow at all.
+
+    So the caret is a real image, generated once per colour and cached on
+    disk under the system temp dir (never the user's data directory, which
+    is why this can run in tests). It is supersampled and box-filtered
+    because an 11x6 hard-edged triangle is visibly jagged.
+    """
+    import tempfile
+    from pathlib import Path
+
+    key = (hex_color, up)
+    cached = _ARROWS.get(key)
+    if cached is not None:
+        return cached
+
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    w, h, ss = _ARROW_W, _ARROW_H, _ARROW_SS
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            hits = 0
+            for sy in range(ss):
+                yy = (y * ss + sy + 0.5) / (h * ss)          # 0..1 down
+                v = yy if not up else 1.0 - yy
+                # half-width of the triangle at this height, in cells
+                half = (1.0 - v) * (w / 2.0)
+                for sx in range(ss):
+                    xx = (x * ss + sx + 0.5) / (w * ss) * w - w / 2.0
+                    if abs(xx) <= half:
+                        hits += 1
+            a = int(round(255 * hits / (ss * ss)))
+            row += bytes((r, g, b, a))
+        rows.append(bytes(row))
+
+    path = Path(tempfile.gettempdir()) / "kovadapt-ui"
+    path.mkdir(parents=True, exist_ok=True)
+    f = path / f"caret-{'up' if up else 'dn'}-{hex_color.lstrip('#')}.png"
+    data = _png(w, h, rows)
+    try:
+        if not f.is_file() or f.read_bytes() != data:
+            f.write_bytes(data)
+    except OSError:
+        return ""            # no caret beats a crash; the sheet just omits it
+    url = str(f).replace("\\", "/")
+    _ARROWS[key] = url
+    return url
 
 
 def _glow(p: Palette) -> str:
@@ -356,9 +448,11 @@ QPlainTextEdit:focus {{ border-color: {p.accent}; }}
 QPlainTextEdit {{ background: {_rgba(p.bg_alt, 208)}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox::down-arrow {{
-    image: none; width: 0; height: 0;
-    border-left: 5px solid transparent; border-right: 5px solid transparent;
-    border-top: 6px solid {p.fg_dim}; margin-right: 6px;
+    image: url({_arrow_url(p.fg_dim, up=False)});
+    width: {_ARROW_W}px; height: {_ARROW_H}px; margin-right: 6px;
+}}
+QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
+    image: url({_arrow_url(p.accent, up=False)});
 }}
 QComboBox QAbstractItemView {{
     background: {p.bg_raised}; border: 1px solid {p.border_control}; border-radius: 6px;
@@ -376,20 +470,18 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {{
     background: transparent; border: none; width: 18px;
 }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-    image: none; width: 0; height: 0; margin-right: 6px;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-bottom: 5px solid {p.fg_dim};
+    image: url({_arrow_url(p.fg_dim, up=True)});
+    width: {_ARROW_W}px; height: {_ARROW_H}px; margin-right: 6px;
 }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-    image: none; width: 0; height: 0; margin-right: 6px;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-top: 5px solid {p.fg_dim};
+    image: url({_arrow_url(p.fg_dim, up=False)});
+    width: {_ARROW_W}px; height: {_ARROW_H}px; margin-right: 6px;
 }}
 QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
-    border-bottom-color: {p.accent};
+    image: url({_arrow_url(p.accent, up=True)});
 }}
 QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
-    border-top-color: {p.accent};
+    image: url({_arrow_url(p.accent, up=False)});
 }}
 
 /* Tables (the Scenarios browser) carried NO rules at all, so Qt fell back

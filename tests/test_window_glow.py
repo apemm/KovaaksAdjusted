@@ -98,6 +98,48 @@ def test_the_corner_glow_stays_near_the_page(qapp, mode, accent):
     win.deleteLater()
 
 
+@pytest.mark.parametrize("mode,accent", CASES)
+def test_the_combo_caret_is_a_triangle_not_a_block(qapp, mode, accent):
+    """Rendered, because this is invisible to any test that reads the sheet.
+
+    Qt Style Sheets cannot draw a CSS triangle. The idiom — zero width and
+    height, transparent left/right borders, one solid border — parsed fine
+    and drew a SOLID RECTANGLE in fg_dim, on every combo box and all 25+
+    spin controls in Adaptability. A triangle narrows: count the caret's
+    pixels per row and the rows must strictly shrink. A block does not.
+    """
+    from PySide6.QtWidgets import QComboBox
+
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    box = QComboBox()
+    box.addItems(["Light", "Dark"])
+    box.setStyleSheet(build_qss(pal))
+    box.resize(220, 34)
+    img = box.grab().toImage()
+
+    page = _lum(QColor(pal.bg_alt))
+    x0, x1 = img.width() - 34, img.width() - 4
+    span = x1 - x0
+    # Widths of the caret, row by row, over the drop-down area. A row that
+    # spans the WHOLE sample is the widget's own top/bottom border, not the
+    # caret — the caret can never be that wide.
+    widths = []
+    for y in range(img.height()):
+        n = sum(1 for x in range(x0, x1)
+                if abs(_lum(QColor(img.pixel(x, y))) - page) > 18)
+        if 0 < n < span:
+            widths.append(n)
+    # Drop 1-2px rows: those are the rounded border's corner fringe clipping
+    # into the sample window, and the caret's own antialiased tip.
+    body = [n for n in widths if n >= 3]
+    assert len(body) >= 3, (
+        f"{mode}/{accent}: no caret drawn at all (rows {widths})")
+    assert all(a > b for a, b in zip(body, body[1:])), (
+        f"{mode}/{accent}: caret rows {body} do not taper — that is a block")
+    assert max(body) <= 14, f"{mode}/{accent}: caret is {max(body)}px wide"
+    box.deleteLater()
+
+
 def test_the_glow_is_the_composite_the_alpha_asked_for():
     """What replaced the alpha reproduces Qt's own SourceOver, in sRGB.
 

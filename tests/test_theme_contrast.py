@@ -115,6 +115,40 @@ def test_rainbow_holds_perceptual_lightness():
         f"rainbow luminance varies {max(lums) / min(lums):.2f}x across hue")
 
 
+@pytest.mark.parametrize("mode,accent", [(m, a) for m, _ in MODES for a in ACCENTS])
+def test_text_stays_readable_on_a_selected_row(mode, accent):
+    """`selection` had NO contrast test, and it is a text background: the
+    sheet puts p.fg on it for selected list rows, table rows, menu items and
+    the combo popup."""
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    ratio = color.contrast_ratio(pal.fg, pal.selection)
+    assert ratio >= TEXT_CONTRAST, (
+        f"{mode}/{accent}: text {pal.fg} on selection {pal.selection} "
+        f"is {ratio:.2f}:1")
+
+
+@pytest.mark.parametrize("mode,accent", [(m, a) for m, _ in MODES for a in ACCENTS])
+def test_the_selection_is_a_tint_of_the_accent_not_a_grey(mode, accent):
+    """It used to be mix(bg, accent) in LINEAR light, which on warm cream
+    landed at #e8e2e1 — a cold neutral. On paper that reads as the Windows
+    system highlight, the exact thing the table rules were written to kill,
+    and it is what Arjun saw in the theme picker.
+
+    So: the selection must carry more chroma than the page it sits on, and
+    must lean the same way as its own accent rather than toward grey.
+    """
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    sel = color.hex_to_rgb(pal.selection)
+    bg = color.hex_to_rgb(pal.bg)
+    # chroma proxy: spread between the extreme channels
+    spread = max(sel) - min(sel)
+    assert spread > max(bg) - min(bg), (
+        f"{mode}/{accent}: selection {pal.selection} is flatter than the "
+        f"page {pal.bg} — that is a grey, not a tint")
+    # and it must be visibly a different surface from the page
+    assert pal.selection != pal.bg
+
+
 def test_accent_name_survives_on_the_palette():
     """gui/ascii_art._cat_coat needs the preset key, not a hex match."""
     for accent in ACCENTS:
