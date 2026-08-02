@@ -1,0 +1,145 @@
+# Build, sign and publish the Windows release on a v* tag.
+#
+# Signing is OPTIONAL and gated on the Azure variables existing, so this
+# workflow is useful before the signing account is set up: without them it
+# builds and publishes an unsigned zip exactly as the v0.5.0 release was made,
+# and the moment the variables appear it starts signing. Nothing needs editing
+# here to switch it on.
+#
+# Why signing matters at all: Windows 11's Smart App Control BLOCKS unsigned
+# binaries outright — measured on the maintainer's own machine, CodeIntegrity
+# event 3077 under policy "VerifiedAndReputableDesktop", Requested Signing
+# Level 2 against Validated 1. It is an OR, not an AND: a binary signed by any
+# CA in Microsoft's Trusted Root Program is allowed without waiting for
+# reputation to accrue.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}       # lets a build be rehearsed without cutting a tag
+
+permissions:
+  id-token: write             # OIDC federation to Azure — no secrets in CI
+  contents: write             # attach assets to the release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Deliberately NOT packaging/build.ps1: that script runs
+      # `pip install ".[gui]"`, which is right on a fresh runner but replaces
+      # a developer's editable install when run locally. Calling PyInstaller
+      # against the spec keeps one build path that behaves the same in both
+      # places. The [clips] extra is skipped because the spec excludes dxcam
+      # and cv2 anyway.
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui]" pyinstaller
+          python -m PyInstaller packaging/kovadapt.spec --noconfirm --clean
+
+      - name: Check whether signing is configured
+        id: signing
+        shell: pwsh
+        env:
+          AZ_CLIENT: ${{ vars.AZURE_CLIENT_ID }}
+          AZ_TENANT: ${{ vars.AZURE_TENANT_ID }}
+          AZ_SUB: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZ_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZ_PROFILE: ${{ vars.AZURE_CERT_PROFILE }}
+          AZ_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+        run: |
+          $have = $env:AZ_CLIENT -and $env:AZ_TENANT -and $env:AZ_SUB -and
+                  $env:AZ_ACCOUNT -and $env:AZ_PROFILE -and $env:AZ_ENDPOINT
+          "enabled=$($have.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($have) { Write-Host "Signing configured — the release will be signed." }
+          else { Write-Host "::warning::Azure signing variables are not set; publishing an UNSIGNED build. Smart App Control will block it on default Windows 11." }
+
+      - name: Azure login
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # EVERY PE, not just kovadapt.exe. Smart App Control checks each module
+      # as it loads, and a sweep of a real build found 101 binaries of which
+      # 21 were unsigned: kovadapt.exe, twelve numpy .pyd, OpenBLAS,
+      # libcrypto/libssl, psutil, yaml and two charset_normalizer modules.
+      # Signing only the launcher would leave it blocked.
+      #
+      # Re-signing Qt's and CPython's already-valid signatures with ours is
+      # deliberate: it makes the pipeline immune to a new wheel quietly adding
+      # an unsigned .pyd. ~101 signatures per release sits well inside the
+      # Basic tier's 5,000/month.
+      - name: Sign every binary in dist/
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\kovadapt
+          files-folder-filter: exe,dll,pyd
+          files-folder-recurse: true
+          file-digest: SHA256
+          # TIMESTAMPING IS NOT OPTIONAL. Artifact Signing certificates are
+          # valid for three days; an untimestamped signature is dead in 72
+          # hours and every download after that is unsigned again.
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Gate — no unsigned binary may ship
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem dist\kovadapt -Recurse -Include *.exe,*.dll,*.pyd -File |
+                 ForEach-Object { Get-AuthenticodeSignature $_.FullName } |
+                 Where-Object { $_.Status -ne 'Valid' }
+          if ($bad) {
+            $bad | Format-Table Status, Path -AutoSize
+            throw "$($bad.Count) binaries are unsigned or invalid — Smart App Control would block this build"
+          }
+          $n = (Get-ChildItem dist\kovadapt -Recurse -Include *.exe,*.dll,*.pyd -File).Count
+          Write-Host "All $n binaries signed and valid."
+
+      # Signed FIRST, then zipped — the archive has to contain the signatures.
+      # This is also why the build stays one-dir: with --onefile the payload
+      # would have to be signed inside site-packages before PyInstaller ran.
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" }
+                 else { "dev-$(git rev-parse --short HEAD)" }
+          $zip = "kovadapt-$tag-win64.zip"
+          Compress-Archive -Path dist\kovadapt -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File "$zip.sha256" -Encoding ascii
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          Write-Host "$zip  $([math]::Round((Get-Item $zip).Length/1MB,1)) MB"
+          Write-Host "sha256 $hash"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kovadapt-win64
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.zip }}.sha256
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.zip }}.sha256
