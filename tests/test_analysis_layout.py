@@ -598,3 +598,44 @@ def test_the_input_health_gate_has_exactly_one_definition():
         hit = literal.search(inspect.getsource(mod))
         assert hit is None, f"{mod.__name__} re-declares {hit.group(1)}"
     assert literal.search(inspect.getsource(report)) is not None
+
+
+def test_pace_is_not_measurable_on_a_tracking_run(qapp, settings):
+    """Tracking scenarios use INVINCIBLE targets, so KovaaK's reports
+    Kills: 0 by design and kills-per-second is structurally undefined — not
+    slow. On a real 95-scenario library that is 49 scenarios, and PACE showed
+    them a permanent "0.00 kills/s".
+
+    The because-clause was the worse half: it fell through to the no-baseline
+    branch and explained the zero with "the EWMA is seeded from the first run,
+    so it needs a second" — a specific, checkable, wrong reason on a profile
+    with fifty runs.
+    """
+    view = AnalysisView(settings)
+    prof = _profile(archetype="tracking")
+    prof.run_count = 50
+    prof.ewma_kps = 0.0                       # never had a kill to average
+    view.show_report(_report(kills=0, kps=0.0, accuracy=0.91), profile=prof)
+
+    tile = view.kpis["pace"]
+    assert tile.value.text() == "—", "a fake zero, not a measurement"
+    assert tile.read.text() == "not-measurable"
+    tip = tile.toolTip().lower()
+    assert "invincible" in tip, tip
+    assert "seeded from the first run" not in tip, "the false reason came back"
+    assert "50" not in tip, "run count is irrelevant to why this is unmeasurable"
+    view.deleteLater()
+
+
+def test_pace_still_reads_normally_when_there_are_kills(qapp, settings):
+    """The guard must not silence a scenario that does have a pace."""
+    view = AnalysisView(settings)
+    prof = _profile()
+    prof.run_count = 10
+    prof.ewma_kps = 1.0
+    view.show_report(_report(kills=30, kps=1.4), profile=prof)
+    tile = view.kpis["pace"]
+    assert tile.value.text() == "1.40"
+    assert tile.read.text() == "faster"
+    assert "1.00 EWMA" in tile.toolTip()
+    view.deleteLater()

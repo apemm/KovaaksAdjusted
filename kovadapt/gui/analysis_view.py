@@ -605,10 +605,31 @@ class AnalysisView(QWidget):
 
         # pace against the profile's own EWMA
         base = profile.ewma_kps if profile is not None else 0.0
+        arche = (profile.archetype if profile is not None else "") or ""
+        if rep.kills == 0:
+            # PACE IS NOT MEASURABLE HERE, and saying "0.00 kills/s · no
+            # baseline" was two lies at once. Tracking scenarios use
+            # INVINCIBLE targets, so KovaaK's reports Kills: 0 by design and
+            # kills-per-second is structurally undefined rather than slow —
+            # on a real 95-scenario library that is 49 scenarios showing a
+            # permanent fake zero. Worse, the no-baseline branch below then
+            # explained it with "the EWMA needs a second run", which is a
+            # specific and wrong reason on a profile with fifty.
+            if arche == "tracking":
+                why = ("This scenario's targets are invincible, so KovaaK's "
+                       "reports no kills and kills-per-second cannot describe "
+                       "it. Accuracy and flick quality are the reads that "
+                       "apply to tracking.")
+            else:
+                why = ("KovaaK's recorded no kills in this run, so there is "
+                       "no kills-per-second to report. Accuracy above is "
+                       "still measured from the shots that were fired.")
+            self.kpis["pace"].set_value("—", "kills/s", "not-measurable",
+                                        "dim", why)
         # run_count > 1, not > 0: observe_run seeds every EWMA to the first
         # run's own value, so at run_count == 1 this compares the run against
         # itself and reports a confident "steady · +0%".
-        if profile is not None and profile.run_count > 1 and base > 0:
+        elif profile is not None and profile.run_count > 1 and base > 0:
             delta = rep.kps / base - 1.0
             if delta >= _PACE_STEP:
                 read, tone = "faster", "good"
@@ -627,7 +648,9 @@ class AnalysisView(QWidget):
                    f"{'' if runs == 1 else 's'} of history — the pace EWMA is "
                    "seeded from the first run, so it needs a second before it "
                    "is a baseline rather than a copy of this run.")
-        self.kpis["pace"].set_value(f"{rep.kps:.2f}", "kills/s", read, tone, why)
+        if rep.kills:
+            self.kpis["pace"].set_value(f"{rep.kps:.2f}", "kills/s",
+                                        read, tone, why)
 
         # mean flick time, read through the Coach's own microstructure gate —
         # the SAME gate, not a copy of its cutoffs. Reading overshoot and
