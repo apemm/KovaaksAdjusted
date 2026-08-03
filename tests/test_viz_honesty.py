@@ -430,7 +430,9 @@ def test_the_lattice_speaks_the_same_region_words_as_the_coach(qapp, pal):
         for r in range(rows):
             for c in range(cols):
                 coach = _region_words(f"r{r}c{c}", dims)
-                axis = f"{row_words[r]} {col_words[c]}"
+                # either word may be "" — a single-band axis has nothing to
+                # compare that band against, so it is not named at all
+                axis = " ".join(w for w in (row_words[r], col_words[c]) if w)
                 # _region_words collapses its one middle-centre zone to
                 # "center"; every other zone must match word for word
                 assert axis == coach or (coach == "center"
@@ -636,3 +638,34 @@ def test_the_ruler_labels_where_the_track_actually_ends(qapp, pal):
     assert not np.array_equal(band(floored), band(plain)), (
         "the ruler prints the same label with and without a floor — it is "
         "labelling the largest value, not the end of the track")
+
+
+def test_a_wall_with_one_band_does_not_call_it_upper(qapp):
+    """`region_rows` is a saveable setting floored at 1, and at 1 the old
+    arithmetic gave `0 >= 0` and labelled the wall's only band "upper" — on
+    the heatmap's axis gutter, on the panel title ("WEAKEST ZONE THIS RUN:
+    UPPER LEFT") and in the Coach, all at once. A band word is a comparison,
+    and there is nothing here to compare it to.
+
+    `movement.region_deficits` really does emit an r0c*-only dict at that
+    setting, so this is a reachable configuration, not a hypothetical.
+    """
+    from kovadapt.analysis.insights import _region_words
+
+    one_row = SimpleNamespace(region_rows=1, region_cols=5)
+    for c, want in enumerate(["left", "center", "center", "center", "right"]):
+        assert _region_words(f"r0c{c}", one_row) == want
+
+    one_col = SimpleNamespace(region_rows=5, region_cols=1)
+    assert _region_words("r0c0", one_col) == "lower"
+    assert _region_words("r4c0", one_col) == "upper"
+
+    # and the axis agrees: no row word at all, rather than a wrong one
+    row_words, col_words = viz._axis_words(1, 5)
+    assert row_words == ("",), row_words
+    assert col_words == ("left", "center", "center", "center", "right")
+
+    # the ordinary grid is untouched
+    normal = SimpleNamespace(region_rows=5, region_cols=5)
+    assert _region_words("r0c0", normal) == "lower left"
+    assert _region_words("r2c2", normal) == "center"

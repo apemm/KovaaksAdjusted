@@ -868,3 +868,30 @@ def test_the_replay_transport_is_dead_until_there_is_something_to_replay(
     assert view.moments.count() != 1 or view.moments.item(0).text() != \
         "Notable moments appear here after a run.", "the placeholder survived a run"
     view.deleteLater()
+
+
+def test_no_view_widens_a_splitter_handle_past_what_the_theme_asked_for(qapp, settings):
+    """`setHandleWidth(14)` for "room to breathe" did not add space — the theme
+    FILLS a splitter handle with `pal.border`, so widening it produced a 14px
+    column of border colour between panels that carry their own frames, and
+    ran it 26px above the panels, up beside the titles where it divides
+    nothing.
+
+    Compared against a control splitter of the SAME ORIENTATION under the same
+    sheet, not against `QApplication.style().pixelMetric(PM_SplitterWidth)` —
+    that returns Qt's raw 4 with no widget context and would pass a view that
+    overrides the theme by one.
+    """
+    from PySide6.QtWidgets import QSplitter
+
+    view = AnalysisView(settings)
+    control = QSplitter(Qt.Horizontal)
+    want = control.handleWidth()
+    for name in ("charts", "detail"):
+        got = getattr(view, name).handleWidth()
+        assert got == want, (
+            f"{name} sets its handle to {got}px against the theme's {want}px — "
+            "a view is overriding the sheet")
+    control.deleteLater()
+    view.deleteLater()
+    qapp.processEvents()

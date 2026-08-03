@@ -534,9 +534,12 @@ class AnalysisView(QWidget):
         self.coach_lay.setSpacing(10)
         self.coach_box.hide()
 
-        # room to breathe: generous spacing between every panel
-        self.charts.setHandleWidth(14)
-        self.detail.setHandleWidth(14)
+        # NO setHandleWidth here. The theme sizes a splitter handle to 5px and
+        # FILLS it with pal.border, so widening it to 14 for "room to breathe"
+        # did not add space — it added a 14px column of border colour between
+        # two group boxes that already carry their own 1px frames, and ran it
+        # 26px ABOVE the panels, up beside the titles where it divides nothing.
+        # Breathing room belongs in the layout spacing below, which has it.
         lay = QVBoxLayout(self)
         # ZERO, explicitly. Every section view inherited Qt's ~9px default
         # layout margin, while the section's own H1, its divider rule and

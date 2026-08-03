@@ -269,7 +269,8 @@ def test_border_is_never_the_ink_a_chart_reads_with():
             # faint"). Its contrast question is a different one.
             continue
         for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-            if "pal.border" in line and "border_control" not in line:
+            code = line.split("#", 1)[0]        # prose about the token is fine
+            if "pal.border" in code and "border_control" not in code:
                 offenders.append(f"{f.name}:{i}: {line.strip()}")
     assert not offenders, (
         "pal.border used as painted ink — promote to border_control:\n  "

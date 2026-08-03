@@ -76,7 +76,7 @@ from PySide6.QtWidgets import QToolTip, QWidget
 # (it never imports gui/), so gui/ imports the wording from it rather than
 # restating it — analysis_view.py imports the same function for its titles, and
 # the Coach prints it two panels below these charts.
-from ..analysis.insights import _region_words
+from ..analysis.insights import _region_parts
 from . import motion, theme
 
 _BAR_FILL = "#"                  # one filled cell of a bar's track
@@ -241,10 +241,8 @@ def _axis_words(rows: int, cols: int) -> tuple[tuple[str, ...], tuple[str, ...]]
     """
     dims = SimpleNamespace(region_rows=max(int(rows), 1),
                            region_cols=max(int(cols), 1))
-    row_words = tuple(_region_words(f"r{r}c0", dims).rsplit(" ", 1)[0]
-                      for r in range(max(rows, 0)))
-    col_words = tuple(_region_words(f"r0c{c}", dims).split(" ", 1)[-1]
-                      for c in range(max(cols, 0)))
+    row_words = tuple(_region_parts(r, 0, dims)[0] for r in range(max(rows, 0)))
+    col_words = tuple(_region_parts(0, c, dims)[1] for c in range(max(cols, 0)))
     return row_words, col_words
 
 

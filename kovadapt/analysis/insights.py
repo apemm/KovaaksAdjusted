@@ -321,9 +321,34 @@ def _region_words(key: str, settings: Settings) -> str:
         r, c = int(r), int(c)
     except ValueError:
         return key
+    return _join_region_parts(*_region_parts(r, c, settings))
+
+
+def _region_parts(r: int, c: int, settings: Settings) -> tuple[str, str]:
+    """(vertical word, horizontal word) for a zone — either may be "".
+
+    A band word is a COMPARISON, and an axis with one band has nothing to
+    compare it to. At region_rows = 1 the old arithmetic gave `0 >= 0` and
+    called the wall's only band "upper", on three surfaces at once: the
+    heatmap's axis gutter, the panel title ("WEAKEST ZONE THIS RUN: UPPER
+    LEFT") and the Coach. region_rows is a saveable setting floored at 1, and
+    movement.region_deficits really does emit an r0c*-only dict there.
+
+    Returning the parts rather than a sentence is also what lets
+    gui.viz._axis_words ask for a row word without splitting a string: given
+    "left" it used to rsplit into "left" and label the ROW that.
+    """
     rows, cols = settings.region_rows, settings.region_cols
-    vert = "upper" if r >= rows - max(rows // 3, 1) else \
-        ("lower" if r < max(rows // 3, 1) else "middle")
-    horiz = "left" if c < max(cols // 3, 1) else \
-        ("right" if c >= cols - max(cols // 3, 1) else "center")
-    return "center" if (vert, horiz) == ("middle", "center") else f"{vert} {horiz}"
+    vert = "" if rows < 2 else (
+        "upper" if r >= rows - max(rows // 3, 1) else
+        ("lower" if r < max(rows // 3, 1) else "middle"))
+    horiz = "" if cols < 2 else (
+        "left" if c < max(cols // 3, 1) else
+        ("right" if c >= cols - max(cols // 3, 1) else "center"))
+    return vert, horiz
+
+
+def _join_region_parts(vert: str, horiz: str) -> str:
+    if (vert, horiz) == ("middle", "center"):
+        return "center"
+    return " ".join(w for w in (vert, horiz) if w) or "the wall"
