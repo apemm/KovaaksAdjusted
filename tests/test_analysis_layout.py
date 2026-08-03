@@ -776,3 +776,49 @@ def test_the_cold_start_caption_promises_no_ink(qapp, settings):
     view = AnalysisView(settings)
     assert "red bar" not in view.bias_caption.text(), view.bias_caption.text()
     view.deleteLater()
+
+
+# --------------------------------------------- severity is an ordinal ramp
+def test_the_coach_dot_never_runs_backwards_against_its_own_sort_order():
+    """The map was `{"warning": warn, "attention": bad}.get(sev, good)` while
+    _SEVERITY_RANK puts warning at 0 — sorted first, always left unfolded. So
+    the most severe card wore amber and the less severe one wore red, and with
+    two warnings the default folded Coach showed two amber dots and no red at
+    all: the only red card was behind "show all".
+    """
+    from kovadapt.gui.analysis_view import _SEVERITY_RANK, _severity_color
+
+    pal = theme.build_palette(dark=True, accent="indigo")
+    alarm = {pal.bad: 0, pal.warn: 1, pal.fg_dim: 2}
+    ranked = sorted(_SEVERITY_RANK, key=lambda s: _SEVERITY_RANK[s])
+    got = [_severity_color(s, pal) for s in ranked]
+
+    assert all(c in alarm for c in got), f"a dot colour outside the ramp: {got}"
+    levels = [alarm[c] for c in got]
+    assert levels == sorted(levels), (
+        f"severity {ranked} maps to alarm order {levels} — a card ranked worse "
+        "than another is carrying the calmer colour")
+    assert len(set(got)) == len(got), f"two severities share a dot: {got}"
+
+
+def test_an_informational_card_does_not_wear_the_all_clear():
+    """`info` fell through to pal.good, so a card that merely states something
+    — sensitivity doctrine, say — wore the same green as a passed check."""
+    from kovadapt.gui.analysis_view import _severity_color
+
+    pal = theme.build_palette(dark=True, accent="indigo")
+    assert _severity_color("info", pal) != pal.good
+    assert _severity_color("info", pal) == pal.fg_dim
+
+
+@pytest.mark.parametrize("accent", ["indigo", "ocean", "mint", "rose", "ember"])
+def test_no_coach_dot_is_ever_the_users_accent(accent):
+    """The accent is a preference. Under rose it is red and under mint it is
+    green, so any severity painted with it reports the user's taste as a
+    verdict."""
+    from kovadapt.gui.analysis_view import _SEVERITY_RANK, _severity_color
+
+    pal = theme.build_palette(dark=True, accent=accent)
+    for sev in _SEVERITY_RANK:
+        assert _severity_color(sev, pal) != pal.accent, (
+            f"{accent}: severity {sev!r} is painted in the accent")

@@ -269,3 +269,26 @@ def test_a_check_row_is_transparent_but_its_fix_button_is_not(qapp, settings):
     box.setParent(None)
     box.deleteLater()
     qapp.processEvents()
+
+
+@pytest.mark.parametrize("accent", ["indigo", "ocean", "mint", "rose", "ember"])
+def test_an_info_row_is_not_painted_in_whatever_accent_you_picked(accent):
+    """`info` was pal.accent, and on live probes info is the LARGEST bucket of
+    the twelve checkup rows — nearly half the list wearing the user's colour
+    preference as a status. Under rose every informational row reads as an
+    error; under mint, as an all-clear. The ○ shape survives that, but colour
+    is the channel a reader takes a verdict from.
+    """
+    from kovadapt.gui import theme
+    from kovadapt.gui.optimizer_window import _status_color
+
+    theme._apply(QApplication.instance() or QApplication([]),
+                 theme.build_palette(dark=True, accent=accent))
+    pal = theme.current()
+    assert _status_color("info") != pal.accent, (
+        f"{accent}: informational rows are painted in the accent")
+    for status in ("ok", "warn", "bad"):
+        assert _status_color(status) != pal.accent, (
+            f"{accent}: {status} rows are painted in the accent")
+    # ...and "here is a reading" must not look like "could not read this"
+    assert _status_color("info") != _status_color("unknown")

@@ -129,6 +129,24 @@ _SEVERITY_RANK = {"warning": 0, "attention": 1, "info": 2}
 _COACH_FOLD = 2
 
 
+def _severity_color(severity: str, pal) -> str:
+    """The dot beside a Coach card, derived from the card's RANK above.
+
+    It was `{"warning": pal.warn, "attention": pal.bad}.get(sev, pal.good)`,
+    which runs backwards against the very ordering it sits next to: `warning`
+    is rank 0, sorted first and always left unfolded, and it got amber, while
+    the less severe `attention` got red. With two warnings the default folded
+    Coach showed two amber dots and no red at all — the only red card was
+    behind "show all".
+
+    And `info` fell through to pal.good, so a card that merely states
+    something wore the all-clear green. It is neutral now: the ramp is
+    ordinal and info is not on it.
+    """
+    return (pal.bad, pal.warn, pal.fg_dim)[
+        min(_SEVERITY_RANK.get(severity, 2), 2)]
+
+
 class _InsightCard(QFrame):
     """One coach insight: severity dot, title, sourced body + prescription,
     and the reasoning/citations chain (the cite-everything rule made visible)."""
@@ -138,7 +156,7 @@ class _InsightCard(QFrame):
         self.setProperty("card", True)
         self.insight = ins       # the card's evidence, still queryable after build
         pal = theme.current()
-        color = {"warning": pal.warn, "attention": pal.bad}.get(ins.severity, pal.good)
+        color = _severity_color(ins.severity, pal)
         head = QLabel(f"<span style='color:{color}'>●</span>  <b>{ins.title}</b>"
                       f"  <span style='color:{pal.fg_dim}'>{ins.confidence}</span>")
         head.setTextFormat(Qt.RichText)

@@ -59,9 +59,21 @@ _LOG_H = 72
 
 
 def _status_color(status: str) -> str:
+    """Status colour, from the semantic ramp only — never from the accent.
+
+    `info` used to be pal.accent, and the accent is whatever the user picked
+    in Settings. On live probes info is the LARGEST bucket of the twelve
+    checkup rows, so nearly half the list wore it: under the rose accent every
+    informational row read as an error, under mint as an all-clear. The dot
+    SHAPE survives that (○ against ●), but colour is the channel a reader
+    takes a verdict from, and it was reporting a preference.
+
+    Neutral ink instead — a fact, not a judgement — and `unknown` stays dim,
+    so "here is a reading" and "could not read this" stop looking alike.
+    """
     pal = theme.current()
     return {"ok": pal.good, "warn": pal.warn, "bad": pal.bad,
-            "info": pal.accent}.get(status, pal.fg_dim)
+            "info": pal.fg}.get(status, pal.fg_dim)
 
 
 class _ScanWorker(QThread):
