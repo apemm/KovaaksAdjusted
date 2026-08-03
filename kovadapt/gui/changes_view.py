@@ -277,6 +277,12 @@ class SpawnMap:
     planned: dict[str, float] = field(default_factory=dict)
     focus: str | None = None
     reason: str = ""
+    # Why there is no layout to show, when the cause is that we could not READ
+    # one. Separate from `reason`, which means "the generator looked at this
+    # and deliberately left it alone" — a positive finding. Overloading one
+    # field with both had a missing .sce reporting as "the author's own, left
+    # untouched": a claim about a file that was never opened.
+    error: str | None = None
 
     @property
     def total_base(self) -> int:
@@ -304,8 +310,11 @@ class SpawnMap:
         even share, the absolute anchor saturated at three times, and the panel
         painted solid "@" blocks — maximum emphasis — one line above the knob
         saying no spawn focus can be applied to this scenario at all.
+
+        `error` disqualifies it: a file that could not be read was not "left
+        alone", it was never opened. That case has its own header line.
         """
-        return bool(self.reason)
+        return bool(self.reason) and self.error is None
 
     def share(self, key: str) -> float:
         """Share of target spawns in `key` as the variant actually stands —
@@ -1893,6 +1902,11 @@ class SpawnGrid(_Art):
     def title_text(self) -> str:
         """The panel's own header line — it has to name what it is showing."""
         sm = self._map
+        if sm is not None and sm.error:
+            # NOT "left untouched": that asserts the generator looked at the
+            # file and chose not to change it. This one could not be opened,
+            # and the panel's own band underneath already says so.
+            return "spawn layout per wall region - unreadable"
         if sm is not None and sm.untouched:
             return "spawn layout per wall region - the author's own, left untouched"
         return "spawn density per wall region - base vs variant"
@@ -2432,9 +2446,10 @@ class ChangesView(QWidget):
 
         spawns = facts.spawns
         if spawns is None:
+            err = facts.error or "no scenario file to read"
             spawns = SpawnMap(cols=self.s.region_cols, rows=self.s.region_rows,
                               focus=profile.last_focus,
-                              reason=facts.error or "no scenario file to read")
+                              reason=err, error=err)
         if not spawns.adaptive and not spawns.reason:
             # No variant on disk: show what the next generation would ask for,
             # labelled as planned rather than written.

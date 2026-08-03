@@ -635,3 +635,61 @@ def test_the_whole_page_renders_at_every_width_without_a_blank_panel(
     for art in view._art:
         assert _ink(art) > 0, f"{type(art).__name__} rendered blank at {width}"
     view.deleteLater()
+
+
+def test_a_base_file_that_cannot_be_read_is_not_reported_as_left_untouched(tmp_path):
+    """`untouched` means the generator LOOKED at this layout and chose not to
+    change it — a positive finding, and the panel says so: "the author's own,
+    left untouched". `reason` carried that meaning and was also being used as
+    the I/O-error channel, so a base .sce that is simply not on disk came out
+    the same way — a claim about a file that was never opened, printed
+    directly above the panel's own band reading "Wall Task.sce is not in the
+    game's Scenarios folder".
+
+    It also fires for a base that exists and will not parse.
+    """
+    missing = SpawnMap(cols=5, rows=5, reason="no scenario file to read",
+                       error="no scenario file to read")
+    assert not missing.untouched, (
+        "an unreadable file is reported as one the generator left alone")
+
+    grid = SpawnGrid(_install(tmp_path, xs=1, ys=5))
+    grid.set_map(missing)
+    title = grid.title_text().lower()
+    assert "untouched" not in title, title
+    assert "unreadable" in title, title
+
+    # the legitimate case still reads the way it did
+    left_alone = SpawnMap(cols=5, rows=5, base={"r2c0": 5},
+                          reason="5 spawns on a 5x5 grid: nothing to resample")
+    assert left_alone.untouched
+    grid.set_map(left_alone)
+    assert "untouched" in grid.title_text().lower()
+
+
+def test_the_page_itself_does_not_claim_untouched_for_a_scenario_it_cannot_find(
+        tmp_path, qapp):
+    """End to end through ChangesView, because the field that carries this is
+    set at the construction site and asserting on a hand-built SpawnMap cannot
+    see that site at all — dropping `error=` there passes a direct test.
+
+    A profile exists for a scenario whose .sce has been removed from the
+    game's Scenarios folder: exactly what happens when someone reinstalls
+    KovaaK's, or renames a scenario they had been training.
+    """
+    from kovadapt.gui.changes_view import ChangesView
+
+    s = _install(tmp_path, xs=1, ys=5)
+    prof = _trained()
+    prof.save(s.profile_path)
+    scen = Path(s.kovaaks_root) / "Saved" / "SaveGames" / "Scenarios"
+    for f in scen.glob("*.sce"):
+        f.unlink()                       # the base is gone; the profile is not
+
+    view = ChangesView(s)
+    view.show_scenario("Wall Task")
+    title = view.grid.title_text().lower()
+    assert "untouched" not in title, (
+        f"the page claims a layout it could not read was left untouched: {title!r}")
+    assert "unreadable" in title, title
+    view.deleteLater()
