@@ -103,14 +103,24 @@ def generate_insights(
         if arche != "clicking" else "primary-sourced band"
     )
     accs = _recent(profile, "accuracy", 3)
+    # "Recent runs" is load-bearing, the same way "across runs" is on the
+    # region card below. These fire off the last THREE runs while the KPI tile
+    # at the top of the same page reads THIS run, and the two can legitimately
+    # disagree — open a saved report from yesterday and the tile says "88% /
+    # in-band" in green while an unqualified card says "Accuracy parked above
+    # the band" in red, prescribing that you deliberately slow down. Its own
+    # evidence line reads "...this run 88%". Naming the window is what stops
+    # one page from arguing with itself.
     if len(accs) >= 3 and all(a > hi for a in accs):
         out.append(_from_kb(
-            "dx-acc-above-band", "diagnosis", "attention", "Accuracy parked above the band",
+            "dx-acc-above-band", "diagnosis", "attention",
+            "Recent runs parked above the accuracy band",
             f"Last {len(accs)} runs all above the {hi:.0%} ceiling for the "
             f"{arche} band ({band_note}); this run {rep.accuracy:.0%}."))
     elif len(accs) >= 3 and all(a < lo for a in accs):
         out.append(_from_kb(
-            "dx-acc-below-band", "diagnosis", "attention", "Accuracy below the band floor",
+            "dx-acc-below-band", "diagnosis", "attention",
+            "Recent runs below the accuracy band floor",
             f"Last {len(accs)} runs all under the {lo:.0%} floor for the "
             f"{arche} band ({band_note}); this run {rep.accuracy:.0%}."))
 

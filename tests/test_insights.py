@@ -205,3 +205,32 @@ def test_sens_insight_silent_on_thin_evidence():
     # clean run: no substantive side -> the card must not appear at all
     got = generate_insights(make_rep(), make_prof(history=hist()), settings())
     assert "p-sensitivity-doctrine" not in ids(got)
+
+
+def test_a_multi_run_card_never_states_its_verdict_as_if_it_were_this_run():
+    """The KPI tile at the top of the Analysis page reads THIS run; these
+    cards fire off the last three. Both are correct and they can legitimately
+    disagree — open a saved report from yesterday and the tile reads "90% /
+    in-band" in green while the card, unqualified, read "Accuracy parked above
+    the band" in red and prescribed deliberately slowing down. Its own
+    evidence line said "...this run 90%".
+
+    The region card already carries "across runs" for exactly this reason and
+    says so in a comment. This pins the same rule for the band cards: a card
+    whose condition is evaluated over a window has to name that window in its
+    TITLE, where the reader meets it.
+    """
+    prof = make_prof(history=hist(acc=0.99))
+    # this run sits comfortably INSIDE the band the last three ran above
+    rep = make_rep(accuracy=0.90)
+    got = generate_insights(rep, prof, settings())
+    cards = [i for i in got if i.id in ("dx-acc-above-band", "dx-acc-below-band")]
+    assert cards, "the band card did not fire on three above-ceiling runs"
+
+    for card in cards:
+        assert "recent" in card.title.lower(), (
+            f"{card.title!r} states a three-run finding with no window named, "
+            "on a page whose headline number is this run alone")
+        # and the evidence still carries both, so the card stays checkable
+        assert "Last 3 runs" in card.reasoning
+        assert "this run 90%" in card.reasoning
