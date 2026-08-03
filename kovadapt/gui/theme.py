@@ -541,6 +541,7 @@ QPushButton[accent="true"]:pressed {{
    button beside it already uses. */
 QPushButton[accent="true"]:disabled {{
     background: {p.bg_alt}; border-color: {p.border_control}; color: {p.fg_dim};
+    font-weight: 400;   /* the live rule sets 600; a dead button is not bold */
 }}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 4px 8px; }}
 QPushButton[flat="true"]:hover {{ color: {p.accent}; }}
@@ -637,6 +638,20 @@ QCheckBox::indicator {{
 }}
 QCheckBox::indicator:hover {{ border-color: {p.accent}; }}
 QCheckBox::indicator:checked {{ background: {p.accent}; border-color: {p.accent}; }}
+/* DISABLED states for everything the replay transport switches off. Only
+   QPushButton had one, so disabling a control changed its behaviour and
+   nothing else: three checked checkboxes kept a full-strength accent fill,
+   the labels kept full brightness and the slider kept an accent handle, over
+   a canvas with no data. A control that looks live and does nothing is worse
+   than one that is visibly out of service. */
+QCheckBox:disabled {{ color: {p.fg_dim}; }}
+QCheckBox::indicator:disabled {{ border-color: {p.border}; background: {p.bg}; }}
+QCheckBox::indicator:checked:disabled {{
+    background: {p.border_control}; border-color: {p.border_control};
+}}
+QSlider::handle:horizontal:disabled {{ background: {p.border_control}; }}
+QSlider::sub-page:horizontal:disabled {{ background: {p.border}; }}
+QLabel:disabled {{ color: {p.fg_dim}; }}
 
 /* Transparent, all three, for one reason: `QMainWindow, QDialog, QWidget`
    above sets the PAGE colour, and a Qt type selector matches subclasses — so

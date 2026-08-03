@@ -90,6 +90,13 @@ _BIAS_CAPTION_DEGRADED = (f"{_BIAS_CAPTION_BASE} No direction is marked worst: "
                           "this run's input timing is too noisy to rank them.")
 _BIAS_CAPTION_NO_COST = (f"{_BIAS_CAPTION_BASE} No direction is marked worst: "
                          "nothing this run cost enough to rank.")
+# "Nothing cost enough to rank" is a MEASUREMENT, and a run with no flicks
+# has not made one — the chart beside this caption reads "waiting for flick
+# data" on exactly that run. Two sentences about the same absence, one of
+# them claiming more than it can.
+_MOMENTS_EMPTY = "Notable moments appear here after a run."
+_BIAS_CAPTION_NO_FLICKS = (f"{_BIAS_CAPTION_BASE} No flicks were recorded for "
+                           "this run, so there is nothing to rank.")
 
 
 def _bias_caption(vals: list[float], ns: list[int], degraded: bool) -> str:
@@ -103,7 +110,9 @@ def _bias_caption(vals: list[float], ns: list[int], degraded: bool) -> str:
     """
     if degraded:
         return _BIAS_CAPTION_DEGRADED
-    if sum(ns) == 0 or all(viz.prints_zero(v) for v in vals):
+    if sum(ns) == 0:
+        return _BIAS_CAPTION_NO_FLICKS
+    if all(viz.prints_zero(v) for v in vals):
         return _BIAS_CAPTION_NO_COST
     return _BIAS_CAPTION
 _TRAVEL_CAPTION = ("Where the crosshair spent its time around each engagement — "
@@ -558,7 +567,7 @@ class AnalysisView(QWidget):
         # reachable except through show_report.
         self.replay.clear("no run loaded yet — finish a run, or open a saved "
                           "report from the header")
-        empty = QListWidgetItem("Notable moments appear here after a run.")
+        empty = QListWidgetItem(_MOMENTS_EMPTY)
         empty.setFlags(Qt.NoItemFlags)          # not selectable: it is not a moment
         self.moments.addItem(empty)
 
@@ -970,6 +979,19 @@ class AnalysisView(QWidget):
             self.heat_map.set_data(None)
             self.heat_caption.setText(_TRAVEL_CAPTION)
 
+    def _place_moments_placeholder(self) -> None:
+        """The unselectable row that says what this list is for.
+
+        `_fill_moments` clears the list, which destroys the one put there at
+        construction — so the cold-start fix worked only until the first run,
+        and any run that produced no notable moments went back to a blank
+        panel. The placeholder belongs wherever the list ends up empty, not
+        only in __init__.
+        """
+        item = QListWidgetItem(_MOMENTS_EMPTY)
+        item.setFlags(Qt.NoItemFlags)
+        self.moments.addItem(item)
+
     def _fill_moments(self, rep: RunReport) -> None:
         self.moments.blockSignals(True)
         self.moments.clear()
@@ -989,6 +1011,8 @@ class AnalysisView(QWidget):
             it.setForeground(QColor(_kind_color(m["kind"])))
             it.setData(Qt.UserRole, i)
             self.moments.addItem(it)
+        if not self.moments.count():
+            self._place_moments_placeholder()
         self.moments.blockSignals(False)
         if rep.notable:
             # First SELECTABLE row — row 0 may be the input-health caption,

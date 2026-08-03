@@ -865,8 +865,16 @@ def test_the_replay_transport_is_dead_until_there_is_something_to_replay(
     for name in ("btn", "speed_btn", "scrub", "toggle_path"):
         assert getattr(view.replay, name).isEnabled(), (
             f"replay.{name} stayed dead on a run that has telemetry")
-    assert view.moments.count() != 1 or view.moments.item(0).text() != \
-        "Notable moments appear here after a run.", "the placeholder survived a run"
+    # A run with NO notable moments legitimately keeps the placeholder — the
+    # panel still has to say what it is for; a run that HAS them replaces it.
+    from kovadapt.gui.analysis_view import _MOMENTS_EMPTY
+    assert view.moments.item(0).text() == _MOMENTS_EMPTY, (
+        "a run with no notable moments left the panel blank again")
+    view.show_report(_report(n_flicks=2, notable=[
+        {"t_start": 1000.0, "t_end": 1000.4, "kind": "overshoot",
+         "text": "Overshot a right flick by 36%."}]), trace=tr)
+    assert view.moments.item(0).text() != _MOMENTS_EMPTY, (
+        "the placeholder survived a run that produced moments")
     view.deleteLater()
 
 
@@ -995,4 +1003,44 @@ def test_the_region_map_answers_to_the_same_gate_as_the_bias_panel(qapp, setting
         input_health={"jitter_ms": 0.4, "polling_hz_est": 1000.0},
         region_deficits={"r2c2": 3.60, "r0c0": -0.4, "r1c1": 0.2}))
     assert "weakest zone" in view.heat_map._title.lower()
+    view.deleteLater()
+
+
+def test_a_run_with_no_flicks_does_not_claim_nothing_cost_enough(qapp, settings):
+    """"Nothing this run cost enough to rank" is a MEASUREMENT, and a run
+    with no flicks has not made one — the chart beside this caption reads
+    "waiting for flick data" on exactly that run. Two sentences about the
+    same absence, one of them claiming more than it can."""
+    from kovadapt.gui.analysis_view import (_BIAS_CAPTION_NO_COST,
+                                            _BIAS_CAPTION_NO_FLICKS)
+
+    view = AnalysisView(settings)
+    view.show_report(_report(n_flicks=0, bias={
+        d: {"n": 0, "overshoot": 0.0, "corrections": 0.0}
+        for d in ("left", "vertical", "right")}))
+    assert view.bias_caption.text() == _BIAS_CAPTION_NO_FLICKS
+    assert "cost enough to rank" not in view.bias_caption.text()
+
+    # a run that DID measure flicks, all of which rounded to nothing, still
+    # gets the measured sentence — the two states are not the same state
+    view.show_report(_report(n_flicks=119, bias=_bias(
+        left=0.004, vertical=0.002, right=0.003)))
+    assert view.bias_caption.text() == _BIAS_CAPTION_NO_COST
+    view.deleteLater()
+
+
+def test_the_moments_placeholder_survives_a_run_that_produced_none(qapp, settings):
+    """`_fill_moments` clears the list, which destroyed the placeholder put
+    there at construction — so the cold-start fix held only until the first
+    run, and any run with no notable moments went back to a blank panel."""
+    from kovadapt.gui.analysis_view import _MOMENTS_EMPTY
+
+    view = AnalysisView(settings)
+    assert view.moments.item(0).text() == _MOMENTS_EMPTY
+
+    view.show_report(_report(n_flicks=40))          # no notable moments
+    assert view.moments.count() == 1
+    assert view.moments.item(0).text() == _MOMENTS_EMPTY, (
+        "a run with no notable moments left the panel blank")
+    assert not (view.moments.item(0).flags() & Qt.ItemIsSelectable)
     view.deleteLater()

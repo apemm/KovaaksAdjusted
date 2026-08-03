@@ -420,3 +420,62 @@ def test_a_disabled_primary_button_looks_dead(name, kw, accent="indigo"):
         app.processEvents()
     finally:
         app.setStyleSheet(previous)
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_a_disabled_control_looks_disabled(name, kw):
+    """Only QPushButton had a `:disabled` rule, so switching a control off
+    changed its behaviour and nothing else. The Analysis page disables the
+    whole replay transport when there is no trace — and three checked
+    checkboxes kept a full-strength accent fill, the labels kept full
+    brightness and the slider kept an accent handle, over an empty canvas.
+    A control that looks live and does nothing is worse than one that is
+    visibly out of service."""
+    import os
+    import sys
+
+    pytest.importorskip("PySide6")
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+    import numpy as np
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QSlider
+
+    from kovadapt.gui import theme
+
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    previous = app.styleSheet()
+    theme._apply(app, build_palette(accent="indigo", **kw))
+
+    def shot(widget):
+        widget.resize(150, 26)
+        widget.show()
+        app.processEvents()
+        img = widget.grab().toImage().convertToFormat(QImage.Format_RGB32)
+        buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+        return buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :150, :3].copy()
+
+    def checked_box():
+        box = QCheckBox("path")
+        box.setChecked(True)
+        return box
+
+    try:
+        for label, make in (("checked checkbox", checked_box),
+                            ("slider", lambda: QSlider(Qt.Horizontal)),
+                            ("label", lambda: QLabel("clean flick"))):
+            live, dead = make(), make()
+            dead.setEnabled(False)
+            a, b = shot(live), shot(dead)
+            moved = int((np.abs(a.astype(int) - b.astype(int)).sum(axis=-1) > 12).sum())
+            assert moved > 40, (
+                f"{name}: a disabled {label} renders {moved}px different from a "
+                "live one — it looks operable and does nothing")
+            for w in (live, dead):
+                w.setParent(None)
+                w.deleteLater()
+            app.processEvents()
+    finally:
+        app.setStyleSheet(previous)
