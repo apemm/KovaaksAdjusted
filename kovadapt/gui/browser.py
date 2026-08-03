@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..adapt.archetype import detect_archetype
+from ..adapt.archetype import detect_archetype, stamp_archetype
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
 from . import theme
@@ -324,15 +324,13 @@ class ScenarioBrowser(QWidget):
         name = self.selected()
         if not name:
             return
-        from ..adapt.archetype import detect_archetype as detect
         from ..adapt.engine import AdaptationEngine, settle_focus
         from ..scenario.generator import generate_adaptive_variant
 
         adaptive = name + ADAPTIVE_SUFFIX
         profile = PlayerProfile.load(adaptive, self.s.profile_path)
         profile.scenario = adaptive
-        if not profile.archetype:
-            profile.archetype = detect(name)
+        stamp_archetype(profile, name)
         try:
             plan = AdaptationEngine(self.s).plan(profile, None)
             out = generate_adaptive_variant(

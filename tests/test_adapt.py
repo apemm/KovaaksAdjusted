@@ -447,3 +447,95 @@ def test_one_bad_run_cannot_cross_the_whole_scale_range(fixtures):
 
     # and an in-band run still moves nothing at all
     assert step(36, 4) == pytest.approx(1.0, abs=1e-9)
+
+
+# ------------------------------------------- archetype evidence, not latching
+def test_a_name_only_guess_is_corrected_by_the_first_real_run():
+    """Two of the four stamping sites — the browser's Start adapting and
+    `kovadapt generate` — run BEFORE the scenario has ever been played, and
+    every site latched on `if not profile.archetype`. So a pre-run click wrote
+    a name-only guess that no amount of later evidence could correct.
+
+    Measured on the real 95-scenario library: 31 scenarios take `clicking`
+    from their name and `tracking` from their own stats — Whisphere,
+    WhisphereRawControl, waldoTS, cloverRawControl, the Polarized Hell set.
+    Each would have been scored forever against an accuracy band its
+    invincible targets can never reach.
+    """
+    from datetime import datetime
+
+    from kovadapt.adapt.archetype import classify_archetype, stamp_archetype
+    from kovadapt.profile.player import PlayerProfile
+    from kovadapt.stats.models import Run
+
+    # a tracking scenario whose name says nothing: invincible targets, so the
+    # CSV reports hits and no kills at all
+    name = "WhisphereRawControl"
+    tracking_run = Run(scenario=name, started=datetime(2026, 8, 3, 10, 0),
+                       summary={"Kills:": "0", "Hit Count:": "412",
+                                "Miss Count:": "180", "Score:": "900"})
+    assert classify_archetype(name) == ("clicking", "default")
+    assert classify_archetype(name, tracking_run) == ("tracking", "stats")
+    # ...and a run that does NOT trip the heuristic is evidence of clicking,
+    # not an absence of evidence. Without that the clicking case never
+    # reaches "stats" and stays re-evaluatable forever.
+    clicking_run = Run(scenario=name, started=datetime(2026, 8, 3, 10, 0),
+                       summary={"Kills:": "30", "Hit Count:": "45",
+                                "Miss Count:": "20", "Score:": "800"})
+    assert classify_archetype(name, clicking_run) == ("clicking", "stats")
+
+    prof = PlayerProfile(scenario=name + " [Adaptive]")
+    stamp_archetype(prof, name)                       # the pre-run click
+    assert (prof.archetype, prof.archetype_source) == ("clicking", "default")
+
+    changed = stamp_archetype(prof, name, tracking_run)   # the first real run
+    assert changed == ("clicking", "tracking"), changed
+    assert prof.archetype_source == "stats"
+
+
+def test_a_stats_stamp_is_not_re_litigated_by_later_runs():
+    """One correction, then it holds — otherwise an odd run flips a scenario
+    back and forth and the adaptation parameters move with it."""
+    from datetime import datetime
+
+    from kovadapt.adapt.archetype import stamp_archetype
+    from kovadapt.profile.player import PlayerProfile
+    from kovadapt.stats.models import Run
+
+    prof = PlayerProfile(scenario="X [Adaptive]")
+    prof.archetype, prof.archetype_source = "tracking", "stats"
+    odd = Run(scenario="X", started=datetime(2026, 8, 3, 10, 0),
+              summary={"Kills:": "30", "Hit Count:": "40", "Miss Count:": "5"})
+    assert stamp_archetype(prof, "X", odd) is None
+    assert prof.archetype == "tracking"
+
+
+def test_a_profile_written_before_the_field_existed_self_heals():
+    """`archetype_source` is "" on every profile already on disk, which sorts
+    below every real level — so the next run re-evaluates it. Those are
+    exactly the profiles that may be carrying a pre-run guess."""
+    from datetime import datetime
+
+    from kovadapt.adapt.archetype import stamp_archetype
+    from kovadapt.profile.player import PlayerProfile
+    from kovadapt.stats.models import Run
+
+    old = PlayerProfile(scenario="Whisphere [Adaptive]")
+    old.archetype = "clicking"                 # no source: an old file
+    assert old.archetype_source == ""
+    run = Run(scenario="Whisphere", started=datetime(2026, 8, 3, 10, 0),
+              summary={"Kills:": "0", "Hit Count:": "300", "Miss Count:": "90"})
+    assert stamp_archetype(old, "Whisphere", run) == ("clicking", "tracking")
+
+
+def test_a_named_archetype_still_beats_no_evidence():
+    """A keyword match is real evidence and must not be overwritten by a
+    later call that has nothing — the order the sites run in is not fixed."""
+    from kovadapt.adapt.archetype import stamp_archetype
+    from kovadapt.profile.player import PlayerProfile
+
+    prof = PlayerProfile(scenario="Close Strafes Invincible [Adaptive]")
+    stamp_archetype(prof, "Close Strafes Invincible")
+    assert (prof.archetype, prof.archetype_source) == ("tracking", "name")
+    assert stamp_archetype(prof, "Close Strafes Invincible") is None
+    assert prof.archetype == "tracking"

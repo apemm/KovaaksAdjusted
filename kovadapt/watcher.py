@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .adapt.archetype import detect_archetype
+from .adapt.archetype import stamp_archetype
 from .adapt.engine import AdaptationEngine, settle_focus
 from .analysis.fatigue import SessionFatigueTracker
 from .analysis.report import RunReport, build_report, run_time_window
@@ -270,8 +270,16 @@ class SessionWatcher:
         rep = self._analyze(run)
         profile = PlayerProfile.load(self.adaptive_name, self.s.profile_path)
         profile.scenario = self.adaptive_name
-        if not profile.archetype:
-            profile.archetype = detect_archetype(self.base, run)
+        # A run is the strongest evidence there is, so it may correct a stamp
+        # made from the name alone — or from nothing, which is what the
+        # browser and `kovadapt generate` leave behind when they are used
+        # before the scenario has ever been played. Only ever upgrades, so a
+        # scenario is re-classified at most once and then holds.
+        changed = stamp_archetype(profile, self.base, run)
+        if changed:
+            self.log(f"  archetype: {changed[0]} -> {changed[1]} — this run "
+                     "disagrees with the guess made before it was played")
+        elif profile.archetype_source == "stats" and profile.run_count == 0:
             self.log(f"  archetype: {profile.archetype}")
         # Shadow-policy schema: profile state is captured BEFORE observe()
         # folds this run in (ml/shadow.py:SHADOW_LOG_SCHEMA).
@@ -315,7 +323,7 @@ class SessionWatcher:
         profile = PlayerProfile.load(self.adaptive_name, self.s.profile_path)
         profile.scenario = self.adaptive_name
         if not profile.archetype:
-            profile.archetype = detect_archetype(self.base)
+            stamp_archetype(profile, self.base)
         plan = self.engine.plan(profile, None)
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()

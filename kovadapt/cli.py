@@ -71,7 +71,7 @@ def cmd_watch(args) -> None:
 
 
 def cmd_generate(args) -> None:
-    from .adapt.archetype import detect_archetype
+    from .adapt.archetype import stamp_archetype
 
     s = _settings()
     scenario = _base_scenario(args.scenario)
@@ -84,8 +84,7 @@ def cmd_generate(args) -> None:
     adaptive = scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
-    if not profile.archetype:
-        profile.archetype = detect_archetype(scenario)
+    stamp_archetype(profile, scenario)
     plan = AdaptationEngine(s).plan(profile, None)
     out = generate_adaptive_variant(
         s.scenarios_dir / f"{scenario}.sce", plan, s,

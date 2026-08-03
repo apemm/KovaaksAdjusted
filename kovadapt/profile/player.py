@@ -58,6 +58,12 @@ class PlayerProfile:
     ewma_bias: float = 0.0           # directional flick bias (+ = left weaker)
     bias_obs: int = 0                # runs with a usable bias measurement folded in
     archetype: str = ""              # clicking | tracking | switching ("" = unknown)
+    # WHICH evidence produced `archetype` — see adapt.archetype.EVIDENCE.
+    # "" on profiles written before this field existed, which reads as the
+    # weakest level, so the next real run re-evaluates and self-heals them.
+    # Without it every caller latched on `if not profile.archetype`, and a
+    # name-only guess made before the first run could never be corrected.
+    archetype_source: str = ""
     # Fitts throughput trend (ms of flick time per bit of difficulty; lower =
     # better). Two EWMAs at different half-lives form the minimal persisted
     # trend signal: fast at/above slow means throughput has stopped improving.
