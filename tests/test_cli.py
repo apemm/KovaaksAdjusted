@@ -287,3 +287,54 @@ def test_replay_with_no_stats_does_not_destroy_the_learned_profile(env, capsys):
     assert "replayed 1 runs" in capsys.readouterr().out
     assert PlayerProfile.load(BASE + ADAPTIVE_SUFFIX,
                               env.profile_path).run_count == 1
+
+
+def test_the_headless_watchdog_leaves_an_audit_trail(env, tmp_path, monkeypatch):
+    """The start-with-Windows entry runs under pythonw with NO CONSOLE, so
+    `print` goes nowhere. Without this the only artefact of a background
+    process that changes another process's priority and affinity would be the
+    change itself — which is the shape of software people are right to
+    distrust. The record is what separates the two.
+    """
+    import threading
+    import time
+
+    log = env.profile_path / "watchdog.log"
+    assert not log.exists()
+
+    t = threading.Thread(target=lambda: cli.cmd_watchdog(SimpleNamespace()),
+                         daemon=True)
+    t.start()
+    for _ in range(40):                       # let the first line land
+        if log.is_file() and log.read_text(encoding="utf-8").strip():
+            break
+        time.sleep(0.05)
+
+    text = log.read_text(encoding="utf-8")
+    assert "watchdog started" in text
+    # it must say what it does and how to remove it, not just that it ran
+    assert "High priority" in text
+    assert "kovadapt-watchdog" in text and r"CurrentVersion\Run" in text
+
+
+def test_the_watchdog_log_is_trimmed_not_deleted(env):
+    """A log that erases itself is no better than no log, so it trims from the
+    FRONT and keeps the newest entries."""
+    log = env.profile_path / "watchdog.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("\n".join(f"line {i}" for i in range(cli._LOG_LINES + 500))
+                   + "\n", encoding="utf-8")
+
+    import threading
+    import time
+    threading.Thread(target=lambda: cli.cmd_watchdog(SimpleNamespace()),
+                     daemon=True).start()
+    for _ in range(40):
+        if len(log.read_text(encoding="utf-8").splitlines()) <= cli._LOG_LINES:
+            break
+        time.sleep(0.05)
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= cli._LOG_LINES
+    assert "watchdog started" in lines[-1] or "watchdog" in lines[-1]
+    assert not any(ln == "line 0" for ln in lines), "trimmed from the wrong end"

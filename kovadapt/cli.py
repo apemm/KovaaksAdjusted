@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .adapt.engine import AdaptationEngine, settle_focus
@@ -177,19 +178,68 @@ def cmd_play(args) -> None:
         sys.exit(1)
 
 
+# Lines kept in the watchdog's audit log. One tune per game launch, so this is
+# months of history even for a heavy user.
+_LOG_LINES = 2000
+
+
 def cmd_watchdog(args) -> None:
-    """Headless watchdog loop (used by the start-with-Windows entry)."""
+    """Headless watchdog loop (used by the start-with-Windows entry).
+
+    EVERYTHING IT DOES IS WRITTEN TO A LOG the user can read. When this is
+    launched from the start-with-Windows entry it runs under pythonw with no
+    console, so `print` goes nowhere: a background process that silently
+    changes another process's priority and affinity, leaving no record it ever
+    ran. That is the shape of software people are right to distrust, and the
+    only thing separating this from it is that the record exists.
+
+    Appended and trimmed from the front at _LOG_LINES, never deleted, so the
+    history survives a restart.
+    """
     import time
+    from datetime import datetime
 
     from .optimize.watchdog import GameWatchdog
 
-    w = GameWatchdog(on_event=print)
+    s = _settings()
+    log_path = s.profile_path / "watchdog.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log_path = None
+
+    def record(msg: str) -> None:
+        line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}"
+        print(line)
+        if log_path is None:
+            return
+        try:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            # Trimmed from the FRONT once it grows, never deleted: a log that
+            # erases itself is no better than no log. One tune per game
+            # launch, so _LOG_LINES is months of history.
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            if len(lines) > _LOG_LINES:
+                log_path.write_text(
+                    "\n".join(lines[-(_LOG_LINES // 2):]) + "\n",
+                    encoding="utf-8")
+        except OSError:
+            pass        # a watchdog that cannot log still has to keep working
+
+    record(f"watchdog started (pid {os.getpid()}) — watching for the game; "
+           f"it applies High priority and frees the input core, and nothing "
+           f"else. Remove it under Optimizer > Start the watchdog with "
+           f"Windows, or delete the 'kovadapt-watchdog' value under "
+           f"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run.")
+    w = GameWatchdog(on_event=record)
     w.start()
     try:
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
         w.stop()
+        record("watchdog stopped")
 
 
 def cmd_checkup(args) -> None:
