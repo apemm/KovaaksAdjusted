@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -35,10 +37,22 @@ class Run:
 
     # -- summary accessors -------------------------------------------------
     def _f(self, key: str, default: float = 0.0) -> float:
+        """A summary number, or `default` when the file does not carry one.
+
+        The isfinite check is load-bearing, not defensive tidiness:
+        `float("nan")` and `float("inf")` do NOT raise ValueError, so a
+        summary cell reading "nan" walked straight through this into `score`
+        and `accuracy`, from there into the profile EWMAs — where NaN
+        propagates permanently — and into the charts, where int(nan) raises
+        inside paintEvent and Qt kills the PROCESS. The per-kill columns are
+        guarded in parser._finite; this is the other half of that path, and
+        the half the summary block actually uses.
+        """
         try:
-            return float(self.summary.get(key, default))
+            value = float(self.summary.get(key, default))
         except ValueError:
             return default
+        return value if math.isfinite(value) else default
 
     @property
     def score(self) -> float:

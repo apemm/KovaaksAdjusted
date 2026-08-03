@@ -177,7 +177,17 @@ class SessionWatcher:
                 "run_outcome": {
                     "accuracy": float(run.accuracy),
                     "score": float(run.score),
-                    "kps": float(run.kills_per_second() or 0.0),
+                    # NULL, not 0.0, when the run has no measurable pace.
+                    # kills_per_second needs two kill rows to have a span, and
+                    # invincible-target scenarios report none at all — 162 of
+                    # 398 real stats files on this machine. Writing 0.0 puts a
+                    # structural fake into an APPEND-ONLY training log, where
+                    # it cannot be corrected later and reads as "this plan
+                    # produced no pace" rather than "pace is not measurable
+                    # here". It is the same zero the PACE tile was fixed to
+                    # stop printing.
+                    "kps": (float(run.kills_per_second())
+                            if len(run.kills) >= 2 else None),
                 },
             })
         except Exception as exc:

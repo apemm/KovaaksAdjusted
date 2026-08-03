@@ -433,3 +433,40 @@ def test_a_broken_shadow_log_says_so_instead_of_vanishing(tmp_path, monkeypatch)
     assert any("adaptation is unaffected" in m for m in said)
     # ...and the run itself still completed
     assert w.last_report is not None
+
+
+def test_an_unmeasurable_pace_is_logged_as_null_not_zero(tmp_path, monkeypatch):
+    """`kills_per_second` needs two kill rows to have a span and returns a hard
+    0.0 below that — and invincible-target scenarios report no kill rows at
+    all: 162 of the 398 real stats files on this machine.
+
+    Writing 0.0 into an APPEND-ONLY training log puts a structural fake where
+    it can never be corrected, and it reads as "this plan produced no pace"
+    rather than "pace is not measurable here". It is the same zero the PACE
+    tile was fixed to stop printing.
+    """
+    import json
+
+    root = tmp_path / "kovaaks"
+    make_kovaaks_tree(root, BASE)
+    s = make_settings(root, tmp_path / "state")
+    # one kill row only: kills_per_second has no span to divide by, which is
+    # what every invincible-target scenario looks like
+    csv = write_stats_csv(s.stats_dir, BASE)
+    body = csv.read_text(encoding="utf-8").splitlines()
+    head = body[0]
+    first_kill = next(ln for ln in body[1:] if ln and ln[0].isdigit())
+    tail = [ln for ln in body if ln and not ln[0].isdigit() and ln != head]
+    csv.write_text("\\n".join([head, first_kill, ""] + tail) + "\\n", encoding="utf-8")
+
+    w = SessionWatcher(s, BASE, on_update=lambda m: None)
+    w.process_run(csv)
+
+    log = s.profile_path / "ml" / "shadow_log.jsonl"
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["run_outcome"]["kps"] is None, (
+        f"a run with no measurable pace logged {rec['run_outcome']['kps']!r} "
+        "as if it were a measurement")
+    # the measurable fields are still real
+    assert isinstance(rec["run_outcome"]["accuracy"], float)
+    assert isinstance(rec["run_outcome"]["score"], float)

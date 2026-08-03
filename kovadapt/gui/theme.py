@@ -755,14 +755,26 @@ def install_popup_style(app) -> None:
         """
 
         def eventFilter(self, obj, event):
-            if (event.type() in (QEvent.Show, QEvent.StyleChange)
-                    and obj.metaObject().className() == "QComboBoxPrivateContainer"
-                    and not obj.property("_kovadapt_styled")):
-                obj.setProperty("_kovadapt_styled", True)
+            if (event.type() not in (QEvent.Show, QEvent.StyleChange)
+                    or obj.metaObject().className() != "QComboBoxPrivateContainer"):
+                return False
+            # Keyed on the PLATE COLOUR, not a bool. A one-shot latch made
+            # this container keep whatever theme it first opened under: the
+            # popup stayed cream over a midnight list, which is the native
+            # chrome defect this whole mechanism exists to remove, wearing a
+            # different hat. It bites the theme picker itself, so the first
+            # theme a user changes goes through a wrongly-coloured popup.
+            #
+            # Comparing against the wanted value is also still the recursion
+            # guard: setStyleSheet posts a StyleChange that re-enters here,
+            # and by then the property already matches.
+            want = current().bg_alt
+            if obj.property("_kovadapt_plate") != want:
+                obj.setProperty("_kovadapt_plate", want)
                 # SCOPED to the container's own class: a bare
                 # "background: ..." here cascades onto the list inside it.
                 obj.setStyleSheet("QComboBoxPrivateContainer { background: %s; "
-                                  "border: none; }" % current().bg_alt)
+                                  "border: none; }" % want)
             return False
 
     # Take the previous one off first. An app-wide event filter sees EVERY

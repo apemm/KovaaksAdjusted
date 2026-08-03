@@ -436,3 +436,44 @@ def test_a_panel_holds_its_own_plate_without_flattening_its_controls(
         host.setParent(None)
         host.deleteLater()
         qapp.processEvents()
+
+
+def test_one_popup_follows_a_theme_change(qapp, fusion):
+    """The test above builds a fresh QComboBox per case, so it cannot see this:
+    the container's plate was applied behind a one-shot `_kovadapt_styled`
+    latch, so a popup kept whatever theme it FIRST opened under. Measured: a
+    cream #fdf8ea container under a midnight list.
+
+    That is the native-chrome defect this mechanism exists to remove, wearing
+    a different hat — and it bites the theme picker itself, so the first theme
+    a user changes goes through a wrongly-coloured popup. One combo, three
+    themes, in the order a real session hits them.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    combo = QComboBox()
+    combo.addItems(["Auto theme", "Dark", "Light", "Midnight"])
+    lay.addWidget(combo)
+    host.setAttribute(Qt.WA_DontShowOnScreen)
+    host.resize(300, 120)
+    host.show()
+    qapp.processEvents()
+    try:
+        for name, kw in MODES:
+            pal = build_palette(accent="indigo", **kw)
+            theme._apply(qapp, pal)
+            combo.showPopup()
+            qapp.processEvents()
+            sheet = combo.view().window().styleSheet()
+            assert pal.bg_alt in sheet, (
+                f"after switching to {name}, the popup container still reads "
+                f"{sheet!r} — it is frozen at the theme it first opened under")
+            combo.hidePopup()
+            qapp.processEvents()
+    finally:
+        host.setParent(None)
+        host.deleteLater()
+        qapp.processEvents()

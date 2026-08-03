@@ -61,7 +61,13 @@ SHADOW_LOG_SCHEMA = {
         "record[i]'s plan is record[i+1]['run_outcome'] for the same "
         "scenario — the plan emitted after run i is what run i+1 was played "
         "on. Pair forward; do not read this as the outcome OF this record's "
-        "plan."
+        "plan. `kps` is NULL when the run had fewer than two kill rows: "
+        "invincible-target scenarios report none, so a 0.0 there would be a "
+        "structural fake in an append-only log, not a measurement. Treat "
+        "null as missing, never as zero. Gaps are detectable without a "
+        "sequence field: profile_state.run_count increments by one per "
+        "processed run of a scenario, so a jump means a record was dropped "
+        "and the neighbouring pair must not be used."
     ),
 }
 

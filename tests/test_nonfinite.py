@@ -103,6 +103,36 @@ def test_a_malformed_stats_row_never_becomes_a_non_finite_measurement(tmp_path):
     assert accs == [0.75, 0.50], "the good rows either side were dropped too"
 
 
+def test_a_non_finite_in_the_SUMMARY_block_never_reaches_the_profile(tmp_path):
+    """The other half of the path, and the half the profile actually uses.
+    `Run._f` did `float(summary.get(key))` guarded by `except ValueError` —
+    and `float("nan")` does not raise. So a summary cell reading "nan" walked
+    into `score` and `accuracy`, from there into the EWMAs where NaN
+    propagates permanently, and into the charts where it kills the process.
+
+    Guarding only the per-kill columns (parser._finite) left this open; the
+    first fix for the crash claimed a path it had not fully closed.
+    """
+    csv = tmp_path / "Wall Task - Challenge - 2026.07.28-10.00.00 Stats.csv"
+    csv.write_text(
+        "Kill #,Timestamp,Bot,Weapon,TTK,Shots,Hits,Accuracy,Damage Done,"
+        "Damage Possible,Efficiency,Cheated,Overshots\n"
+        "1,10:00:01.000,bot,gun,0.500s,4,3,0.75,100,100,1,0,0\n"
+        "2,10:00:02.000,bot,gun,0.500s,4,3,0.75,100,100,1,0,0\n"
+        "\n"
+        "Kills:,2\n"
+        "Score:,nan\n"
+        "Hit Count:,inf\n"
+        "Miss Count:,1\n"
+        "Scenario:,Wall Task\n",
+        encoding="utf-8")
+
+    run = parse_stats_csv(csv)
+    assert math.isfinite(run.score), f"a NaN score reached the Run: {run.score}"
+    assert math.isfinite(float(run.hit_count)), "an inf hit count reached the Run"
+    assert math.isfinite(run.accuracy), f"a non-finite accuracy: {run.accuracy}"
+
+
 def test_a_profile_carrying_a_nan_still_opens_the_app(tmp_path, monkeypatch):
     """The last line of defence, and the one that matters for profiles ALREADY
     poisoned on disk: json writes a bare NaN token and reads it straight back,
