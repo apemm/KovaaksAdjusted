@@ -51,13 +51,28 @@ PROFILE_STATE_KEYS = (
 #: ``schema`` is a version tag: bump it on any breaking change and keep the
 #: reader tolerant of older records (same policy as the profile/report JSON).
 SHADOW_LOG_SCHEMA = {
-    "schema": "shadow-v1",
+    "schema": "shadow-v2",
     "ts": "ISO timestamp of the processed run",
     "profile_state": "dict of PROFILE_STATE_KEYS captured BEFORE observe()",
     "plan": "the emitted AdaptationPlan as a dict (target_scale, movement, ...)",
     "suggestion": "ShadowSuggestion as a dict, or null while untrained",
-    "outcome": "next-run outcome when known: {accuracy, score, kps} or null",
+    "run_outcome": (
+        "THIS run's measured result: {accuracy, score, kps}. The reward for "
+        "record[i]'s plan is record[i+1]['run_outcome'] for the same "
+        "scenario — the plan emitted after run i is what run i+1 was played "
+        "on. Pair forward; do not read this as the outcome OF this record's "
+        "plan."
+    ),
 }
+
+# v1 records carry an `outcome` key that is ALWAYS null. The field was
+# specified as "next-run outcome when known" and nothing ever wrote it, so
+# every v1 transition holds a state and an action with no reward attached —
+# unusable for off-policy learning on its own. The reward is recoverable by
+# joining v1 rows against the report library on (scenario, ts), and any
+# training pass must do that for pre-v2 rows. It is fixed forward rather than
+# back-filled because this log is append-only by design.
+SHADOW_LOG_V1_OUTCOME_IS_ALWAYS_NULL = True
 
 LOG_NAME = "shadow_log.jsonl"
 

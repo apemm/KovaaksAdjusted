@@ -53,6 +53,7 @@ class SessionWatcher:
         # per watcher — None when torch or the checkpoint is missing.
         self._ml_scorer = None
         self._ml_tried = False
+        self._shadow_warned = False
 
     # ----------------------------------------------------------- telemetry
     def _start_capture(self) -> None:
@@ -166,10 +167,32 @@ class SessionWatcher:
                 "profile_state": json.loads(json.dumps(state, default=float)),
                 "plan": plan_d,
                 "suggestion": None if sug is None else dataclasses.asdict(sug),
-                "outcome": None,
+                # THIS run's measured result. Schema v1 had an `outcome` key
+                # documented as "next-run outcome when known" and hard-coded
+                # to None, so every transition ever logged carried a state and
+                # an action with NO REWARD — nothing an off-policy learner can
+                # use. Fixed forward rather than back-filled, because the log
+                # is append-only: record[i]'s plan is rewarded by
+                # record[i+1]["run_outcome"] for the same scenario.
+                "run_outcome": {
+                    "accuracy": float(run.accuracy),
+                    "score": float(run.score),
+                    "kps": float(run.kills_per_second() or 0.0),
+                },
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never let this touch the adaptation loop — but say so ONCE.
+            # A bare `pass` here is why a broken training log is invisible:
+            # `run.kills_per_second` is a method, not a property, so
+            # `float(run.kills_per_second or 0)` raised and every transition
+            # silently stopped being recorded. The suite did not catch it
+            # either, because the assertion on the old always-null field
+            # passed whether or not the record was ever written.
+            if not self._shadow_warned:
+                self._shadow_warned = True
+                self.log(f"  note: shadow transition not logged ({exc}) — "
+                         "adaptation is unaffected, but the ML training set "
+                         "is not accumulating")
 
     def _analyze(self, run) -> RunReport:
         """Build + persist the post-run report (trace, clips, JSON)."""

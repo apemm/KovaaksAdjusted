@@ -140,7 +140,7 @@ def test_shadow_scaffold_is_torch_free_and_untrained(tmp_path):
     p = policy.log_transition({"ts": "2026-07-28T00:00:00", "suggestion": None})
     assert p is not None and p.is_file()
     rec = json.loads(p.read_text().splitlines()[0])
-    assert rec["schema"] == "shadow-v1"
+    assert rec["schema"] == "shadow-v2"
     assert DifficultyShadowPolicy().log_transition({}) is None
     s = ShadowSuggestion(target_scale=1.0, movement=0.5, confidence=0.0, reason="stub")
     assert s.target_scale == 1.0
@@ -373,9 +373,19 @@ def test_watcher_stamps_ml_digest_and_shadow_log(tmp_path, monkeypatch):
     lines = log.read_text().splitlines()
     assert len(lines) == 1
     rec = json.loads(lines[0])
-    assert rec["schema"] == "shadow-v1"
+    assert rec["schema"] == "shadow-v2"
     assert rec["ts"] == "2026-05-27T20:25:38"
-    assert rec["suggestion"] is None and rec["outcome"] is None
+    assert rec["suggestion"] is None, "an untrained policy proposed something"
+    # The REWARD. v1 specified an `outcome` key as "next-run outcome when
+    # known" and hard-coded it to None, so every transition ever logged was a
+    # state and an action with nothing to learn from. record[i]'s plan is
+    # rewarded by record[i+1]["run_outcome"] — pair forward.
+    assert "outcome" not in rec, "the always-null v1 field is back"
+    got = rec["run_outcome"]
+    assert set(got) == {"accuracy", "score", "kps"}, got
+    assert all(isinstance(v, float) for v in got.values()), got
+    assert got["accuracy"] == pytest.approx(parse_stats_csv(csv).accuracy, abs=1e-6), (
+        "the logged reward is not this run's measured accuracy")
     assert rec["profile_state"]["run_count"] == 0
     assert rec["plan"]  # non-empty dict of the emitted AdaptationPlan
 
@@ -392,3 +402,34 @@ def test_watcher_without_checkpoint_leaves_ml_empty(tmp_path, monkeypatch):
     w.process_run(csv)  # no checkpoint under the tmp profile dir
     assert w.last_report is not None
     assert w.last_report.ml == {}  # scorer None -> nothing stamped, no crash
+
+
+def test_a_broken_shadow_log_says_so_instead_of_vanishing(tmp_path, monkeypatch):
+    """`_log_shadow` swallows every exception on purpose — a logging failure
+    must never touch the adaptation loop. But a bare `pass` is how a broken
+    training set becomes invisible: `run.kills_per_second` is a method, not a
+    property, so `float(run.kills_per_second or 0)` raised and every
+    transition silently stopped being written, with the suite still green
+    because the assertion on the old always-null field passed either way.
+    """
+    from kovadapt.ml import shadow as shadow_mod
+    from kovadapt.watcher import SessionWatcher
+
+    said: list[str] = []
+    root = tmp_path / "kovaaks"
+    make_kovaaks_tree(root, BASE)
+    s = make_settings(root, tmp_path / "state")
+    csv = write_stats_csv(s.stats_dir, BASE)
+
+    def boom(self, record):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(shadow_mod.DifficultyShadowPolicy, "log_transition", boom)
+    w = SessionWatcher(s, BASE, on_update=said.append)
+    w.process_run(csv)
+
+    assert any("shadow transition not logged" in m for m in said), (
+        f"a failed shadow write left no trace at all: {said}")
+    assert any("adaptation is unaffected" in m for m in said)
+    # ...and the run itself still completed
+    assert w.last_report is not None
