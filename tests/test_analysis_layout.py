@@ -714,3 +714,65 @@ def test_trace_store_treats_a_damaged_file_as_no_trace(tmp_path):
 
     assert store.load("Beta 1wall Click", "2026-07-28T10:00:00") is None
     assert p.is_file(), "the damaged recording was deleted"
+
+
+# ---------------------------------- the bias panel agrees with itself or shuts up
+def _bias(**over):
+    """A bias dict at the given per-direction cost, with healthy input."""
+    d = {k: {"n": 40, "overshoot": v, "corrections": 0.0}
+         for k, v in over.items()}
+    return d
+
+
+def test_a_run_with_no_flicks_does_not_paint_three_zero_bars(qapp, settings):
+    """directional_bias([]) returns a POPULATED all-zero dict, so vals was
+    [0.0, 0.0, 0.0] — truthy — and walked past AsciiBars' own empty state to
+    draw three empty tracks with 0.00 beside each. The heatmap on that same
+    run says "no movement data" and the KPI tile shows an em-dash; only this
+    panel pretended it had measured something."""
+    view = AnalysisView(settings)
+    view.show_report(_report(n_flicks=0, bias={
+        "left": {"n": 0, "overshoot": 0.0, "corrections": 0.0},
+        "vertical": {"n": 0, "overshoot": 0.0, "corrections": 0.0},
+        "right": {"n": 0, "overshoot": 0.0, "corrections": 0.0}}))
+
+    assert view.bias_bars._values == [], "the bars still hold data to draw"
+    assert "red bar" not in view.bias_caption.text(), (
+        "the caption points at a colour on a panel with no bars")
+    view.deleteLater()
+
+
+def test_the_headline_does_not_compute_a_ratio_between_two_zeros(qapp, settings):
+    """The title read "your left flicks cost 1.3x more than your right — 0.00
+    vs 0.00": a finding carrying its own refutation, sitting over a footer
+    that already said there was no cost to compare."""
+    view = AnalysisView(settings)
+    view.show_report(_report(n_flicks=119, bias=_bias(
+        left=0.004, vertical=0.002, right=0.003)))
+
+    title = view.bias_bars._title.lower()
+    assert "x more" not in title, f"a ratio off noise: {title!r}"
+    assert "0.00 vs 0.00" not in title
+    assert "no measurable cost" in title, title
+    assert "red bar" not in view.bias_caption.text(), (
+        "nothing is red on this panel — the highlight is gated too")
+    view.deleteLater()
+
+
+def test_a_real_bias_still_gets_its_headline_and_its_red_bar(qapp, settings):
+    """The guards must not mute a run that genuinely has a weak side."""
+    view = AnalysisView(settings)
+    view.show_report(_report(n_flicks=119, bias=_bias(
+        left=0.42, vertical=0.10, right=0.16)))
+
+    assert "x more" in view.bias_bars._title.lower(), view.bias_bars._title
+    assert "red bar is this run's worst" in view.bias_caption.text()
+    view.deleteLater()
+
+
+def test_the_cold_start_caption_promises_no_ink(qapp, settings):
+    """Before any run is loaded the panel reads "waiting for flick data", and
+    the caption underneath pointed at a red bar no run has produced yet."""
+    view = AnalysisView(settings)
+    assert "red bar" not in view.bias_caption.text(), view.bias_caption.text()
+    view.deleteLater()

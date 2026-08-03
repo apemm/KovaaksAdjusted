@@ -311,10 +311,18 @@ def _fmt_value(fmt: str, v: float) -> str:
     return txt
 
 
-def _prints_zero(v: float) -> bool:
-    """Whether a bar's value RENDERS as zero in the value column, which is the
-    only zero a reader can see. A footer sentence about zeros has to agree with
-    the numerals printed beside it."""
+def prints_zero(v: float) -> bool:
+    """Whether a value RENDERS as zero at the {:.2f} the panel prints it with,
+    which is the only zero a reader can see.
+
+    Public because it is a cross-module contract, not a viz detail: the bars,
+    the footer sentence, the worst-bar highlight and the page's own headline
+    above them all have to agree about what counts as "no cost recorded", and
+    the headline lives in analysis_view. Two definitions of that rule is the
+    exact bug this keeps being called in to prevent — the title once read
+    "your left flicks cost 1.3x more than your right - 0.00 vs 0.00" over a
+    footer saying there was nothing to compare.
+    """
     return f"{v:.2f}" in ("0.00", "-0.00")
 
 
@@ -590,7 +598,7 @@ class AsciiBars(_Ignite, QWidget):
             return f"{lab} {_fmt_value('{:.2f}', hi)} — one direction measured"
         nxt = self._values[order[1]]
         lab2 = self._label_at(order[1], "next")
-        if all(_prints_zero(v) for v in self._values):
+        if all(prints_zero(v) for v in self._values):
             return "every bar is 0.00 — no cost recorded to compare"
         if hi <= 0:
             # Every bar NEGATIVE is not every bar zero: the value column prints
@@ -598,7 +606,7 @@ class AsciiBars(_Ignite, QWidget):
             # contradicted every numeral on the panel.
             return (f"no bar is above zero — {lab} "
                     f"{_fmt_value('{:.2f}', hi)} is the highest")
-        if nxt <= 0 or _prints_zero(nxt):
+        if nxt <= 0 or prints_zero(nxt):
             return f"{lab} {hi:.2f} is the only bar above zero"
         return f"top two: {lab} {hi:.2f} / {lab2} {nxt:.2f} = {hi / nxt:.2f}x"
 
@@ -613,7 +621,7 @@ class AsciiBars(_Ignite, QWidget):
             return int(counts[i]) if 0 <= i < len(counts) else 0
 
         idx = range(len(self._values))
-        if all(_prints_zero(v) for v in self._values):
+        if all(prints_zero(v) for v in self._values):
             return sorted((cnt(i) for i in idx), reverse=True)[:2]
         order = sorted(idx, key=lambda i: -self._values[i])
         return [cnt(i) for i in order[:2]]
@@ -694,7 +702,7 @@ class AsciiBars(_Ignite, QWidget):
         # bar prints 0.00 the footer says "no cost recorded to compare", and a
         # red bar beside that sentence is the panel arguing with itself.
         may_compare = (self._counts is not None
-                       and not all(_prints_zero(x) for x in self._values))
+                       and not all(prints_zero(x) for x in self._values))
         for i, v in enumerate(self._values):
             cy = top + i * row_h + row_h / 2
             is_max = may_compare and v == vmax and vmax > 0

@@ -66,8 +66,14 @@ _TREND_TITLE = "accuracy over runs"
 
 # Captions say how to READ the chart; the title carries what it says. Both
 # stay short — the page used to open with ~700 characters of caption prose.
-_BIAS_CAPTION = ("Cost per flick = overshoot + 0.15 x corrective submovements, "
-                 "one bar per direction; the red bar is this run's worst.")
+#
+# What the chart IS, with no clause about ink that may not be on it. This is
+# also the cold-start caption: before any run is loaded the panel reads
+# "waiting for flick data", and a caption pointing at a red bar there sends
+# the reader hunting for a colour no run has produced yet.
+_BIAS_CAPTION_BASE = ("Cost per flick = overshoot + 0.15 x corrective "
+                      "submovements, one bar per direction.")
+_BIAS_CAPTION = f"{_BIAS_CAPTION_BASE} The red bar is this run's worst."
 # The smallest flick cost whose bar is allowed to fill the track. Cost is
 # overshoot as a FRACTION OF THE FLICK'S OWN AMPLITUDE plus 0.15 per
 # corrective submovement, so 0.05 is "overshot by five percent" — small.
@@ -80,10 +86,26 @@ _BIAS_COST_FLOOR = 0.05
 # On a degraded run nothing is red — the worst-bar highlight answers to the
 # same input-health gate as the title and the footer ratio — so the caption
 # must stop pointing at a colour that is not on screen.
-_BIAS_CAPTION_DEGRADED = ("Cost per flick = overshoot + 0.15 x corrective "
-                          "submovements, one bar per direction. No direction "
-                          "is marked worst: this run's input timing is too "
-                          "noisy to rank them.")
+_BIAS_CAPTION_DEGRADED = (f"{_BIAS_CAPTION_BASE} No direction is marked worst: "
+                          "this run's input timing is too noisy to rank them.")
+_BIAS_CAPTION_NO_COST = (f"{_BIAS_CAPTION_BASE} No direction is marked worst: "
+                         "nothing this run cost enough to rank.")
+
+
+def _bias_caption(vals: list[float], ns: list[int], degraded: bool) -> str:
+    """How to read the bars — derived from the same numbers they draw.
+
+    This was a constant ending "the red bar is this run's worst", which is a
+    sentence about a colour. Three different runs put no red on that panel at
+    all — a degraded run, a run with no flicks, and a run whose every bar
+    rounds to 0.00 — and on each of them the caption sent the reader looking
+    for ink that is not there.
+    """
+    if degraded:
+        return _BIAS_CAPTION_DEGRADED
+    if sum(ns) == 0 or all(viz.prints_zero(v) for v in vals):
+        return _BIAS_CAPTION_NO_COST
+    return _BIAS_CAPTION
 _TRAVEL_CAPTION = ("Where the crosshair spent its time around each engagement — "
                    "denser glyphs = more time. Hover a zone for its value.")
 _DEFICIT_CAPTION = ("Weakness per wall region as z-scores against this run's own "
@@ -246,6 +268,14 @@ def _bias_title(vals: list[float], ns: list[int],
         if hi <= 0:
             return "no overshoot or correction cost in either direction"
         return f"only your {weak} flicks carry any cost — {hi:.2f} vs 0.00"
+    # Both sides printing 0.00 is not a 1.3x finding. The ratio between two
+    # numbers that both round away to nothing is arithmetic on noise, and the
+    # sentence carried its own refutation: "your left flicks cost 1.3x more
+    # than your right — 0.00 vs 0.00", over a footer already saying there was
+    # no cost to compare. viz.prints_zero is the shared rule so the headline
+    # and the chart under it cannot disagree about what a zero is.
+    if viz.prints_zero(hi) and viz.prints_zero(lo):
+        return "no measurable cost in either direction this run"
     ratio = hi / lo
     if ratio >= _EVEN_RATIO:
         return (f"your {weak} flicks cost {ratio:.1f}x more than your {other} "
@@ -394,7 +424,7 @@ class AnalysisView(QWidget):
 
         # ---- charts: side by side, each with a takeaway title + short caption
         self.bias_bars = viz.AsciiBars(title=_BIAS_TITLE)
-        self.bias_caption = _caption(_BIAS_CAPTION)
+        self.bias_caption = _caption(_BIAS_CAPTION_BASE)
         self.heat_map = viz.AsciiHeatmap(title=_TRAVEL_TITLE)
         self.heat_caption = _caption(_TRAVEL_CAPTION)
         self.trend_spark = viz.AsciiTrend(title=_TREND_TITLE, fmt="{:.0%}")
@@ -815,11 +845,19 @@ class AnalysisView(QWidget):
         # never contradict a title that says the comparison cannot be made;
         # granted otherwise, since a 1.09x gap genuinely cannot be eyeballed
         # and the sentence is the only way to read it.
-        self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
-                                ratio_counts=None if degraded else ns,
-                                floor=_BIAS_COST_FLOOR)
-        self.bias_caption.setText(
-            _BIAS_CAPTION_DEGRADED if degraded else _BIAS_CAPTION)
+        if sum(ns) == 0:
+            # directional_bias([]) returns a POPULATED all-zero dict, so vals
+            # is [0.0, 0.0, 0.0] — truthy, which walked straight past
+            # AsciiBars' own "waiting for flick data" empty state and drew
+            # three empty tracks with 0.00 beside each. The heatmap next to it
+            # says "no movement data" on this same run, and the KPI tile shows
+            # an em-dash; only this panel pretended to have measured something.
+            self.bias_bars.set_data([], [])
+        else:
+            self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
+                                    ratio_counts=None if degraded else ns,
+                                    floor=_BIAS_COST_FLOOR)
+        self.bias_caption.setText(_bias_caption(vals, ns, degraded))
 
     def _draw_heat(self, rep: RunReport | None = None) -> None:
         """Zone heatmap on the Settings.region_cols x region_rows grid:
