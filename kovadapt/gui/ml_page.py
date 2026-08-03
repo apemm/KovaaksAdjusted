@@ -337,7 +337,7 @@ class FittsDiagram(_Diagram):
         s = (self._phase // self.F) % len(self.SLOPES)
         fp = self._phase % self.F
 
-        p.setPen(QColor(pal.border))
+        p.setPen(QColor(pal.border_control))
         p.drawLine(int(self.PL), int(self.PT), int(self.PL), int(self.PB))
         p.drawLine(int(self.PL), int(self.PB), int(self.PR), int(self.PB))
 

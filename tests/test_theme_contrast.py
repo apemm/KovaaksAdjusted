@@ -241,3 +241,49 @@ def test_no_caller_asks_for_a_mono_size_off_the_grid():
     assert not offenders, (
         "mono sizes must be on theme.CELL_SIZES "
         f"{CELL_SIZES}; these snap silently: {offenders}")
+
+
+# ------------------------------------------- what is drawn is meant to be seen
+def test_border_is_never_the_ink_a_chart_reads_with():
+    """`border` is documented as a hairline that "may be low contrast", and it
+    is: 1.07:1 against bg_alt on midnight, 1.14 on dark, 1.37 on light. That
+    is fine for a widget edge and wrong for anything a reader has to see.
+
+    It was the ink for the bar charts' unfilled remainder — the dotted track
+    whose own docstring said it "carries the scale" — for the trend and Fitts
+    axes, for the hairline that marks an occupied-but-untouched spawn cell,
+    and for the progress meter's remaining run. `border_control` exists for
+    exactly this: 2.79-5.65:1, still quiet, actually present.
+
+    The rule this pins: if it is drawn to be seen it clears 3:1, and if it is
+    not meant to be seen it should not be drawn at all.
+    """
+    from pathlib import Path
+
+    gui = Path(__file__).resolve().parent.parent / "kovadapt" / "gui"
+    offenders = []
+    for f in sorted(gui.glob("*.py")):
+        if f.name == "overlay.py":
+            # The overlay paints over the GAME, not over bg_alt, at an alpha
+            # the author tunes deliberately ("the edge stays findable when
+            # faint"). Its contrast question is a different one.
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if "pal.border" in line and "border_control" not in line:
+                offenders.append(f"{f.name}:{i}: {line.strip()}")
+    assert not offenders, (
+        "pal.border used as painted ink — promote to border_control:\n  "
+        + "\n  ".join(offenders))
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_border_control_clears_the_floor_border_does_not(name, kw):
+    """The measurement behind the rule above, so it fails if a palette change
+    ever makes border_control as faint as border."""
+    pal = build_palette(accent="indigo", **kw)
+    assert color.contrast_ratio(pal.border_control, pal.bg_alt) >= 2.7, (
+        f"{name}: border_control has drifted down to a decorative hairline")
+    assert color.contrast_ratio(pal.border, pal.bg_alt) < 2.0, (
+        f"{name}: border is no longer the faint hairline its docstring "
+        "promises — if it has been promoted, the two tokens have collapsed "
+        "into one and border_control has nothing to distinguish it")

@@ -498,8 +498,8 @@ class AsciiBars(_Ignite, QWidget):
 
     A bar is a bar: filled cells at one density, a hard tip rule at the exact
     value (so 0.22 and 0.24 differ by a visible distance rather than by one
-    faded character), the unfilled remainder as a faint dotted rule carrying
-    the scale, and the numerals in a right-hand column of their own. Every
+    faded character), the unfilled remainder as a dotted rule carrying the
+    scale, and the numerals in a right-hand column of their own. Every
     bar sharing the max (when positive) paints pal.bad — but ONLY when the
     caller passed `ratio_counts`, which is its permission to make a
     side-vs-side claim at all. Highlighting a worst bar is that claim in
@@ -730,9 +730,17 @@ class AsciiBars(_Ignite, QWidget):
             front = -1                            # rightmost cell lit this frame
             gy = cy - chh / 2
             # the unfilled remainder is the SCALE, not data: it never animates,
-            # so it is one drawText (integer advance = same cells as a loop)
+            # so it is one drawText (integer advance = same cells as a loop).
+            #
+            # border_control, not border. `border` measures 1.07:1 against
+            # bg_alt on midnight and 1.14 on dark — the docstring said these
+            # dots "carry the scale" while being, in fact, invisible. The
+            # significance floor is what made that matter: a bar can now be a
+            # 43px sliver on a 496px track, and the dots are the only thing
+            # telling the reader the track goes that much further. Without
+            # them a noise panel reads as three short bars floating in space.
             if ncells > full:
-                p.setPen(_dim(pal.border, 1.0))
+                p.setPen(_dim(pal.border_control, 1.0))
                 p.drawText(QRectF(bar_x0 + full * cw, gy,
                                   (ncells - full) * cw + cw, chh),
                            Qt.AlignLeft | Qt.AlignVCenter, _BAR_EMPTY * (ncells - full))
@@ -1058,7 +1066,7 @@ class AsciiHeatmap(_Ignite, QWidget):
                     # "average" tile. A DOTTED hairline, no fill, no glyphs —
                     # dotted so a mostly-hollow lattice reads as deliberate.
                     p.setBrush(Qt.NoBrush)
-                    p.setPen(QPen(_dim(pal.border, q), 1.0, Qt.DotLine))
+                    p.setPen(QPen(_dim(pal.border_control, q), 1.0, Qt.DotLine))
                     p.drawRoundedRect(zone, 4, 4)
                     p.setFont(gf)
                     p.setPen(_dim(pal.fg_dim, 0.30 * q + 0.35 * ring))
@@ -1658,7 +1666,7 @@ class AsciiTrend(_Ignite, QWidget):
                    Qt.AlignRight | Qt.AlignVCenter, hi_txt)
         p.drawText(QRectF(6, ypix(0.0) - 7, gutter - 10, 14),
                    Qt.AlignRight | Qt.AlignVCenter, lo_txt)
-        p.setPen(QPen(_dim(pal.border, 1.0), 1, Qt.DotLine))
+        p.setPen(QPen(_dim(pal.border_control, 1.0), 1, Qt.DotLine))
         p.drawLine(QPointF(x_left, y_bot + 2), QPointF(x_right, y_bot + 2))
         p.setPen(QColor(pal.fg_dim))
         # The axis says what the picture is, and never names a run it cannot

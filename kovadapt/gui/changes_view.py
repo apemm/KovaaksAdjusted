@@ -2039,7 +2039,7 @@ class SpawnGrid(_Art):
                     # A hairline so an occupied cell still reads as occupied
                     # without the ramp doing the talking.
                     p.setBrush(Qt.NoBrush)
-                    p.setPen(QColor(pal.border))
+                    p.setPen(QColor(pal.border_control))
                     p.drawRoundedRect(rect, 4, 4)
 
                 p.setFont(glyph_f)

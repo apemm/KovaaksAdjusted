@@ -1127,7 +1127,7 @@ class AsciiProgress(QWidget):
                 col = QColor(pal.accent)
                 chn = "*"
             else:
-                col = QColor(pal.border)
+                col = QColor(pal.border_control)
                 chn = "."
             p.setPen(col)
             p.drawText(QRectF(x0 + i * cw, 1, cw * 2, 20),
