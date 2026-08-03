@@ -492,7 +492,10 @@ class AsciiBars(_Ignite, QWidget):
     value (so 0.22 and 0.24 differ by a visible distance rather than by one
     faded character), the unfilled remainder as a faint dotted rule carrying
     the scale, and the numerals in a right-hand column of their own. Every
-    bar sharing the max (when positive) paints pal.bad.
+    bar sharing the max (when positive) paints pal.bad — but ONLY when the
+    caller passed `ratio_counts`, which is its permission to make a
+    side-vs-side claim at all. Highlighting a worst bar is that claim in
+    colour, so it cannot outlive the sentence version of it.
     """
 
     def __init__(self, title: str = "", parent=None) -> None:
@@ -651,9 +654,16 @@ class AsciiBars(_Ignite, QWidget):
         p.setPen(_dim(pal.fg_dim, 0.70))
         p.drawLine(QPointF(x_axis, top + 2), QPointF(x_axis, top + body_h))
 
+        # Marking a worst bar IS a side-vs-side claim — the same claim the
+        # footer sentence makes, in colour instead of words — so it answers to
+        # the same permission. Without this the title could read "input timing
+        # too noisy to compare directions this run" while a red bar underneath
+        # named the worst direction anyway: the gate held for the words and
+        # leaked through the paint.
+        may_compare = self._counts is not None
         for i, v in enumerate(self._values):
             cy = top + i * row_h + row_h / 2
-            is_max = v == vmax and vmax > 0
+            is_max = may_compare and v == vmax and vmax > 0
             color = QColor(pal.bad if is_max else pal.accent)
 
             # ---- direction label, with the flick count dim underneath

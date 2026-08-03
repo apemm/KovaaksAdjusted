@@ -491,3 +491,35 @@ def test_the_exact_region_key_stays_on_hover(qapp, pal):
     x0, y0, zw, zh, gap, _rows, _cols = hm._geom()
     assert hm.zone_info(x0 + zw / 2, y0 + zh / 2) == "r4c0 · +1.90"
     assert "not measured" in hm.zone_info(x0 + zw / 2, y0 + 2 * (zh + gap) + zh / 2)
+
+
+def test_a_worst_bar_is_a_claim_and_answers_to_the_gate(qapp, pal):
+    """Marking a worst bar IS the side-vs-side claim, in colour instead of
+    words, so it cannot outlive the sentence version of it.
+
+    The input-health gate held for the title and for the footer ratio and
+    LEAKED THROUGH THE PAINT: on a degraded run the headline read "input
+    timing too noisy to compare directions this run" while a red bar
+    underneath named the worst direction anyway.
+    """
+    vals = [0.55, 0.20, 0.18]        # left is clearly worst
+
+    def render(counts):
+        b = viz.AsciiBars(title="flick quality by direction")
+        b.set_data(["left", "vertical", "right"], vals,
+                   ["14 flicks", "9 flicks", "13 flicks"], ratio_counts=counts)
+        return _image(b, pal, 720, 300)
+
+    permitted = render([14, 9, 13])     # comparison allowed
+    withheld = render(None)             # gate closed
+    assert permitted != withheld, "the gate does not change what is drawn"
+
+    bad = QColor(pal.bad).rgb()
+    def bad_px(img):
+        return sum(1 for x in range(img.width()) for y in range(img.height())
+                   if img.pixel(x, y) == bad)
+
+    assert bad_px(permitted) > 0, "the worst bar was never highlighted"
+    assert bad_px(withheld) == 0, (
+        "a worst bar is still painted with the comparison withheld — "
+        "the same verdict the title refuses to give")

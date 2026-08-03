@@ -122,8 +122,12 @@ def test_bar_length_is_proportional_and_close_values_stay_distinct(qapp, pal):
     strictly proportional to value and the tips visibly separated."""
     w, h = 690, 270
     bars = viz.AsciiBars(title="flick cost by direction")
+    # ratio_counts is the caller's permission to make a side-vs-side claim,
+    # and the worst-bar highlight IS that claim in colour — without them no
+    # bar paints pal.bad and this probe has nothing to find. Proportionality
+    # is what's under test either way; the counts just buy the highlight.
     bars.set_data(["left", "vertical", "right"], [0.22, 0.24, 0.60],
-                  ["37 flicks", "8 flicks", "41 flicks"])
+                  ["37 flicks", "8 flicks", "41 flicks"], ratio_counts=[37, 8, 41])
     arr = _rgb(_image(bars, pal, w, h))
     accent = _exact(arr, pal.accent)
     worst = _exact(arr, pal.bad)                   # the max bar paints pal.bad

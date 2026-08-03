@@ -204,5 +204,18 @@ class TraceStore:
         return trace.save(self.path_for(scenario, started_iso))
 
     def load(self, scenario: str, started_iso: str) -> MouseTrace | None:
+        """The trace for a run, or None if there isn't a usable one.
+
+        A file truncated by a crash mid-write (or a half-synced cloud folder)
+        counts as "no usable trace", not as an error to propagate: this
+        return type already admits None, and every caller handles it. The
+        damaged file is left alone — a recording cannot be regenerated from
+        anything, so it is not ours to delete.
+        """
         p = self.path_for(scenario, started_iso)
-        return MouseTrace.load(p) if p.is_file() else None
+        if not p.is_file():
+            return None
+        try:
+            return MouseTrace.load(p)
+        except Exception:
+            return None

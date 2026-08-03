@@ -68,6 +68,13 @@ _TREND_TITLE = "accuracy over runs"
 # stay short — the page used to open with ~700 characters of caption prose.
 _BIAS_CAPTION = ("Cost per flick = overshoot + 0.15 x corrective submovements, "
                  "one bar per direction; the red bar is this run's worst.")
+# On a degraded run nothing is red — the worst-bar highlight answers to the
+# same input-health gate as the title and the footer ratio — so the caption
+# must stop pointing at a colour that is not on screen.
+_BIAS_CAPTION_DEGRADED = ("Cost per flick = overshoot + 0.15 x corrective "
+                          "submovements, one bar per direction. No direction "
+                          "is marked worst: this run's input timing is too "
+                          "noisy to rank them.")
 _TRAVEL_CAPTION = ("Where the crosshair spent its time around each engagement — "
                    "denser glyphs = more time. Hover a zone for its value.")
 _DEFICIT_CAPTION = ("Weakness per wall region as z-scores against this run's own "
@@ -337,6 +344,7 @@ class AnalysisView(QWidget):
         self.report: RunReport | None = None
         self.trace: MouseTrace | None = None
         self.flicks: list = []
+        self._trace_unreadable = False
         self._settings = settings
         self._last_insights: tuple[RunReport, PlayerProfile] | None = None
         self._coach_cards: list[_InsightCard] = []
@@ -523,8 +531,23 @@ class AnalysisView(QWidget):
         self._fill_kpis(rep, profile)
         self._fill_trend(profile)
         self._fill_insights(rep, profile)
+        self._trace_unreadable = False
         if trace is None and rep.trace_file and Path(rep.trace_file).is_file():
-            self.trace = MouseTrace.load(rep.trace_file)
+            try:
+                self.trace = MouseTrace.load(rep.trace_file)
+            except Exception:
+                # A .npz truncated by a crash mid-write, or a half-synced
+                # cloud folder, raised BadZipFile straight out of here and
+                # took the whole page down — including the stats half of the
+                # report, which does not depend on the trace at all. The
+                # report renders without telemetry instead, which is an
+                # already-supported state.
+                #
+                # The file is NOT quarantined the way a corrupt profile is: a
+                # profile can be rebuilt from the stats history, a recording
+                # cannot be rebuilt from anything. Leave it for the user.
+                self.trace = None
+                self._trace_unreadable = True
         # flicks aren't serialized in the report — recompute from the trace
         self.flicks = (segment_flicks(self.trace)
                        if self.trace is not None and len(self.trace) > 10 else [])
@@ -543,7 +566,8 @@ class AnalysisView(QWidget):
         # segments. The full run is loaded only when nothing selected one.
         self._fill_moments(rep)
         if not has_trace:
-            self.replay.clear()
+            self.replay.clear("recording unreadable — file is damaged"
+                              if self._trace_unreadable else "no trace for this run")
         elif self.moments.currentRow() < 0:
             self.replay.load(self.trace, label="full run", flicks=self.flicks)
         self._update_clip_state(self._moment_index(self.moments.currentRow()))
@@ -784,6 +808,8 @@ class AnalysisView(QWidget):
         # and the sentence is the only way to read it.
         self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
                                 ratio_counts=None if degraded else ns)
+        self.bias_caption.setText(
+            _BIAS_CAPTION_DEGRADED if degraded else _BIAS_CAPTION)
 
     def _draw_heat(self, rep: RunReport | None = None) -> None:
         """Zone heatmap on the Settings.region_cols x region_rows grid:

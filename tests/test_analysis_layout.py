@@ -639,3 +639,78 @@ def test_pace_still_reads_normally_when_there_are_kills(qapp, settings):
     assert tile.read.text() == "faster"
     assert "1.00 EWMA" in tile.toolTip()
     view.deleteLater()
+
+
+# ------------------------------------------------- a damaged recording file
+def _truncated_trace(tmp_path) -> Path:
+    """A real .npz, cut in half — what a crash mid-write or a half-synced
+    cloud folder leaves behind. np.load raises BadZipFile on it."""
+    tr = (TraceBuilder(t0=1000.0)
+          .move(0.30, 400.0, 0.0).click(0.02).move(0.30, -400.0, 0.0).build())
+    p = tmp_path / "traces" / "damaged.npz"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tr.save(p)
+    raw = p.read_bytes()
+    assert len(raw) > 200, "need a file big enough for half of it to be broken"
+    p.write_bytes(raw[: len(raw) // 2])
+    return p
+
+
+def test_a_damaged_recording_does_not_take_the_report_down(qapp, settings, tmp_path):
+    """A truncated .npz raised zipfile.BadZipFile straight out of
+    show_report, so opening one saved report killed the whole page —
+    including the stats half, which never touches the trace.
+
+    The run's score, accuracy and summary are all in the report JSON. Losing
+    the recording costs the replay and the flick overlays; it does not cost
+    the reader anything the CSV already paid for.
+    """
+    bad = _truncated_trace(tmp_path)
+    rep = _report(trace_file=str(bad))
+    dest = tmp_path / "reports" / "run.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    rep.save(dest)
+
+    view = AnalysisView(settings)
+    view.load_report_file(dest)          # exactly what the Open report… button calls
+
+    assert view.trace is None
+    assert view._trace_unreadable is True
+    assert view.summary.text() == "30 kills at 61% accuracy.", "the stats half rendered"
+    assert view.kpis["accuracy"].value.text() == "61%", "stats survived"
+    assert not view.full_btn.isEnabled(), "nothing to replay"
+    view.deleteLater()
+
+
+def test_a_damaged_recording_says_it_is_damaged(qapp, settings, tmp_path):
+    """'no trace for this run' would be a lie: there IS a recording, and the
+    reason it is not on screen is that the file is broken — which is the one
+    thing that tells the user to go look at the disk."""
+    view = AnalysisView(settings)
+    view.show_report(_report(trace_file=str(_truncated_trace(tmp_path))))
+    said = view.replay.info.text().lower()
+    assert "damaged" in said or "unreadable" in said, said
+    assert said != "no trace for this run"
+
+    # ...and a run that genuinely has no telemetry still says so
+    view.show_report(_report())
+    assert view._trace_unreadable is False
+    assert view.replay.info.text() == "no trace for this run"
+    view.deleteLater()
+
+
+def test_trace_store_treats_a_damaged_file_as_no_trace(tmp_path):
+    """TraceStore.load already returns None for a missing file; a file that
+    cannot be read is not a different answer to the caller. It must NOT
+    delete the file — a recording cannot be regenerated from anything."""
+    from kovadapt.telemetry.trace import TraceStore
+
+    store = TraceStore(tmp_path / "traces")
+    p = store.path_for("Beta 1wall Click", "2026-07-28T10:00:00")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tr = TraceBuilder(t0=1000.0).move(0.30, 400.0, 0.0).build()
+    tr.save(p)
+    p.write_bytes(p.read_bytes()[:120])
+
+    assert store.load("Beta 1wall Click", "2026-07-28T10:00:00") is None
+    assert p.is_file(), "the damaged recording was deleted"
