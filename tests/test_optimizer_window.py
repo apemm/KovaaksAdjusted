@@ -24,6 +24,7 @@ if sys.platform == "win32":
     # the offscreen platform has no system font database of its own
     os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
+from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QGroupBox,
@@ -194,3 +195,77 @@ def test_the_window_does_not_open_taller_than_the_desktop(qapp, settings):
             "the window opens taller than the desktop it is on")
     assert w.height() >= 640, "never smaller than the authored minimum"
     w.shutdown()
+
+
+def test_a_check_row_is_transparent_but_its_fix_button_is_not(qapp, settings):
+    """_CheckRow is a QFrame, and theme.py's page-background rule reaches
+    every QWidget subclass, so all twelve rows painted the PAGE colour over
+    the checkup box's plate. It cannot go in the global exemption list the way
+    QCheckBox did: `QFrame` as a type selector also matches QLabel,
+    QScrollArea, QSplitter and QStackedWidget.
+
+    So it carries its own sheet — SCOPED to its class, which PySide publishes
+    to QSS under the Python name. Unscoped it cascades to the children and
+    takes the Fix button's accent fill to #010102.
+    """
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    from kovadapt.gui import theme
+    from kovadapt.gui.optimizer_window import _CheckRow
+
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtWidgets import QGroupBox, QVBoxLayout
+
+    pal = theme.current()
+    # Inside a group box, which is the whole point: the row has to be
+    # transparent AGAINST a plate, and standalone there is no plate to
+    # overpaint. Rendering it bare passes with the transparency removed.
+    box = QGroupBox("System checkup")
+    lay = QVBoxLayout(box)
+    row = _CheckRow(CheckResult(check_id="c", title="Game process priority",
+                                detail="KovaaK's runs at Normal.",
+                                status="warn", can_fix=True, safe=True),
+                    lambda *_: None)
+    lay.addWidget(row)
+    box.resize(620, 100)
+    box.show()
+    qapp.processEvents()
+
+    pm = QPixmap(620, 100)
+    pm.fill(QColor(pal.bg))
+    box.render(pm)
+    img = pm.toImage().convertToFormat(QImage.Format_RGB32)
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :img.width(), :3]
+
+    # the row's own background, sampled between the detail text and the button
+    rtl = row.mapTo(box, row.rect().topLeft())
+    back = arr[rtl.y() + 4:rtl.y() + row.height() - 4,
+               rtl.x() + row.width() - 140:rtl.x() + row.width() - 110]
+    back = back.reshape(-1, 3)[:, ::-1].mean(axis=0)
+    page = np.array([int(pal.bg[i:i + 2], 16) for i in (1, 3, 5)], dtype=float)
+    assert not np.allclose(back, page, atol=2), (
+        f"the check row paints the page colour {pal.bg} over the checkup "
+        f"box's plate")
+
+    row_in_box = row
+    btn = row_in_box.fix_btn
+    tl = btn.mapTo(box, btn.rect().topLeft())
+    # The most common colour in the button, not a mean over it: the label
+    # sits in the middle in accent_fg and the corners are antialiased, so
+    # every average lands somewhere between the fill and something else.
+    # The fill is what most of the button IS.
+    patch = arr[tl.y() + 2:tl.y() + btn.height() - 2,
+                tl.x() + 2:tl.x() + btn.width() - 2][:, :, ::-1].reshape(-1, 3)
+    packed = (patch[:, 0].astype(np.uint32) << 16 | patch[:, 1].astype(np.uint32) << 8
+              | patch[:, 2].astype(np.uint32))
+    values, counts = np.unique(packed, return_counts=True)
+    fill = int(values[int(np.argmax(counts))])
+
+    assert fill == int(pal.accent[1:], 16), (
+        f"the Fix button's fill is #{fill:06x}, not the accent "
+        f"{pal.accent} — the row's transparency has cascaded onto it")
+    box.setParent(None)
+    box.deleteLater()
+    qapp.processEvents()

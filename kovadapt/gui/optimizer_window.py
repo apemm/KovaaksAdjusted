@@ -119,6 +119,18 @@ class _CheckRow(QFrame):
 
     def __init__(self, result: CheckResult, on_fix, parent=None) -> None:
         super().__init__(parent)
+        # A QFrame, and theme.py's page-background rule reaches every QWidget
+        # subclass — so each of these twelve rows painted the PAGE colour on
+        # top of the checkup box's own plate. It cannot be exempted globally
+        # the way QCheckBox is: `QFrame` as a type selector also matches
+        # QLabel, QScrollArea, QSplitter and QStackedWidget, and `.QFrame`
+        # matches only a bare QFrame, which this is not.
+        #
+        # SCOPED to this class, which PySide publishes to QSS under its Python
+        # name. A bare "background: transparent" here cascades to the children
+        # and took the Fix button's accent fill down to #010102 — measured, and
+        # caught by looking at the render rather than by the suite.
+        self.setStyleSheet("_CheckRow { background: transparent; }")
         self.result = result
         self._dot = dot = QLabel(_STATUS_DOT.get(result.status, "○"))
         dot.setFixedWidth(18)

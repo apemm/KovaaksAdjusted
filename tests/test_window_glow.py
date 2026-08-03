@@ -338,3 +338,101 @@ def test_the_dropdown_popup_wears_no_native_chrome(qapp, fusion, mode, accent):
         f"box's own fill {pal.bg_alt}")
     combo.hidePopup()
     host.deleteLater()
+
+
+def _panel_probe(qapp, pal):
+    """A group box holding the three widget kinds that overpainted it, plus a
+    control whose fill must survive. Returns the rendered image and the
+    widgets, positioned in host coordinates."""
+    from PySide6.QtWidgets import (QCheckBox, QGroupBox, QLabel, QPushButton,
+                                   QScrollArea, QVBoxLayout, QWidget)
+    from PySide6.QtGui import QPixmap
+
+    host = QWidget()
+    outer = QVBoxLayout(host)
+    box = QGroupBox("Watchdog")
+    inner = QVBoxLayout(box)
+    cb = QCheckBox("Auto-tune on every game launch")
+    inner.addWidget(cb)
+    body = QWidget()
+    bl = QVBoxLayout(body)
+    for i in range(4):
+        bl.addWidget(QLabel(f"row {i}"))
+    scroll = QScrollArea()
+    scroll.setWidget(body)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.NoFrame)
+    scroll.setFixedHeight(64)
+    inner.addWidget(scroll)
+    btn = QPushButton("Fix")
+    btn.setProperty("accent", True)
+    inner.addWidget(btn)
+    outer.addWidget(box)
+    outer.addStretch(1)
+    host.resize(440, 240)
+    host.show()
+    qapp.processEvents()
+
+    pm = QPixmap(440, 240)
+    pm.fill(QColor(pal.bg))
+    host.render(pm)
+    img = pm.toImage().convertToFormat(QImage.Format_RGB32)
+    return host, img, cb, scroll, btn
+
+
+def _mean_patch(img, host, widget, width=36):
+    """Mean colour of a strip at the widget's right edge — past any text."""
+    tl = widget.mapTo(host, widget.rect().topLeft())
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :img.width(), :3]
+    x1 = tl.x() + widget.width() - 4
+    patch = arr[tl.y() + 3:tl.y() + widget.height() - 3, x1 - width:x1]
+    return patch.reshape(-1, 3)[:, ::-1].mean(axis=0)
+
+
+@pytest.mark.parametrize("mode,accent", CASES)
+def test_a_panel_holds_its_own_plate_without_flattening_its_controls(
+        qapp, fusion, mode, accent):
+    """Both halves of one fix, off one render — building this probe twice per
+    theme x accent put 140s on the suite.
+
+    `QMainWindow, QDialog, QWidget { background: bg }` sets the PAGE colour,
+    and a Qt type selector matches subclasses, so every checkbox and every
+    scroll viewport inside a group box painted the page opaquely on top of
+    that box's plate: a 350x18 page-coloured stripe across a panel, and a
+    full rectangle of it where the scroll area sat. QLabel was already
+    exempted in theme.py for exactly this, and shell.py works around the same
+    thing with objectName("tabPage") — three sites knew the failure mode
+    before this one.
+
+    The other half is what the fix must not break. An instance stylesheet
+    CASCADES to children, so `background: transparent` on a container reaches
+    the buttons inside it: set unscoped on the optimizer's check rows it took
+    the Fix button's accent fill to #010102. Transparency is for the
+    container, never for what it holds.
+    """
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    theme._apply(qapp, pal)
+    host, img, cb, scroll, btn = _panel_probe(qapp, pal)
+    try:
+        page = np.array([int(pal.bg[i:i + 2], 16) for i in (1, 3, 5)], dtype=float)
+        for name, widget in (("checkbox", cb),
+                             ("scroll viewport", scroll.viewport())):
+            got = _mean_patch(img, host, widget)
+            assert not np.allclose(got, page, atol=2), (
+                f"{mode}/{accent}: the {name} paints the page colour {pal.bg} "
+                f"inside a panel — it is overpainting the plate")
+
+        got = _mean_patch(img, host, btn, width=20)
+        want = np.array([int(pal.accent[i:i + 2], 16) for i in (1, 3, 5)],
+                        dtype=float)
+        assert np.allclose(got, want, atol=12), (
+            f"{mode}/{accent}: the accent button's fill is {got.round(0)}, not "
+            f"{pal.accent} — a transparency rule has cascaded onto the control")
+    finally:
+        # deleteLater alone does nothing without a loop turn, and the widgets
+        # pile up in the shared QApplication: every later theme._apply then
+        # re-polishes the whole accumulated heap.
+        host.setParent(None)
+        host.deleteLater()
+        qapp.processEvents()

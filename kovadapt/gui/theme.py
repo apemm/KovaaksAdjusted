@@ -627,7 +627,19 @@ QCheckBox::indicator {{
 QCheckBox::indicator:hover {{ border-color: {p.accent}; }}
 QCheckBox::indicator:checked {{ background: {p.accent}; border-color: {p.accent}; }}
 
-QLabel {{ background: transparent; }}
+/* Transparent, all three, for one reason: `QMainWindow, QDialog, QWidget`
+   above sets the PAGE colour, and a Qt type selector matches subclasses — so
+   every one of these, sitting inside a group box, painted the page opaquely
+   ON TOP of that box's plate. A checkbox came out as a 350x18 page-coloured
+   stripe across a panel; a scroll area's viewport as a full rectangle of it.
+   QLabel was already exempted here for exactly this, and shell.py works
+   around the same thing with objectName("tabPage"); this is that fix applied
+   to the rest of what it bites.
+
+   The viewport needs the child-of-child selector: `QScrollArea` alone styles
+   the frame and leaves the viewport painting page colour underneath it. */
+QLabel, QCheckBox, QRadioButton {{ background: transparent; }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QLabel[dim="true"] {{ color: {p.fg_dim}; }}
 QLabel[headline="true"] {{ font-size: 17px; font-weight: 600; }}
 QLabel[stat="true"] {{ color: {p.accent}; font-weight: 600; }}
