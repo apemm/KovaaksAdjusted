@@ -693,3 +693,43 @@ def test_the_page_itself_does_not_claim_untouched_for_a_scenario_it_cannot_find(
         f"the page claims a layout it could not read was left untouched: {title!r}")
     assert "unreadable" in title, title
     view.deleteLater()
+
+
+def test_a_knob_at_its_clamp_says_so_in_words_not_only_in_amber(tmp_path):
+    """Amber is `pal.warn`, and every accent is fitted to the SAME lightness as
+    the semantic roles — so only hue separates them. Measured in OKLab, the
+    ember accent sits 0.065 from warn and mint 0.028, which is below a
+    just-noticeable difference. On those two accents an at-clamp value had no
+    carrier at all: the colour was the only thing saying it, and the colour was
+    the same colour.
+
+    Every other knob in this file already writes its bound in prose. These two
+    were the exceptions, which is why they were the two the audit named as
+    "colour is the sole carrier".
+    """
+    s = _install(tmp_path)
+    prof = _trained()
+
+    # dodge: a bias far past what the generator will ever write
+    prof.ewma_bias = 5.0
+    prof.bias_obs = 12
+    knobs, _facts = _knobs(s, prof)
+    dodge = next(k for k in knobs if "strafe" in k.name or "dodge" in k.key)
+    assert "clamp" in dodge.note.lower(), (
+        f"a dodge skew pinned at its bound says nothing: {dodge.note!r}")
+
+    # movement: pinned at the archetype ceiling
+    prof2 = _trained()
+    prof2.movement = s.max_movement
+    knobs2, _f2 = _knobs(s, prof2)
+    move = next(k for k in knobs2 if k.key == "movement")
+    assert "ceiling" in move.note.lower() or "cannot push" in move.note.lower(), (
+        f"movement pinned at its ceiling says nothing: {move.note!r}")
+
+    # ...and a knob that is NOT at its bound must not claim to be
+    prof3 = _trained()
+    prof3.movement = (s.min_movement + s.max_movement) / 2
+    knobs3, _f3 = _knobs(s, prof3)
+    mid = next(k for k in knobs3 if k.key == "movement")
+    assert "ceiling" not in mid.note.lower() and "floor" not in mid.note.lower(), (
+        f"a mid-range movement claims to be at a bound: {mid.note!r}")

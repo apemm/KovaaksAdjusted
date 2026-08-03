@@ -1234,7 +1234,18 @@ def _dodge_knob(profile: PlayerProfile, s: Settings, ev: ReportEvidence) -> Knob
                          f"{_BIAS_MIN_FLICKS}-flick / {_BIAS_MIN_PER_SIDE}-per-side "
                          f"gate, mean score {ev.bias_mean:+.2f}")
     note = ""
-    if not s.dodge_bias_enabled:
+    # AT-BOUND, first: this value clamps to +-1.0, and amber is the only thing
+    # that said so. Amber is `warn`, and the accent is fitted to the same
+    # lightness as the semantic roles — under the ember preset the two are
+    # 0.065 apart in OKLab and under mint 0.028, which is below a
+    # just-noticeable difference. So on those accents the clamp had NO carrier
+    # at all. Every other knob in this file already writes its bound in prose;
+    # this one and _movement_knob were the two that did not.
+    if abs(now) >= 1.0:
+        note = ("at the +-1.0 clamp: the measured bias is stronger than the "
+                "skew the generator will write, so more evidence in the same "
+                "direction cannot move this further")
+    elif not s.dodge_bias_enabled:
         note = ("dodge_bias_enabled is off in settings, so nothing is written "
                 "however strong the measurement gets")
     elif measured and not gated:
@@ -1307,9 +1318,20 @@ def _movement_knob(profile: PlayerProfile, s: Settings,
                 f"{len(kpss)} runs ({a0:.2f} then {a1:.2f}) with accuracy in band, "
                 "so movement gets a bounded upward nudge — growth shows up as "
                 "speed, not accuracy")
+    # AT-BOUND in prose. `movement` clamps to the archetype's range and amber
+    # was the only thing that said it had arrived there — and amber is `warn`,
+    # which the ember accent sits 0.065 from in OKLab and mint 0.028, below a
+    # just-noticeable difference. On those accents the bound had no carrier.
+    at_bound = ""
+    if profile.run_count and profile.movement >= s.max_movement - 1e-9:
+        at_bound = (f"at the {s.max_movement:.2f} ceiling for this archetype — "
+                    "the OU walk cannot push movement any further")
+    elif profile.run_count and profile.movement <= s.min_movement + 1e-9:
+        at_bound = (f"at the {s.min_movement:.2f} floor for this archetype — "
+                    "the OU walk cannot settle movement any lower")
     lo, hi, wide_note = _widen(s.min_movement, s.max_movement, baseline,
                                profile.movement)
-    note = "; ".join(n for n in (note, clamp_note, wide_note) if n)
+    note = "; ".join(n for n in (at_bound, note, clamp_note, wide_note) if n)
     moved = profile.movement - baseline
     return Knob(key="movement", name="movement / pace", lo=lo, hi=hi,
                 baseline=baseline, now=profile.movement,
