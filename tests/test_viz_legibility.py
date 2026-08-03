@@ -561,3 +561,59 @@ def test_public_api_still_answers_every_caller(qapp, pal):
     tr.clear()
     for widget, size in ((bars, (690, 270)), (hm, (690, 270)), (tr, (1400, 220))):
         assert not _image(widget, pal, *size).isNull()
+
+
+def test_heatmap_glyph_rows_stay_inside_their_tile(qapp, pal):
+    """`AlignVCenter` centres on the RECT, so a row rect 1.4x the row pitch
+    centred each glyph row on 0.7*chh instead of 0.5*chh and pushed the whole
+    texture down its tile. Measured at 684x300: the middle tile had 7px of
+    empty tint above its texture and ZERO below — the glyphs reached the
+    tile's own bottom edge, a 7:1 asymmetry. With the rect matching the pitch
+    it is 5 above and 3 below.
+
+    The pin is the clearance, not the ratio: a texture that touches its tile
+    edge is one resize away from painting outside it.
+    """
+    # The app-wide sheet, not just a patched _current: it sets the font size
+    # every metric here derives from, and without it the tile pitch measured
+    # in this test is not the pitch the user sees.
+    previous = qapp.styleSheet()
+    theme._apply(qapp, pal)
+    try:
+        _heatmap_tile_clearance(qapp, pal)
+    finally:
+        qapp.setStyleSheet(previous)
+
+
+def _heatmap_tile_clearance(qapp, pal):
+    grid = np.array([[0.5, 0.2, 0.4], [0.3, 0.6, 0.1], [0.2, 0.4, 0.5]])
+    heat = viz.AsciiHeatmap()
+    heat.set_data(grid, ["a", "b", "c"], fmt="{:.2f}")
+    w, h = 684, 300
+    arr = _rgb(_image(heat, pal, w, h))
+
+    bg = _hexrgb(pal.bg)
+    dist = np.abs(arr - bg).sum(axis=-1)
+    col = slice(int(w * 0.40), int(w * 0.46))     # down the middle tile column
+    tint_rows = np.nonzero((dist[:, col] > 8).any(axis=1))[0]
+    glyph_rows = np.nonzero((dist[:, col] > 90).any(axis=1))[0]
+    assert tint_rows.size and glyph_rows.size, "the heatmap drew nothing"
+
+    bands, run = [], [tint_rows[0]]
+    for y in tint_rows[1:]:
+        if y - run[-1] > 3:
+            bands.append((run[0], run[-1]))
+            run = [y]
+        else:
+            run.append(y)
+    bands.append((run[0], run[-1]))
+    assert len(bands) >= 3, f"expected one band per grid row, got {len(bands)}"
+
+    for top, bottom in bands:
+        inside = glyph_rows[(glyph_rows >= top) & (glyph_rows <= bottom)]
+        if not inside.size:
+            continue
+        above, below = int(inside.min() - top), int(bottom - inside.max())
+        assert above >= 1 and below >= 1, (
+            f"tile rows {top}..{bottom}: texture sits {above}px from the top "
+            f"and {below}px from the bottom — it is touching its own tile edge")

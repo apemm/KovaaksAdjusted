@@ -16,7 +16,7 @@ import pytest
 
 from kovadapt.gui import color
 from kovadapt.gui.theme import (ACCENTS, CONTROL_CONTRAST, DIM_CONTRAST,
-                                TEXT_CONTRAST, build_palette)
+                                TEXT_CONTRAST, build_palette, build_qss)
 
 # (dark, midnight, rgb) for every theme the app can show
 MODES = [
@@ -287,3 +287,135 @@ def test_border_control_clears_the_floor_border_does_not(name, kw):
         f"{name}: border is no longer the faint hairline its docstring "
         "promises — if it has been promoted, the two tokens have collapsed "
         "into one and border_control has nothing to distinguish it")
+
+
+# ------------------------------------------- paint-site alpha is invisible here
+@pytest.mark.parametrize("name,kw", MODES)
+def test_empty_state_text_is_not_knocked_under_the_dim_floor(name, kw):
+    """A rendered pin, because this file is structurally blind to it: it walks
+    ROLE PAIRS, and the defect was a hard-coded `setAlphaF(0.75)` at the paint
+    site. `fg_dim` is already bisected to DIM_CONTRAST; throwing 25% away put
+    every empty state at 3.10-3.53:1 — 22-31% under the floor, at normal-text
+    size, on the two screens a new user sees first.
+
+    Sampled BELOW the panel title: the title is full-alpha `fg_dim` and reads
+    5.12:1, so "darkest ink in the widget" passes while the empty text fails.
+    """
+    import os
+    import sys
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+    import numpy as np
+    from PySide6.QtGui import QColor, QImage, QPixmap
+    from PySide6.QtWidgets import QApplication
+
+    from kovadapt.gui import theme, viz
+
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    previous = app.styleSheet()
+    pal = build_palette(accent="indigo", **kw)
+    theme._apply(app, pal)
+    try:
+        w = viz.AsciiBars(title="flick cost by direction")
+        w.set_data([], [])                       # the empty state under test
+        w.resize(640, 240)
+        pm = QPixmap(640, 240)
+        pm.fill(QColor(pal.bg_alt))
+        w.render(pm)
+        img = pm.toImage().convertToFormat(QImage.Format_RGB32)
+        buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+        arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :640, :3][:, :, ::-1]
+
+        panel = np.array([int(pal.bg_alt[i:i + 2], 16) for i in (1, 3, 5)])
+        body = arr[40:, :]                       # below the 26px title band
+        dist = np.abs(body.astype(int) - panel).sum(axis=-1)
+        assert dist.max() > 30, "no empty-state ink found below the title"
+        ink = body.reshape(-1, 3)[int(np.argmax(dist))]
+        hexs = "#{:02x}{:02x}{:02x}".format(*(int(c) for c in ink))
+        ratio = color.contrast_ratio(hexs, pal.bg_alt)
+        assert ratio >= DIM_CONTRAST - 0.15, (
+            f"{name}: empty-state text is {ratio:.2f}:1 against the panel, "
+            f"under the {DIM_CONTRAST} floor its own colour was fitted to")
+        w.deleteLater()
+        app.processEvents()
+    finally:
+        app.setStyleSheet(previous)
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_the_disabled_primary_rule_restates_every_role_it_needs(name, kw):
+    """Structural, over all five accents, because it is cheap: the enabled
+    rule sets background, border-color and color, so the disabled rule has to
+    set all three or whichever it omits survives from the rule above. It
+    omitted border-color."""
+    import re
+
+    for accent in ACCENTS:
+        pal = build_palette(accent=accent, **kw)
+        sheet = build_qss(pal)
+        rule = re.search(
+            r'QPushButton\[accent="true"\]:disabled\s*\{([^}]*)\}', sheet)
+        assert rule, f"{name}/{accent}: the disabled accent rule is gone"
+        body = rule.group(1)
+        for prop in ("background", "border-color", "color"):
+            assert prop in body, (
+                f"{name}/{accent}: the disabled accent button does not set "
+                f"{prop}, so it keeps the enabled value")
+        assert pal.accent not in body, (
+            f"{name}/{accent}: the disabled button is painted in the accent")
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_a_disabled_primary_button_looks_dead(name, kw, accent="indigo"):
+    """It set background and color but not border-color, so the accent ring
+    from the enabled rule survived — byte-identical to the live ring in 20/20.
+    On midnight and rgb that ring reads ~10:1 against its fill while the greyed
+    label reads 5.26, making the DEAD primary the most saturated thing in the
+    row. Its fill was bg_raised too, the fill an ENABLED plain button gets."""
+    import os
+    import sys
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    from kovadapt.gui import theme
+
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    previous = app.styleSheet()
+    pal = build_palette(accent=accent, **kw)
+    theme._apply(app, pal)
+    try:
+        btn = QPushButton("Play adaptive task")
+        btn.setProperty("accent", True)
+        btn.setEnabled(False)
+        btn.resize(200, 34)
+        btn.show()
+        app.processEvents()
+        img = btn.grab().toImage().convertToFormat(QImage.Format_RGB32)
+        buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+        arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :200, :3][:, :, ::-1]
+
+        acc = tuple(int(pal.accent[i:i + 2], 16) for i in (1, 3, 5))
+        alt = tuple(int(pal.bg_alt[i:i + 2], 16) for i in (1, 3, 5))
+        border = tuple(int(x) for x in arr[0, 100])
+        fill = tuple(int(x) for x in arr[17, 6])       # inside the border, left of the label
+
+        assert border != acc, (
+            f"{name}/{accent}: the disabled button keeps its live accent ring")
+        assert all(abs(a - b) <= 3 for a, b in zip(fill, alt)), (
+            f"{name}/{accent}: disabled fill is {fill}, not bg_alt {alt} — it "
+            "wears the fill an enabled plain button gets")
+        btn.deleteLater()
+        app.processEvents()
+    finally:
+        app.setStyleSheet(previous)

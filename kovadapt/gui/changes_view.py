@@ -337,6 +337,13 @@ class LedgerRow:
     adaptive: str
     delta: str = ""
     tone: str = "fg"     # fg | accent | warn
+    # Whether the VARIANT column holds a real reading. When no [Adaptive] file
+    # exists yet, `adaptive` is the em-dash placeholder — and it was drawn in
+    # `pal.fg` regardless, so a column of "nothing here" marks rendered as the
+    # brightest ink on the panel, above the authored base numbers beside them
+    # and above its own column header. A flag, not a string test on the dash:
+    # the renderer should not have to know how the formatter spells "absent".
+    has_adaptive: bool = True
 
 
 @dataclass(frozen=True)
@@ -668,7 +675,7 @@ def read_sce_facts(settings: Settings, base: str,
             a = _num(var.get_in_section("Character Profile", char, key)) if var else None
             delta, tone = _delta_text(b, a)
             rows.append(LedgerRow(f"{char} - {key}", _fmt_num(b), _fmt_num(a),
-                                  delta, tone))
+                                  delta, tone, has_adaptive=a is not None))
     dodges = _dodge_names(src, bots)
     for dodge in dodges[:_MAX_DODGES]:
         for key in _DODGE_KEYS:
@@ -678,7 +685,7 @@ def read_sce_facts(settings: Settings, base: str,
             a = _num(var.get_in_section("Dodge Profile", dodge, key)) if var else None
             delta, tone = _delta_text(b, a)
             rows.append(LedgerRow(f"{dodge} - {key}", _fmt_num(b), _fmt_num(a),
-                                  delta, tone))
+                                  delta, tone, has_adaptive=a is not None))
     extra = max(len(chars) - _MAX_CHARS, 0) + max(len(dodges) - _MAX_DODGES, 0)
 
     spawns = _read_spawn_map(src, var, settings, focus)
@@ -1449,9 +1456,12 @@ def _title_band(p: QPainter, pal, title: str, width: float) -> float:
 
 def _empty_band(p: QPainter, pal, rect: QRectF, text: str) -> None:
     p.setFont(theme.mono(14))
-    col = QColor(pal.fg_dim)
-    col.setAlphaF(0.75)
-    p.setPen(col)
+    # NO setAlphaF here. `fg_dim` is already bisected to DIM_CONTRAST
+    # (4.5:1) by the palette fitter; knocking 25% off it threw ~2 contrast
+    # points away and landed this text at 3.10-3.53:1 — 22-31%% under the floor,
+    # at normal-text size. The caption 40px below, same colour, no alpha,
+    # measured 4.63-5.47:1 in the same render.
+    p.setPen(QColor(pal.fg_dim))
     p.drawText(rect, Qt.AlignCenter, f"- {text} -")
 
 
@@ -2188,7 +2198,8 @@ class FileLedger(_Art):
                  Qt.AlignLeft),
                 (x_base, num_w, row.base, QColor(pal.fg_dim), num_f,
                  Qt.AlignRight),
-                (x_adap, num_w, row.adaptive, QColor(pal.fg), num_f,
+                (x_adap, num_w, row.adaptive,
+                 QColor(pal.fg if row.has_adaptive else pal.fg_dim), num_f,
                  Qt.AlignRight),
                 (x_delta, max(width - x_delta - 10.0, 40.0), row.delta,
                  QColor(tones.get(row.tone, pal.fg_dim)), key_f, Qt.AlignLeft),

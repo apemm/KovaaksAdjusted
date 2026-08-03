@@ -530,7 +530,18 @@ QPushButton[accent="true"]:hover {{ background: {p.accent_hover}; border-color: 
 QPushButton[accent="true"]:pressed {{
     background: {p.accent_press}; border-color: {p.accent_press};
 }}
-QPushButton[accent="true"]:disabled {{ background: {p.bg_raised}; color: {p.fg_dim}; }}
+/* A dead button has to look dead. This set background and color but not
+   border-color, so the accent ring from the rule above SURVIVED — measured
+   byte-identical to the enabled ring in 20/20 theme x accent combos. On
+   midnight and rgb that ring reads ~10:1 against its own fill while its
+   greyed label reads 5.26:1, so the disabled primary was the most saturated
+   thing in an otherwise greyed row. Its fill was bg_raised too — the fill an
+   ENABLED plain button gets — so it read as a live control wearing the
+   primary marker. bg_alt + border_control is exactly what the disabled plain
+   button beside it already uses. */
+QPushButton[accent="true"]:disabled {{
+    background: {p.bg_alt}; border-color: {p.border_control}; color: {p.fg_dim};
+}}
 QPushButton[flat="true"] {{ background: transparent; border: none; padding: 4px 8px; }}
 QPushButton[flat="true"]:hover {{ color: {p.accent}; }}
 

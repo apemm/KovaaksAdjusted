@@ -136,8 +136,15 @@ class ZoneGridDiagram(_Diagram):
                 y = self.Y0 + r * self.CH
                 if locked and (r, c) == (wr, wc):
                     col = QColor(pal.warn if explore else pal.accent)
-                    if u < 0.55:                     # lock-in pop
-                        col = col.lighter(130)
+                    if u < 0.55:
+                        # The lock-in pop has to move AWAY from the page.
+                        # lighter() raises HSV value, which is emphasis on a
+                        # dark page and de-emphasis on cream — and every accent
+                        # is fitted to land at exactly 4.5:1, so on light the
+                        # "winner" flashed DIMMER than the ordinary ramp cells
+                        # around it while the sidebar word beside it held 4.5.
+                        # Both halves of the same beat, disagreeing.
+                        col = col.lighter(130) if pal.is_dark else col.darker(125)
                     ch = "@"
                 else:
                     if locked:

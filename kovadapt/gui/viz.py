@@ -283,9 +283,12 @@ def _paint_title(p: QPainter, pal, title: str, width: int) -> float:
 
 def _paint_empty(p: QPainter, pal, rect: QRectF, text: str) -> None:
     p.setFont(theme.mono(12))
-    col = QColor(pal.fg_dim)
-    col.setAlphaF(0.75)
-    p.setPen(col)
+    # NO setAlphaF here. `fg_dim` is already bisected to DIM_CONTRAST
+    # (4.5:1) by the palette fitter; knocking 25% off it threw ~2 contrast
+    # points away and landed this text at 3.10-3.53:1 — 22-31%% under the floor,
+    # at normal-text size. The caption 40px below, same colour, no alpha,
+    # measured 4.63-5.47:1 in the same render.
+    p.setPen(QColor(pal.fg_dim))
     p.drawText(rect, Qt.AlignCenter, f"· {text} ·")
 
 
@@ -1134,7 +1137,13 @@ class AsciiHeatmap(_Ignite, QWidget):
                     for gr in range(grows):
                         jit = (_seed(disp_r * 31 + gr, c * 17) - 0.5) * 0.22
                         p.setPen(_dim(color, (0.55 + 0.45 * d + jit) * q + 0.35 * ring))
-                        p.drawText(QRectF(mx, my + gr * chh, row_w, chh * 1.4),
+                        # chh, not chh*1.4: AlignVCenter centres on the
+                        # RECT, so an over-tall rect centres the row on
+                        # 0.7*chh and pushes every glyph row down its
+                        # slot — 11.0px of empty tint above the texture
+                        # against 3.8 below, and past the tile edge once
+                        # the chart is given real width.
+                        p.drawText(QRectF(mx, my + gr * chh, row_w, chh),
                                    Qt.AlignLeft | Qt.AlignVCenter, row_txt)
 
                 # the number, on a chip so it survives the texture under it
