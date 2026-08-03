@@ -311,6 +311,31 @@ def _fmt_value(fmt: str, v: float) -> str:
     return txt
 
 
+def finite(values) -> list[float]:
+    """`values` as floats, or [] if ANY of them is NaN or infinite.
+
+    Not fastidiousness — a non-finite value here KILLS THE PROCESS. `int(nan)`
+    raises ValueError and `int(-inf)` raises OverflowError, both from inside
+    paintEvent, and an exception thrown out of a paint handler leaks the
+    QPainter: Qt then aborts with "Cannot destroy paint device that is being
+    painted" (0xC0000409 / 0xC0000005). Catching it in Python does not help —
+    the except block runs, and the process still dies one frame later.
+
+    And it is reachable from disk, not just in theory. `stats/parser.py` reads
+    accuracy as `float(row[7])` straight out of KovaaK's CSV, and `float("nan")`
+    parses happily; that lands in `profile.history`, `json.dumps` writes a bare
+    `NaN` token, `json.loads` reads it straight back, and dashboard.py hands the
+    list to AsciiTrend on launch. One malformed stats row makes the app
+    un-openable until the profile is deleted by hand.
+
+    All-or-nothing on purpose: dropping the bad entries would silently renumber
+    a run history, and a trend that quietly skips run 4 is worse than a panel
+    that says it has nothing to draw.
+    """
+    out = [float(v) for v in values]
+    return out if all(math.isfinite(v) for v in out) else []
+
+
 def prints_zero(v: float) -> bool:
     """Whether a value RENDERS as zero at the {:.2f} the panel prints it with,
     which is the only zero a reader can see.
@@ -540,7 +565,7 @@ class AsciiBars(_Ignite, QWidget):
         axis is pure max-normalization, which draws noise at full scale.
         """
         self._labels = [str(x) for x in labels]
-        self._values = [float(v) for v in values]
+        self._values = finite(values)       # [] on any NaN/inf: see finite()
         self._sublabels = [str(s) for s in (sublabels or [])]
         self._counts = (None if ratio_counts is None
                         else [int(c) for c in ratio_counts])
@@ -1291,7 +1316,7 @@ class AsciiTrend(_Ignite, QWidget):
         absolute runs; omit it and the axis says "oldest shown" instead of
         naming a run it cannot identify (see run_axis_text).
         """
-        self._values = [float(v) for v in values]
+        self._values = finite(values)       # [] on any NaN/inf: see finite()
         self._tag = tag
         self._baseline = None if baseline is None else float(baseline)
         self._first_run = None if first_run is None else int(first_run)

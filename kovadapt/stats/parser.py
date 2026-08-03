@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,25 @@ def parse_stats_filename(name: str) -> tuple[str, str, datetime] | None:
 def _clock_seconds(hhmmss: str) -> float:
     h, m, s = hhmmss.split(":")
     return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def _finite(text: str) -> float:
+    """`float(text)`, except that NaN and infinity are a malformed row.
+
+    `float("nan")` and `float("inf")` parse happily, so a stats file carrying
+    either put a non-finite number into the profile, and from there into every
+    EWMA that touches it — permanently, since `nan` propagates through the
+    update. It also reached the charts, where `int(nan)` raises inside
+    paintEvent and kills the PROCESS (see gui/viz.finite).
+
+    Raising ValueError puts this on the row-skipping path the caller already
+    has, which is the right answer: one unreadable kill row is not a reason to
+    drop the run.
+    """
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite value in stats row: {text!r}")
+    return value
 
 
 def parse_stats_csv(path: Path | str) -> Run:
@@ -88,10 +108,10 @@ def parse_stats_csv(path: Path | str) -> Run:
                     t=clock - t0,
                     bot=row[2],
                     weapon=row[3],
-                    ttk=float(row[4].rstrip("s")),
+                    ttk=_finite(row[4].rstrip("s")),
                     shots=int(row[5]),
                     hits=int(row[6]),
-                    accuracy=float(row[7]),
+                    accuracy=_finite(row[7]),
                     cheated=row[11].strip() == "1",
                     overshots=int(row[12]),
                 )
