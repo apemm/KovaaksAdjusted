@@ -126,8 +126,12 @@ def test_bar_length_is_proportional_and_close_values_stay_distinct(qapp, pal):
     # and the worst-bar highlight IS that claim in colour — without them no
     # bar paints pal.bad and this probe has nothing to find. Proportionality
     # is what's under test either way; the counts just buy the highlight.
+    # ratio_counts is permission; `worst` is the claim itself. viz no longer
+    # derives a red bar on its own — that independence is what let the red bar
+    # and the headline name different directions.
     bars.set_data(["left", "vertical", "right"], [0.22, 0.24, 0.60],
-                  ["37 flicks", "8 flicks", "41 flicks"], ratio_counts=[37, 8, 41])
+                  ["37 flicks", "8 flicks", "41 flicks"], ratio_counts=[37, 8, 41],
+                  compare=(2, 0), worst=2)
     arr = _rgb(_image(bars, pal, w, h))
     accent = _exact(arr, pal.accent)
     worst = _exact(arr, pal.bad)                   # the max bar paints pal.bad

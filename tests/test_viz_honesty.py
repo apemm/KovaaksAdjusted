@@ -508,8 +508,10 @@ def test_a_worst_bar_is_a_claim_and_answers_to_the_gate(qapp, pal):
 
     def render(counts):
         b = viz.AsciiBars(title="flick quality by direction")
+        # `worst` is the caller's claim; without it nothing is marked at all
         b.set_data(["left", "vertical", "right"], vals,
-                   ["14 flicks", "9 flicks", "13 flicks"], ratio_counts=counts)
+                   ["14 flicks", "9 flicks", "13 flicks"], ratio_counts=counts,
+                   compare=(0, 2), worst=0)
         return _image(b, pal, 720, 300)
 
     permitted = render([14, 9, 13])     # comparison allowed

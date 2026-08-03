@@ -301,12 +301,64 @@ def _bias_title(vals: list[float], ns: list[int],
     return f"left and right flicks are even — {left:.2f} vs {right:.2f}"
 
 
-def _deficit_title(deficits: dict[str, float], settings: Settings | None) -> str:
+def _bias_claim(vals: list[float], ns: list[int],
+                degraded: bool) -> tuple[tuple[int, int] | None, int | None]:
+    """(pair the panel compares, bar to mark red) — the SAME branches
+    `_bias_title` takes, so the sentence and the picture cannot diverge.
+
+    They did diverge. viz derived the red bar as the global argmax while the
+    title deliberately ignores a vertical bar unless it dominates by 1.25x, so
+    on a real report (left 0.104, vertical 0.115, right 0.042) the headline
+    said "your left flicks cost 2.5x more than your right", the red bar and
+    the numeral sat on VERTICAL, the footer cited "vertical 0.12 / left 0.10 =
+    1.11x" under that 2.5x headline, and the caption told the reader the red
+    bar was this run's worst. One panel, four surfaces, two answers.
+
+    Returning None for both is a real answer: it means this run supports no
+    ranking, and then nothing is highlighted and no ratio is printed.
+
+    Indices are into [left, vertical, right].
+    """
+    left, vert, right = vals
+    n_left, n_vert, n_right = ns
+    if sum(ns) == 0 or degraded:
+        return None, None
+    if n_left < _MIN_SIDE_FLICKS or n_right < _MIN_SIDE_FLICKS:
+        return None, None
+    hi_i, lo_i = (0, 2) if left >= right else (2, 0)
+    hi, lo = vals[hi_i], vals[lo_i]
+    if vert > 0 and n_vert >= _MIN_SIDE_FLICKS and vert >= _EVEN_RATIO * hi:
+        return (1, hi_i), 1                       # vertical dominates
+    if lo <= 0:
+        return (None, None) if hi <= 0 else ((hi_i, lo_i), hi_i)
+    if viz.prints_zero(hi) and viz.prints_zero(lo):
+        return None, None
+    if hi / lo >= _EVEN_RATIO:
+        return (hi_i, lo_i), hi_i
+    # "left and right are even" — a real finding, with a pair to cite and no
+    # worst bar to mark.
+    return (hi_i, lo_i), None
+
+
+def _deficit_title(deficits: dict[str, float], settings: Settings | None,
+                   degraded: bool = False) -> str:
     """Headline for the region map: the weakest zone, when one really is.
 
     Below viz.NOISE_FLOOR the map itself renders flat (that constant is what
     stops noise being stretched across the ramp), so naming a "weakest" zone
-    there would claim a finding the picture deliberately refuses to draw."""
+    there would claim a finding the picture deliberately refuses to draw.
+
+    `degraded` is the SAME input-health gate the bias panel answers to, and
+    this panel is the one microstructure surface that never asked for it. A
+    region deficit is `overshoot + 0.15*corrections + 0.25*slowness` z-scored
+    (analysis/movement.py) — pure flick microstructure — so on a noisy run
+    this title read "WEAKEST ZONE THIS RUN: CENTER, +3.60 SD ABOVE AVERAGE"
+    on the same baseline, 700px to the right of "INPUT TIMING TOO NOISY TO
+    COMPARE DIRECTIONS THIS RUN". Three of the five real reports on this
+    machine land there.
+    """
+    if degraded:
+        return "input timing too noisy to rank zones this run"
     if not deficits:
         return _DEFICIT_TITLE
     key, z = max(deficits.items(), key=lambda kv: kv[1])
@@ -886,9 +938,11 @@ class AnalysisView(QWidget):
             # an em-dash; only this panel pretended to have measured something.
             self.bias_bars.set_data([], [])
         else:
+            compare, worst = _bias_claim(vals, ns, degraded)
             self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
                                     ratio_counts=None if degraded else ns,
-                                    floor=_BIAS_COST_FLOOR)
+                                    floor=_BIAS_COST_FLOOR,
+                                    compare=compare, worst=worst)
         self.bias_caption.setText(_bias_caption(vals, ns, degraded))
 
     def _draw_heat(self, rep: RunReport | None = None) -> None:
@@ -899,7 +953,9 @@ class AnalysisView(QWidget):
         rows = self._settings.region_rows if self._settings is not None else 5
         if rep is not None and rep.region_deficits:
             grid, labels = viz.region_grid(rep.region_deficits, cols, rows)
-            self.heat_map.set_title(_deficit_title(rep.region_deficits, self._settings))
+            self.heat_map.set_title(
+                _deficit_title(rep.region_deficits, self._settings,
+                               input_degraded(rep)))
             self.heat_map.set_data(grid, labels, fmt="{:+.2f}")
             self.heat_caption.setText(_DEFICIT_CAPTION)
         elif self.trace is not None and len(self.trace) >= 2:

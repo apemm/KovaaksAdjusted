@@ -541,6 +541,8 @@ class AsciiBars(_Ignite, QWidget):
         self._values: list[float] = []
         self._counts: list[int] | None = None
         self._floor = 0.0
+        self._compare: tuple[int, int] | None = None
+        self._worst: int | None = None
         self.setMinimumHeight(220)
 
     # ------------------------------------------------------------------
@@ -551,13 +553,28 @@ class AsciiBars(_Ignite, QWidget):
     def set_data(self, labels: Sequence[str], values: Sequence[float],
                  sublabels: Sequence[str] | None = None, *,
                  ratio_counts: Sequence[int] | None = None,
-                 floor: float = 0.0) -> None:
+                 floor: float = 0.0,
+                 compare: tuple[int, int] | None = None,
+                 worst: int | None = None) -> None:
         """`ratio_counts` are the per-bar sample sizes, and passing them is the
         caller's explicit permission to print the footer ratio at all (see
         ratio_footer). Omit them — the default — and no footer sentence is
         drawn: only the caller holds this run's input-health verdict, and a
         ratio under a title reading "too noisy to compare directions" is a
         panel contradicting itself.
+
+        `compare` is the (i, j) pair this panel is comparing and `worst` is
+        the bar to mark red — both decided by the CALLER, because only the
+        caller writes the headline. They are separate because "these two are
+        even" is a real verdict with a pair and no worst.
+
+        Omit them and the panel makes no ranking claim at all: no highlight,
+        no ratio. That default matters. viz used to paint the global argmax on
+        its own while `_bias_title` deliberately ignores a vertical bar unless
+        it dominates by 1.25x — so on real data the headline said LEFT, the
+        red bar sat on VERTICAL, the footer cited vertical at 1.11x under a
+        2.5x headline, and the caption told the reader the red bar was the
+        worst. Two independent rules for one verdict is the failure mode.
 
         `floor` is the smallest value allowed to fill the track — the size a
         bar has to reach before its length means anything. It is the caller's
@@ -571,6 +588,9 @@ class AsciiBars(_Ignite, QWidget):
         self._counts = (None if ratio_counts is None
                         else [int(c) for c in ratio_counts])
         self._floor = max(float(floor), 0.0)
+        self._compare = (None if compare is None
+                         else (int(compare[0]), int(compare[1])))
+        self._worst = None if worst is None else int(worst)
         # The wave starts at the zero anchor, mid-stack, so every bar GROWS
         # out of the axis instead of the rows appearing one after another.
         n = len(self._values)
@@ -617,7 +637,12 @@ class AsciiBars(_Ignite, QWidget):
         """
         if not self._values:
             return ""
-        order = sorted(range(len(self._values)), key=lambda i: -self._values[i])
+        if self._compare is not None:
+            # cite the pair the panel is COMPARING, so the sentence, the red
+            # bar and the headline above them are one statement
+            order = [self._compare[0], self._compare[1]]
+        else:
+            order = sorted(range(len(self._values)), key=lambda i: -self._values[i])
         hi = self._values[order[0]]
         lab = self._label_at(order[0], "top")
         if len(self._values) < 2:
@@ -728,10 +753,16 @@ class AsciiBars(_Ignite, QWidget):
         # bar prints 0.00 the footer says "no cost recorded to compare", and a
         # red bar beside that sentence is the panel arguing with itself.
         may_compare = (self._counts is not None
+                       and self._worst is not None
                        and not all(prints_zero(x) for x in self._values))
+        # The bar the CALLER named, never the argmax. Deriving it here made
+        # viz and the headline two independent rules for one verdict, and on
+        # real data they disagreed: title LEFT, red bar VERTICAL, caption
+        # "the red bar is this run's worst".
+        worst = self._worst if may_compare else -1
         for i, v in enumerate(self._values):
             cy = top + i * row_h + row_h / 2
-            is_max = may_compare and v == vmax and vmax > 0
+            is_max = (i == worst) and v > 0
             color = QColor(pal.bad if is_max else pal.accent)
 
             # ---- direction label, with the flick count dim underneath

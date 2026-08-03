@@ -895,3 +895,104 @@ def test_no_view_widens_a_splitter_handle_past_what_the_theme_asked_for(qapp, se
     control.deleteLater()
     view.deleteLater()
     qapp.processEvents()
+
+
+
+def _red_bar_row(bars, n_rows: int) -> int | None:
+    """Index of the bar actually painted in pal.bad, off the pixels."""
+    from PySide6.QtGui import QImage, QPixmap
+
+    pal = theme.current()
+    w, h = 720, 300
+    pm = QPixmap(w, h)
+    pm.fill(QColor(pal.bg))
+    bars.resize(w, h)
+    bars.render(pm)
+    img = pm.toImage().convertToFormat(QImage.Format_RGB32)
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :w, :3][:, :, ::-1]
+    want = np.array([int(pal.bad[i:i + 2], 16) for i in (1, 3, 5)])
+    hit = np.all(arr == want, axis=-1)
+    rows = np.nonzero(hit.any(axis=1))[0]
+    if not rows.size:
+        return None
+    top = 26.0
+    body = h - top - viz._RULER_H - viz._FOOTER_H - 4
+    centre = float(rows.mean())
+    return min(range(n_rows),
+               key=lambda i: abs(centre - (top + (i + 0.5) * body / n_rows)))
+
+def test_the_bias_panel_never_names_two_different_worst_directions(qapp, settings):
+    """The real report that exposed this: left 0.104, vertical 0.115, right
+    0.042, n = 58/24/57. The headline said "your left flicks cost 2.5x more
+    than your right", the red bar and the red numeral sat on VERTICAL, the
+    footer cited "vertical 0.12 / left 0.10 = 1.11x" under that 2.5x headline,
+    and the caption told the reader the red bar was this run's worst.
+
+    Cause: `_bias_title` deliberately ignores a vertical bar unless it
+    dominates by 1.25x (0.115/0.104 = 1.105, under the gate), while viz
+    derived the red bar as the global argmax. Two independent rules for one
+    verdict. The caller owns the claim now and viz renders it.
+    """
+    view = AnalysisView(settings)
+    view.show_report(_report(n_flicks=139, bias={
+        "left": {"n": 58, "overshoot": 0.104, "corrections": 0.0},
+        "vertical": {"n": 24, "overshoot": 0.115, "corrections": 0.0},
+        "right": {"n": 57, "overshoot": 0.042, "corrections": 0.0}}))
+
+    dirs = ["left", "vertical", "right"]
+    title = view.bias_bars._title.lower()
+    named = [d for d in dirs if d in title]
+    assert named, f"the headline names no direction at all: {title!r}"
+
+    # WHICH BAR IS ACTUALLY RED — read off the render, not off the stored
+    # claim. Asserting on state cannot see the defect: the bug was that viz
+    # painted something other than what the caller claimed.
+    marked = _red_bar_row(view.bias_bars, len(dirs))
+    assert marked is not None, "a headline naming a worst side marked no bar"
+    assert dirs[marked] in named, (
+        f"the red bar is on {dirs[marked]!r} while the headline names "
+        f"{named} — the panel is giving two answers")
+
+    footer = view.bias_bars.ratio_footer().lower()
+    if footer:
+        # the footer reads "top two: <worse> X / <other> Y = Nx", so the
+        # FIRST direction it names is the one it calls worse. Membership is
+        # not enough: citing the right pair in the wrong order still puts a
+        # different direction at the top of the sentence than under the red
+        # bar, which is the whole defect.
+        first = min((d for d in dirs if d in footer),
+                    key=lambda d: footer.index(d), default=None)
+        assert first == dirs[marked], (
+            f"the footer leads with {first!r} while the red bar is on "
+            f"{dirs[marked]!r}: {footer!r}")
+    view.deleteLater()
+
+
+def test_the_region_map_answers_to_the_same_gate_as_the_bias_panel(qapp, settings):
+    """Three of the five real reports on this machine rendered "WEAKEST ZONE
+    THIS RUN: CENTER, +3.60 SD ABOVE AVERAGE" on the same baseline, 700px to
+    the right of "INPUT TIMING TOO NOISY TO COMPARE DIRECTIONS THIS RUN".
+
+    A region deficit is overshoot + 0.15*corrections + 0.25*slowness, z-scored
+    — pure flick microstructure — so it answers to the same input-health gate
+    as everything else on the page. It was the one surface that never asked.
+    """
+    noisy = _report(
+        n_flicks=119,
+        input_health={"jitter_ms": 9.0, "polling_hz_est": 125.0, "gaps": 4},
+        region_deficits={"r2c2": 3.60, "r0c0": -0.4, "r1c1": 0.2})
+    view = AnalysisView(settings)
+    view.show_report(noisy)
+
+    heat = view.heat_map._title.lower()
+    assert "weakest zone" not in heat, (
+        f"the map names a zone on a run the page calls too noisy: {heat!r}")
+    assert "noisy" in heat, heat
+    # ...and a clean run still gets its verdict
+    view.show_report(_report(
+        n_flicks=119,
+        input_health={"jitter_ms": 0.4, "polling_hz_est": 1000.0},
+        region_deficits={"r2c2": 3.60, "r0c0": -0.4, "r1c1": 0.2}))
+    assert "weakest zone" in view.heat_map._title.lower()
+    view.deleteLater()
