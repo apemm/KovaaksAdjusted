@@ -550,8 +550,18 @@ QComboBox::down-arrow {{
 QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
     image: url({_arrow_url(p.accent, up=False)});
 }}
+/* bg_alt, matching the CLOSED box above: the popup is that control opening,
+   not a menu arriving from somewhere else. On bg_raised the plate landed
+   14.0 lum away from the box it dropped out of on light, 5.1 on dark.
+
+   NOTE this rule does not decide what you see. Editing it changes nothing on
+   screen — verified by mutation. The list is inside a
+   QComboBoxPrivateContainer, and the instance stylesheet install_popup_style
+   puts on that container reaches the list through palette inheritance and
+   wins. The colour is stated here because this is where a reader looks for
+   it; it is PAINTED there. Change both or neither. */
 QComboBox QAbstractItemView {{
-    background: {p.bg_raised}; border: 1px solid {p.border_control}; border-radius: 6px;
+    background: {p.bg_alt}; border: 1px solid {p.border_control}; border-radius: 6px;
     selection-background-color: {p.selection}; outline: none;
 }}
 
@@ -676,9 +686,79 @@ QFrame[card="true"] {{
 """
 
 
+_popup_style_installed = False
+
+
+def install_popup_style(app) -> None:
+    """Take the native menu chrome off combo-box popups. Idempotent.
+
+    QSS styles `QComboBox QAbstractItemView`, which is the LIST. The list
+    lives inside a `QComboBoxPrivateContainer`, and no global selector can
+    name that class — which is what the audit meant by "a QSS rule on the
+    container does nothing". Fusion paints its own PE_PanelMenu under it:
+    measured on cream, a SQUARE #969288 outer line around a 6px-rounded
+    list, plus a 5px #fffaeb band above and below, wrapping every drop-down
+    in the app. The container also painted bg_raised while the box the popup
+    drops out of is bg_alt — 14.0 luminance apart on light, 5.1 on dark.
+
+    A global selector cannot reach the container. An INSTANCE stylesheet can,
+    and it is the entire fix: `border: none` takes the panel off, and the
+    plate colour makes the inset it holds the list in disappear into the
+    list.
+
+    Two other approaches are deliberately absent, both tried and both
+    measured byte-identical with and without on every theme:
+
+    * a QProxyStyle no-opping PE_PanelMenu and zeroing PM_MenuVMargin. Once
+      a stylesheet is set Qt inserts QStyleSheetStyle above any proxy and
+      answers the metric itself without delegating down — a spy on the proxy
+      records PM_MenuVMargin never being asked for at all. It also replaces
+      the application's style, which is a large side effect for no pixels.
+    * zeroing the container's layout margins on Show. The 10px inset stays
+      either way; it just no longer shows, because it is the plate's colour.
+    """
+    global _popup_style_installed
+    if _popup_style_installed and getattr(app, "_kovadapt_popup_margins", None):
+        return
+    from PySide6.QtCore import QEvent, QObject
+
+    class _PopupPlate(QObject):
+        """Give the combo container the plate's own colour and no border.
+
+        The `_kovadapt_styled` mark is load-bearing: setStyleSheet posts a
+        StyleChange, which re-enters this filter, which sets the stylesheet.
+        Without the guard that recursion runs until the interpreter dies with
+        no traceback at all.
+        """
+
+        def eventFilter(self, obj, event):
+            if (event.type() in (QEvent.Show, QEvent.StyleChange)
+                    and obj.metaObject().className() == "QComboBoxPrivateContainer"
+                    and not obj.property("_kovadapt_styled")):
+                obj.setProperty("_kovadapt_styled", True)
+                # SCOPED to the container's own class: a bare
+                # "background: ..." here cascades onto the list inside it.
+                obj.setStyleSheet("QComboBoxPrivateContainer { background: %s; "
+                                  "border: none; }" % current().bg_alt)
+            return False
+
+    # Take the previous one off first. An app-wide event filter sees EVERY
+    # event for every object, so a second copy doubles that cost and an Nth
+    # multiplies it: a test that re-installed per case stacked twenty of them
+    # and put four minutes on the suite, all of it in the tests that ran
+    # after it.
+    old_filter = getattr(app, "_kovadapt_popup_margins", None)
+    if old_filter is not None:
+        app.removeEventFilter(old_filter)
+    app._kovadapt_popup_margins = _PopupPlate(app)   # keep it alive
+    app.installEventFilter(app._kovadapt_popup_margins)
+    _popup_style_installed = True
+
+
 def _apply(app, pal: Palette) -> None:
     global _current
     _current = pal
+    install_popup_style(app)
     app.setStyleSheet(build_qss(pal))
     import pyqtgraph as pg
 

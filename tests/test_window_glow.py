@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pytest
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from kovadapt.gui import color
+from kovadapt.gui import theme
 from kovadapt.gui.theme import ACCENTS, build_palette, build_qss
 
 MODES = [
@@ -243,3 +245,96 @@ def test_the_help_button_actually_renders_its_glyph(qapp):
         "re-check whether app.py still needs its override")
     assert ink_rows("\nQPushButton { padding: 7px 0px; }") >= 5, (
         "the override no longer restores the glyph")
+
+
+@pytest.fixture(scope="module")
+def fusion(qapp):
+    """Fusion, installed ONCE for the whole module.
+
+    The chrome under test is Fusion's own PE_PanelMenu, and the app sets
+    Fusion at startup — without this the test runs on whatever the platform
+    default is, the defect does not reproduce, and the test passes with the
+    fix removed. Which is exactly what it did.
+
+    Once, not per case: setStyle replaces the proxy style the fix installs,
+    so re-running the install per case stacks app-wide event filters.
+    """
+    previous_sheet = qapp.styleSheet()
+    qapp.setStyle("Fusion")
+    theme.install_popup_style(qapp)
+    yield qapp
+    qapp.setStyleSheet(previous_sheet)
+
+
+@pytest.mark.parametrize("mode,accent", CASES)
+def test_the_dropdown_popup_wears_no_native_chrome(qapp, fusion, mode, accent):
+    """Rendered, because the offending pixels come from a widget no stylesheet
+    selector can name.
+
+    QSS styles `QComboBox QAbstractItemView` — the LIST. The list lives inside
+    a `QComboBoxPrivateContainer`, and Fusion paints its own PE_PanelMenu
+    under that container: measured on cream, a SQUARE #969288 outer line
+    around a 6px-rounded list, plus a 5px #fffaeb band above and below. Both
+    strays are `QColor(bg_raised).darker(160)` and `.lighter(108)` exactly,
+    which is the fingerprint this looks for.
+
+    The plate was wrong too. The list painted bg_raised while the box it drops
+    out of is bg_alt — 14.0 luminance apart on light, 5.1 on dark — so the
+    popup read as a menu arriving from elsewhere rather than as that control
+    opening.
+    """
+    from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+
+    # Fusion explicitly: the chrome under test is Fusion's PE_PanelMenu, and
+    # the app sets Fusion at startup (app.py). Without this the test runs on
+    # whatever the platform default is, the defect does not reproduce, and the
+    # test passes with the fix removed — which is exactly what it did.
+    # App-wide, not per-widget: the fix is a QProxyStyle plus an event filter
+    # installed by theme._apply, and neither exists if the sheet is only ever
+    # pushed onto one widget the way the caret test above does it.
+    pal = build_palette(accent=accent, **dict(MODES)[mode])
+    theme._apply(qapp, pal)
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    combo = QComboBox()
+    combo.addItems(["Auto theme", "Dark", "Light", "Midnight", "RGB"])
+    lay.addWidget(combo)
+    host.resize(300, 140)
+    host.show()
+    qapp.processEvents()
+    combo.showPopup()
+    qapp.processEvents()
+
+    img = combo.view().window().grab().toImage().convertToFormat(QImage.Format_RGB32)
+    # numpy, not a pixel loop: this runs over 20 theme x accent combos and a
+    # nested Python loop over ~37k pixels apiece put four minutes on the suite.
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8)
+    arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, :img.width(), :3]
+    packed = (arr[:, :, 2].astype(np.uint32) << 16 | arr[:, :, 1].astype(np.uint32) << 8
+              | arr[:, :, 0].astype(np.uint32))
+    total = packed.size
+    values, counts = np.unique(packed, return_counts=True)
+
+    def count(colour: QColor) -> int:
+        hit = np.nonzero(values == (colour.rgb() & 0xFFFFFF))[0]
+        return int(counts[hit[0]]) if hit.size else 0
+
+    raised = QColor(pal.bg_raised)
+    strays = {"Fusion panel outline": raised.darker(160),
+              "Fusion margin band": raised.lighter(108),
+              # The container's own fill, showing in the inset it holds the
+              # list down by. bg_raised is the menu surface; this popup is a
+              # control opening, so not one pixel of it belongs here.
+              "container plate": raised}
+    for what, colour in strays.items():
+        n = count(colour)
+        assert n <= total * 0.002, (
+            f"{mode}/{accent}: {n}px of {what} ({colour.name()}) in the popup "
+            f"— native container chrome is showing through")
+
+    plate = int(values[int(np.argmax(counts))])
+    assert plate == (QColor(pal.bg_alt).rgb() & 0xFFFFFF), (
+        f"{mode}/{accent}: the popup's plate is #{plate:06x}, not the closed "
+        f"box's own fill {pal.bg_alt}")
+    combo.hidePopup()
+    host.deleteLater()
