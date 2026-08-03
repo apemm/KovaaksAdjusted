@@ -144,7 +144,7 @@ def test_process_run_end_to_end(env: Settings):
     assert prof.scenario == BASE + ADAPTIVE_SUFFIX
     assert prof.archetype == "clicking"  # 9 shots / 6 kills -> clicking heuristic
 
-    # report JSON lands in the mirrored reports/ tree (CLAUDE.md contract)
+    # report JSON lands in the mirrored reports/ tree (ARCHITECTURE.md contract)
     rp = env.profile_path / "reports" / "mini_test" / "2026-05-27T20-25-38.json"
     assert rp.is_file()
     rep = RunReport.load(rp)

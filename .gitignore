@@ -6,4 +6,3 @@ __pycache__/
 build/
 dist/
 .venv/
-.claude/settings.local.json

@@ -205,7 +205,7 @@ def test_takeaway_counts_only_evidenced_moves(tmp_path):
 
 # ------------------------------------------------------- the two speed paths
 def test_authored_speed_is_modulated_and_the_ramp_is_not_offered(tmp_path):
-    """CLAUDE.md's loudest scenario contract: an authored MaxSpeed is scaled
+    """ARCHITECTURE.md's loudest scenario contract: an authored MaxSpeed is scaled
     0.65-1.35x, and the absolute 0-170 ramp applies ONLY to base-speed-0
     walls. The page must never present one as the other."""
     s = _install(tmp_path, speed=1300.0)

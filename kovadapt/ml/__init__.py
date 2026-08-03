@@ -14,7 +14,7 @@ The workstream so far:
   watcher logs one transition per run to its JSONL schema, but no policy
   is trained and ``propose()`` never influences a plan.
 
-Import contract (CLAUDE.md): the core install stays numpy-only. This
+Import contract (ARCHITECTURE.md): the core install stays numpy-only. This
 package imports cleanly on any install — ``ML_AVAILABLE`` reports whether
 torch is importable, and every entry point guards its torch usage so
 callers probe and degrade instead of crashing. ``kovadapt/ml`` is the only

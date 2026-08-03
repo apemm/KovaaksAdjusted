@@ -15,7 +15,7 @@ Every case here was first found by RENDERING the page and reading it back:
     always carries `speed=<absolute 0-170 ramp>` — a figure never written on a
     scenario whose targets author a MaxSpeed of their own, because the generator
     took the multiplier path per character. Echoing a stored string is not
-    evidence that its numbers landed, and CLAUDE.md is emphatic that writing the
+    evidence that its numbers landed, and ARCHITECTURE.md is emphatic that writing the
     ramp onto a strafe bot collapses the scenario.
   * the cold-start note on that same row read "…but the file already carries
     this number" one line under a headline saying "there is no [Adaptive] file

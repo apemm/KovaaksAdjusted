@@ -1,6 +1,8 @@
-# CLAUDE.md
+# Architecture
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+How kovadapt is put together, and the contracts that fail SILENTLY when broken.
+Read this before changing anything under `kovadapt/` — most of what follows was
+learned by shipping the bug first.
 
 ## What this is
 

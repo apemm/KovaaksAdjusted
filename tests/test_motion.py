@@ -111,7 +111,7 @@ def test_easing_curves_are_sane_and_clamped():
 
 def test_motion_survives_a_settings_json_round_trip(tmp_path, monkeypatch):
     """New Settings fields need defaults or every existing file breaks
-    (CLAUDE.md). Pass profile_dir explicitly: config.py evaluates its default
+    (ARCHITECTURE.md). Pass profile_dir explicitly: config.py evaluates its default
     at import time, so patching Path.home afterwards does not move it."""
     from pathlib import Path
 
