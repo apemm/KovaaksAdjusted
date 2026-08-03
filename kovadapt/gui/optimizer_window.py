@@ -15,7 +15,8 @@ polling thread and are bridged into Qt via a signal.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -48,6 +49,13 @@ from ..optimize.watchdog import (
 from . import theme
 
 _STATUS_DOT = {"ok": "●", "warn": "●", "bad": "●", "info": "○", "unknown": "○"}
+
+# How tall the watchdog log is allowed to get once it HAS something to show.
+# It stays hidden until then — see the note where it is built. Four lines:
+# at 110 it took so much off the top that opening it dropped the checkup
+# from 197px to 81px on the smallest window the app will open. The log is a
+# scrolling record and scrolls; the checkup is a list you act on.
+_LOG_H = 72
 
 
 def _status_color(status: str) -> str:
@@ -181,7 +189,13 @@ class OptimizerWindow(QWidget):
     def __init__(self, settings: Settings) -> None:
         super().__init__(None)
         self.setWindowTitle("kovadapt — optimizer")
-        self.resize(860, 720)
+        # 720 tall regardless of the panel, on a window whose main content is
+        # a twelve-row list ~860px long. Take the height the screen actually
+        # has, capped so this never opens taller than the desktop it is on.
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen is not None \
+            else QRect(0, 0, 1280, 800)
+        self.resize(860, max(640, min(940, int(geo.height() * 0.88))))
         self.s = settings
         self.hw: HardwareInfo | None = None
         self.checkup: SystemCheckup | None = None
@@ -243,7 +257,16 @@ class OptimizerWindow(QWidget):
         self.wd_log = QPlainTextEdit()
         self.wd_log.setReadOnly(True)
         self.wd_log.setMaximumBlockCount(200)
-        self.wd_log.setMaximumHeight(110)
+        self.wd_log.setMaximumHeight(_LOG_H)
+        # Hidden until the watchdog actually says something. This box has no
+        # stretch, so its sizeHint comes off the top of the window before the
+        # stretch factors divide anything up — and 110px of that was an empty
+        # read-only pane. It made the un-stretched watchdog box TALLER than
+        # the stretch-3 System checkup beside it, which opened as a 79px slot
+        # over a twelve-row list. The "Evidence:" label above already says
+        # what will appear here, so an empty pane was not even carrying the
+        # explanation.
+        self.wd_log.hide()
         self.jitter_lbl = QLabel(
             "Evidence: watch a session with telemetry on and per-run input "
             "jitter shows up here, before vs after each auto-tune.")
@@ -293,7 +316,11 @@ class OptimizerWindow(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addWidget(hw_box)
-        lay.addWidget(check_box, 3)
+        # The checkup is what this window is for: a twelve-row list, each row
+        # a status and a Fix button. Advice is reference prose that reads fine
+        # a few lines at a time. 3:2 gave the list a 79px slot; the two boxes
+        # with no stretch at all took their full sizeHint off the top first.
+        lay.addWidget(check_box, 5)
         lay.addWidget(wd_box)
         lay.addWidget(adv_box, 2)
 
@@ -487,6 +514,7 @@ class OptimizerWindow(QWidget):
 
     def _log(self, msg: str) -> None:
         self.wd_log.appendPlainText(msg)
+        self.wd_log.show()      # first line is what earns it the space
 
     def _copy_launch(self) -> None:
         QApplication.clipboard().setText(self.launch_label.text())
