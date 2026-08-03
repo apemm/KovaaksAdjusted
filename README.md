@@ -57,7 +57,9 @@ Adaptation runs on three controllers. Each of the 5×5 wall regions carries a Ga
 
 Two constraints shape everything downstream. Edits always apply to the base scenario, never to the previous variant, so multipliers stay absolute and difficulty cannot compound silently across sessions. And the plan's seed is the only randomness reaching the generator, so a given plan regenerates its `.sce` byte for byte — any variant you have ever played can be reproduced exactly.
 
-See `FEATURES.md` for the full feature map and roadmap.
+See `FEATURES.md` for the full feature map and roadmap, and `ARCHITECTURE.md`
+for how the pieces fit together and the contracts that fail silently when
+broken.
 
 ## Development
 

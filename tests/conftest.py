@@ -25,7 +25,7 @@ def _never_write_the_real_settings(monkeypatch):
 
     `Settings.save()` and `load()` deliberately default to the canonical
     ~/.kovadapt/settings.json regardless of a customized `profile_dir` — the
-    bootstrap location has to be knowable (documented in CLAUDE.md). The
+    bootstrap location has to be knowable (documented in ARCHITECTURE.md). The
     consequence is that a test which builds a Settings with a temp
     `profile_dir` and then calls `save()` with NO argument writes the real
     file, and monkeypatching `Path.home` does not help because the class-level

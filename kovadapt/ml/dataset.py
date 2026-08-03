@@ -22,7 +22,7 @@ Split: a deterministic per-sample hash (crc32 of
 validation, so a given trace library always yields the byte-identical split
 across runs, machines and torch versions.
 
-Torch is imported lazily (CLAUDE.md contract): the numpy layer
+Torch is imported lazily (ARCHITECTURE.md contract): the numpy layer
 (``extract_samples``, ``flick_curves``, ``iter_trace_files``,
 ``is_val_sample``) works on a core install; ``build_dataset`` returns
 ``None`` when torch is missing.
@@ -85,7 +85,7 @@ def flick_curves(
     tg, vx, vy = (grid if grid is not None else trace).resample(rate)
     if tg.size == 0 or not flicks:
         return np.zeros((0, 3, n_samples), dtype=np.float32), []
-    vy = -vy  # aim convention: +y up (Y-axis contract in CLAUDE.md)
+    vy = -vy  # aim convention: +y up (Y-axis contract in ARCHITECTURE.md)
     vxs, vys = _smooth(vx, rate), _smooth(vy, rate)
     speed = np.hypot(vxs, vys)
 

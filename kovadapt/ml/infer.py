@@ -19,7 +19,7 @@ downstream clustering/visualization.
 Heads whose training target was constant carry no z scale at all and are
 dropped from both the residuals and the mean (see ``_MIN_TRAIN_STD``).
 
-Everything degrades gracefully (CLAUDE.md contract): ``load_scorer``
+Everything degrades gracefully (ARCHITECTURE.md contract): ``load_scorer``
 returns ``None`` when torch is missing, the checkpoint does not exist, or
 it fails to load — callers need no torch-awareness beyond a None check.
 """
