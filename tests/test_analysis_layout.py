@@ -822,3 +822,49 @@ def test_no_coach_dot_is_ever_the_users_accent(accent):
     for sev in _SEVERITY_RANK:
         assert _severity_color(sev, pal) != pal.accent, (
             f"{accent}: severity {sev!r} is painted in the accent")
+
+
+# ------------------------------------------------------------- cold start
+def test_the_page_explains_itself_before_any_run_is_loaded(qapp, settings):
+    """On every launch the two biggest canvases on this page — a 246,448px
+    moments list and a 531,912px replay — rendered as 100.000% one flat
+    colour with zero ink, while the two chart panels beside them explained
+    themselves. The replay's sentence already existed (clear() takes one); it
+    was simply unreachable except through show_report.
+    """
+    view = AnalysisView(settings)
+
+    assert view.moments.count() == 1, "the moments list is blank on launch"
+    placeholder = view.moments.item(0)
+    assert placeholder.text().strip(), "the placeholder row has no text"
+    assert not (placeholder.flags() & Qt.ItemIsSelectable), (
+        "the placeholder can be selected, so it reads as a moment")
+
+    assert view.replay.info.text(), "the replay canvas says nothing"
+    assert "no run loaded" in view.replay.info.text().lower()
+    view.deleteLater()
+
+
+def test_the_replay_transport_is_dead_until_there_is_something_to_replay(
+        qapp, settings):
+    """The panel rendered a full LIVE control strip over an empty canvas: an
+    enabled Replay button, a speed cycle, three checked layer boxes and a
+    scrub slider. Clicking Replay did nothing, which is the worst answer a
+    control can give."""
+    view = AnalysisView(settings)
+    for name in ("btn", "speed_btn", "scrub", "toggle_path", "toggle_flicks",
+                 "toggle_shots"):
+        assert not getattr(view.replay, name).isEnabled(), (
+            f"replay.{name} is live with no trace loaded")
+
+    # ...and a real run brings the whole transport back
+    tr = (TraceBuilder(t0=1000.0)
+          .move(0.30, 400.0, 0.0).click(0.02).move(0.30, -400.0, 0.0)
+          .click(0.02).build())
+    view.show_report(_report(n_flicks=2), trace=tr)
+    for name in ("btn", "speed_btn", "scrub", "toggle_path"):
+        assert getattr(view.replay, name).isEnabled(), (
+            f"replay.{name} stayed dead on a run that has telemetry")
+    assert view.moments.count() != 1 or view.moments.item(0).text() != \
+        "Notable moments appear here after a run.", "the placeholder survived a run"
+    view.deleteLater()

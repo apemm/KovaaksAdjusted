@@ -181,6 +181,7 @@ class TrajectoryReplay(QWidget):
         self.scrub.setValue(0)
         self.info.setText(label or f"{self._t[-1]:.2f}s · {seg.clicks.size} shots")
         self.plot.autoRange()
+        self._sync_transport()
 
     def _draw_flicks(self, base: float, flicks: list) -> None:
         """Two NaN-separated polylines: clean (green) and flawed (red)."""
@@ -215,6 +216,23 @@ class TrajectoryReplay(QWidget):
         self._shots.setData([], [])
         self.scrub.setValue(0)
         self.info.setText(message)
+        self._sync_transport()
+
+    def _sync_transport(self) -> None:
+        """Enable the transport only when there is something to transport.
+
+        On a cold launch this panel rendered a full, LIVE control strip — an
+        enabled Replay button, a speed cycle, three checked layer boxes, a
+        scrub slider and a colour legend — over 531,912px of a single flat
+        colour with no data behind any of it. Clicking Replay did nothing,
+        which is the worst answer a control can give.
+        """
+        live = bool(self._t.size)
+        for w in (self.btn, self.speed_btn, self.scrub,
+                  self.toggle_path, self.toggle_flicks, self.toggle_shots):
+            w.setEnabled(live)
+        if not live:
+            self.btn.setText("Replay")
 
     # ------------------------------------------------------------------
     def toggle(self) -> None:

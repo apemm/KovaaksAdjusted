@@ -498,6 +498,17 @@ class AnalysisView(QWidget):
         self.clip_hint.setWordWrap(True)
         self.clip_hint.setProperty("dim", True)
         self.replay = TrajectoryReplay()
+        # Cold start says what it is. On every launch this page opened with a
+        # 246,448px moments list and a 531,912px replay canvas that were each
+        # 100.000% one flat colour, zero ink, while the two chart panels
+        # beside them explained themselves perfectly well. The sentence
+        # already existed — replay.clear() takes one — it was just never
+        # reachable except through show_report.
+        self.replay.clear("no run loaded yet — finish a run, or open a saved "
+                          "report from the header")
+        empty = QListWidgetItem("Notable moments appear here after a run.")
+        empty.setFlags(Qt.NoItemFlags)          # not selectable: it is not a moment
+        self.moments.addItem(empty)
 
         mo_box = QGroupBox("Notable moments")
         mo_lay = QVBoxLayout(mo_box)
