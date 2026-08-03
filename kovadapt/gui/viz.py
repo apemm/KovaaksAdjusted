@@ -506,6 +506,7 @@ class AsciiBars(_Ignite, QWidget):
         self._sublabels: list[str] = []
         self._values: list[float] = []
         self._counts: list[int] | None = None
+        self._floor = 0.0
         self.setMinimumHeight(220)
 
     # ------------------------------------------------------------------
@@ -515,18 +516,27 @@ class AsciiBars(_Ignite, QWidget):
 
     def set_data(self, labels: Sequence[str], values: Sequence[float],
                  sublabels: Sequence[str] | None = None, *,
-                 ratio_counts: Sequence[int] | None = None) -> None:
+                 ratio_counts: Sequence[int] | None = None,
+                 floor: float = 0.0) -> None:
         """`ratio_counts` are the per-bar sample sizes, and passing them is the
         caller's explicit permission to print the footer ratio at all (see
         ratio_footer). Omit them — the default — and no footer sentence is
         drawn: only the caller holds this run's input-health verdict, and a
         ratio under a title reading "too noisy to compare directions" is a
-        panel contradicting itself."""
+        panel contradicting itself.
+
+        `floor` is the smallest value allowed to fill the track — the size a
+        bar has to reach before its length means anything. It is the caller's
+        because only the caller knows the units: this widget cannot tell a
+        cost of 0.004 from a temperature of 0.004. Leave it at zero and the
+        axis is pure max-normalization, which draws noise at full scale.
+        """
         self._labels = [str(x) for x in labels]
         self._values = [float(v) for v in values]
         self._sublabels = [str(s) for s in (sublabels or [])]
         self._counts = (None if ratio_counts is None
                         else [int(c) for c in ratio_counts])
+        self._floor = max(float(floor), 0.0)
         # The wave starts at the zero anchor, mid-stack, so every bar GROWS
         # out of the axis instead of the rows appearing one after another.
         n = len(self._values)
@@ -549,6 +559,18 @@ class AsciiBars(_Ignite, QWidget):
         """A bar's label, indexed defensively — a short label list must not
         crash a chart or make the footer name a bar that is not there."""
         return self._labels[i] if 0 <= i < len(self._labels) else fallback
+
+    def axis_max(self) -> float:
+        """Where the track ends — the largest bar or the caller's floor,
+        whichever is bigger. ONE definition, because the bar lengths and the
+        ruler label under them are two renderings of this same number and
+        they were computed separately: the bars scaled to the floor while the
+        label kept printing the largest value, so the axis ran to 0.05 under
+        a caption reading "0.00"."""
+        if not self._values:
+            return 1.0
+        vmax = max(self._values)
+        return max(vmax, self._floor) if vmax > 0 else 1.0
 
     def ratio_note(self) -> str:
         """The candidate evidence line: the top two bars and the ratio between
@@ -647,7 +669,14 @@ class AsciiBars(_Ignite, QWidget):
         ncells = max(int((bar_x1 - bar_x0) // cw), 4)
         track_w = ncells * cw
         vmax = max(self._values)
-        scale = vmax if vmax > 0 else 1.0
+        # The axis tops out at the largest bar OR the caller's floor,
+        # whichever is bigger. Pure max-normalization made the biggest value
+        # fill the track no matter how small it was: [0.004, 0.002, 0.003] —
+        # three flicks that overshot by well under one percent of their own
+        # amplitude — drew at 496/272/408px, pixel-for-pixel the same picture
+        # as a real [0.60, 0.33, 0.49] spread. Same failure the zone heatmap
+        # had: normalizing noise to full scale renders it as a verdict.
+        scale = self.axis_max()
         lit = self._ignite_lit()
 
         # the zero axis every bar grows out of
@@ -660,7 +689,12 @@ class AsciiBars(_Ignite, QWidget):
         # too noisy to compare directions this run" while a red bar underneath
         # named the worst direction anyway: the gate held for the words and
         # leaked through the paint.
-        may_compare = self._counts is not None
+        #
+        # It also answers to the same zero test the sentence does: when every
+        # bar prints 0.00 the footer says "no cost recorded to compare", and a
+        # red bar beside that sentence is the panel arguing with itself.
+        may_compare = (self._counts is not None
+                       and not all(_prints_zero(x) for x in self._values))
         for i, v in enumerate(self._values):
             cy = top + i * row_h + row_h / 2
             is_max = may_compare and v == vmax and vmax > 0
@@ -745,8 +779,13 @@ class AsciiBars(_Ignite, QWidget):
         p.setPen(_dim(pal.fg_dim, 0.95))
         p.drawText(QRectF(x_axis - 2, ry + 4, 40, 14), Qt.AlignLeft | Qt.AlignTop, "0")
         if vmax > 0:
+            # `scale`, not vmax: the label names where the TRACK ends, and
+            # once a floor is in play those stop being the same number. It
+            # read "0.00" under a track running to 0.05 — an axis captioned
+            # with a value that is not on it, which is the same lie the bars
+            # were just stopped from telling.
             p.drawText(QRectF(bar_x0 + track_w - 70, ry + 4, 70, 14),
-                       Qt.AlignRight | Qt.AlignTop, f"{vmax:.2f}")
+                       Qt.AlignRight | Qt.AlignTop, f"{scale:.2f}")
 
         # ---- the ratio, because a 1.09x gap is not eyeballable — but only
         # when the caller has vouched for the comparison and the sample carries

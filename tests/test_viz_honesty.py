@@ -523,3 +523,116 @@ def test_a_worst_bar_is_a_claim_and_answers_to_the_gate(qapp, pal):
     assert bad_px(withheld) == 0, (
         "a worst bar is still painted with the comparison withheld — "
         "the same verdict the title refuses to give")
+
+
+# ------------------------------------------- a bar's length is a claim too
+def _bar_lengths(pal, values, floor, counts=(40, 38, 41), w=690, h=270):
+    """Ink extent of each bar's track, in px, plus how much of it is pal.bad.
+    The value column is excluded — a numeral is not bar length."""
+    bars = _bars(pal, list(values), ratio_counts=list(counts), floor=floor)
+    arr = _rgb(_image(bars, pal, w, h))
+    track = slice(0, int(w * 0.85))
+    ink = _exact(arr, pal.accent) | _exact(arr, pal.bad)
+    top, body = 26.0, h - 26.0 - viz._RULER_H - viz._FOOTER_H - 4
+    lengths = []
+    for i in range(len(values)):
+        a = int(top + i * body / len(values)) + 2
+        z = int(top + (i + 1) * body / len(values)) - 2
+        cols = np.nonzero(ink[a:z, track].any(axis=0))[0]
+        lengths.append(int(cols.max() - cols.min()) if cols.size else 0)
+    return bars, lengths, int(_exact(arr, pal.bad)[:, track].sum())
+
+
+def test_noise_does_not_get_drawn_at_full_scale(qapp, pal):
+    """Pure max-normalization let the largest bar fill the track no matter how
+    small it was. [0.004, 0.002, 0.003] — three flicks that overshot by well
+    under one percent of their own amplitude — drew at 496/272/408px, which is
+    pixel-for-pixel the picture a real [0.60, 0.33, 0.49] spread makes. The
+    reader has no way to tell those two panels apart.
+
+    This is the zone heatmap's bug in a second chart: normalize noise to full
+    scale and it renders as a verdict.
+    """
+    floor = 0.05
+    _, noise, _ = _bar_lengths(pal, [0.004, 0.002, 0.003], floor)
+    _, real, _ = _bar_lengths(pal, [0.60, 0.33, 0.49], floor)
+
+    assert max(real) > 400, f"a real spread must still fill the track: {real}"
+    assert max(noise) < max(real) / 4, (
+        f"noise {noise} is drawn like signal {real} — the floor is not applied")
+    # ...and it stays a bar chart: still ordered, still proportional
+    assert noise[0] > noise[2] > noise[1], f"the floor broke the ordering: {noise}"
+
+
+def test_the_floor_never_rescales_a_run_that_has_real_signal(qapp, pal):
+    """The floor is a guard against noise, not a redesign of the axis. 0.072
+    is the 1st percentile of the per-run maximum across the run reports on
+    this machine — the smallest genuinely-measured run there is — and it must
+    still reach the end of the track."""
+    _, lens, _ = _bar_lengths(pal, [0.072, 0.040, 0.055], 0.05)
+    assert max(lens) > 400, f"a real (if small) run got compressed: {lens}"
+
+
+def test_no_bar_is_marked_worst_when_every_bar_prints_zero(qapp, pal):
+    """The footer already says "every bar is 0.00 — no cost recorded to
+    compare" for this data. A red bar beside that sentence is one panel
+    arguing with itself, and the colour is the half a reader believes."""
+    bars, _, red = _bar_lengths(pal, [0.004, 0.002, 0.003], 0.05)
+    assert "no cost recorded to compare" in bars.ratio_footer()
+    assert red == 0, (
+        "a worst bar is painted under a footer that says there is nothing "
+        "to compare")
+
+
+def test_the_bias_chart_asks_for_the_floor(qapp, pal, tmp_path):
+    """viz.py cannot know the units — a cost of 0.004 and a temperature of
+    0.004 are the same float — so the floor only exists if the one caller
+    that has flick costs passes it."""
+    pytest.importorskip("pyqtgraph")
+    from kovadapt.analysis.report import RunReport
+    from kovadapt.config import Settings
+    from kovadapt.gui.analysis_view import _BIAS_COST_FLOOR, AnalysisView
+
+    root = tmp_path / "lib" / "steamapps" / "common" / "FPSAimTrainer" / "FPSAimTrainer"
+    (root / "stats").mkdir(parents=True)
+    view = AnalysisView(Settings(
+        kovaaks_root=str(root), profile_dir=str(tmp_path / "prof"),
+        telemetry_enabled=False, onboarding_done=True, motion="off"))
+    view.show_report(RunReport(
+        scenario="Beta 1wall Click", started_iso="2026-07-28T10:00:00",
+        score=420.0, accuracy=0.61, avg_ttk=0.9, kills=30, kps=1.4,
+        summary_text="30 kills at 61% accuracy.",
+        bias={"left": {"n": 40, "overshoot": 0.004, "corrections": 0.0},
+              "vertical": {"n": 38, "overshoot": 0.002, "corrections": 0.0},
+              "right": {"n": 41, "overshoot": 0.003, "corrections": 0.0}}))
+    assert view.bias_bars._floor == _BIAS_COST_FLOOR > 0
+    view.deleteLater()
+
+
+def test_the_ruler_labels_where_the_track_actually_ends(qapp, pal):
+    """The right-hand ruler label names the end of the track. It printed the
+    largest VALUE, and with a floor in play those are different numbers: the
+    axis ran to 0.05 under a caption reading "0.00". An axis labelled with a
+    value that is not on it is the same lie the bars were just stopped from
+    telling, one row lower.
+
+    Both the bar lengths and that label now read axis_max(), so they cannot
+    drift apart again.
+    """
+    floored = _bars(pal, [0.004, 0.002, 0.003], ratio_counts=[40, 38, 41], floor=0.05)
+    plain = _bars(pal, [0.004, 0.002, 0.003], ratio_counts=[40, 38, 41])
+    assert floored.axis_max() == 0.05, "the floor is not the axis end"
+    assert plain.axis_max() == pytest.approx(0.004), "no floor, no change"
+    assert _bars(pal, [0.22, 0.24, 0.60], ratio_counts=[40, 38, 41],
+                 floor=0.05).axis_max() == pytest.approx(0.60), (
+        "the floor must not cap an axis that has real data on it")
+
+    # and the label a reader sees changes with it: 0.05 and 0.00 are not the
+    # same glyphs, so the two panels cannot render identical ruler bands
+    rh, fh = int(viz._RULER_H), int(viz._FOOTER_H)
+    def band(b):
+        return _rgb(_image(b, pal, 690, 270))[270 - rh - fh:270 - fh, 345:]
+
+    assert not np.array_equal(band(floored), band(plain)), (
+        "the ruler prints the same label with and without a floor — it is "
+        "labelling the largest value, not the end of the track")

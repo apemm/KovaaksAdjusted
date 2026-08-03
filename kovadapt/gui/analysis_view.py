@@ -68,6 +68,15 @@ _TREND_TITLE = "accuracy over runs"
 # stay short — the page used to open with ~700 characters of caption prose.
 _BIAS_CAPTION = ("Cost per flick = overshoot + 0.15 x corrective submovements, "
                  "one bar per direction; the red bar is this run's worst.")
+# The smallest flick cost whose bar is allowed to fill the track. Cost is
+# overshoot as a FRACTION OF THE FLICK'S OWN AMPLITUDE plus 0.15 per
+# corrective submovement, so 0.05 is "overshot by five percent" — small.
+# Calibrated against the run reports on this machine (a thin sample: 5 runs
+# carrying bias, 15 bars): the per-run maximum ran 0.072 at the 1st
+# percentile and 0.153 at the median, so this floor rescales none of them and
+# only ever bites on data that is already noise.
+_BIAS_COST_FLOOR = 0.05
+
 # On a degraded run nothing is red — the worst-bar highlight answers to the
 # same input-health gate as the title and the footer ratio — so the caption
 # must stop pointing at a colour that is not on screen.
@@ -807,7 +816,8 @@ class AnalysisView(QWidget):
         # granted otherwise, since a 1.09x gap genuinely cannot be eyeballed
         # and the sentence is the only way to read it.
         self.bias_bars.set_data(dirs, vals, [f"{n} flicks" for n in ns],
-                                ratio_counts=None if degraded else ns)
+                                ratio_counts=None if degraded else ns,
+                                floor=_BIAS_COST_FLOOR)
         self.bias_caption.setText(
             _BIAS_CAPTION_DEGRADED if degraded else _BIAS_CAPTION)
 
