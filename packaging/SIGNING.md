@@ -62,8 +62,16 @@ Individual, and the legal name and address must match a government photo ID
 exactly; validation runs a live FaceCheck. Individuals are limited to the
 **USA and Canada**.
 
-> The certificate's subject is your **validated legal name** — it cannot be set
-> to "kovadapt". That is the publisher string users will see.
+> The certificate's subject is the **validated legal name** on the billing
+> account — it cannot be set to "kovadapt". Here that means Windows will show
+> the publisher as **Arjun Pemmasani**, on the SmartScreen prompt and in the
+> file's digital-signature tab.
+>
+> That is no new disclosure: the same name is already the LICENSE copyright
+> holder, the `authors` entry in `pyproject.toml`, and the author of every
+> commit in the public history. The thing it does change is liability — a
+> signature ties the binary to a verified identity, which is the point, and
+> also why the PUA note below matters.
 
 Once validated:
 
