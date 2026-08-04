@@ -229,10 +229,90 @@ def sens_case(
                     for_higher=higher, neutral=neutral, sources=_dedup(src))
 
 
+#: Degrees turned per mouse count at in-game sensitivity 1.0, per sens SCALE.
+#: KovaaK's lets you enter sensitivity in another game's units and records
+#: which in every stats file ("Sens Scale:"), so the number a player types
+#: means nothing without it — Valorant 0.16 and KovaaK's 0.16 differ by 3.2x.
+#:
+#: This app had no concept of scale at all: it applied the Source-lineage
+#: 0.022 unconditionally against a `game_sens` that defaults to 1.0 and that
+#: nothing ever asks for. All 398 real stats files here read "Valorant" at
+#: 0.16, so every angular claim was computed 1.96x out.
+#:
+#: Keys are lowercased KovaaK's scale strings. Only scales whose yaw is
+#: established go in — an unknown scale returns 0.0 from `deg_per_count` and
+#: the caller says so rather than guessing.
+YAW_BY_SCALE: dict[str, float] = {
+    "kovaak's": YAW_DEG_PER_COUNT,
+    "kovaaks": YAW_DEG_PER_COUNT,
+    "quake": YAW_DEG_PER_COUNT,          # the lineage 0.022 comes from
+    "source": YAW_DEG_PER_COUNT,
+    "cs:go": YAW_DEG_PER_COUNT,
+    "csgo": YAW_DEG_PER_COUNT,
+    "cs2": YAW_DEG_PER_COUNT,
+    "apex legends": YAW_DEG_PER_COUNT,
+    "apex": YAW_DEG_PER_COUNT,
+    "valorant": 0.07,
+}
+
+
+def deg_per_count(run=None, settings=None) -> tuple[float, str]:
+    """(degrees of view turn per mouse count, where the number came from).
+
+    THE RUN WINS. KovaaK's writes "Sens Scale:", "Horiz Sens:" and "DPI:" into
+    every stats file, so each run carries the sensitivity it was actually
+    played at — authoritative, per run, and already in `Run.summary`. A
+    settings field is a thing a user might have set once and never revisited;
+    on this machine it never got set at all, while the sensitivity behind the
+    398 recorded runs moved across five values.
+
+    Sources, strongest first: "run" (the game's own record), "settings" (the
+    configured value, assumed to be KovaaK's-native scale), and "" with 0.0
+    when neither can be resolved — an unknown SCALE included, because a
+    sensitivity number without its scale is not a quantity.
+    """
+    if run is not None:
+        summary = getattr(run, "summary", None) or {}
+        scale = str(summary.get("Sens Scale:", "") or "").strip().lower()
+        try:
+            sens = float(summary.get("Horiz Sens:", "") or 0.0)
+        except (TypeError, ValueError):
+            sens = 0.0
+        if sens > 0 and scale in YAW_BY_SCALE:
+            return YAW_BY_SCALE[scale] * sens, "run"
+        if sens > 0 and scale:
+            return 0.0, ""      # a scale we cannot convert is not a guess
+    if settings is not None:
+        sens = float(getattr(settings, "game_sens", 0) or 0)
+        if sens > 0:
+            return YAW_DEG_PER_COUNT * sens, "settings"
+    return 0.0, ""
+
+
+def min_flick_counts_for(run=None, settings=None) -> float:
+    """The flick floor in COUNTS for the run that produced this telemetry.
+
+    Falls back to the sens-1.0 reference when the scale cannot be resolved:
+    the reference is a worse answer than a converted one and a much better
+    answer than no floor at all, and `flick_floor_deg` on the report records
+    which it was.
+    """
+    from .movement import MIN_FLICK_COUNTS, MIN_FLICK_DEG
+
+    per_count, _src = deg_per_count(run, settings)
+    return MIN_FLICK_DEG / per_count if per_count > 0 else MIN_FLICK_COUNTS
+
+
 def min_flick_counts(settings) -> float:
     """The flick-amplitude floor in mouse counts for THIS player's mouse.
 
-    The floor means an ANGLE — below about 2 degrees the overshoot ratio stops
+    Settings-only, and therefore the weaker path — prefer
+    `min_flick_counts_for(run, settings)`, which reads the sensitivity the run
+    was actually played at out of the game's own record. This one assumes the
+    configured sens is in KovaaK's-native units, which is exactly the
+    assumption that made the v0.5.2 floor 1.96x wrong on this machine.
+
+    The floor means an ANGLE — below about a degree the overshoot ratio stops
     measuring aim and starts measuring segmentation error — and the angle a
     count is worth is `YAW_DEG_PER_COUNT * sens`.
 

@@ -425,7 +425,7 @@ def test_reports_from_an_older_flick_floor_are_excluded_and_named(tmp_path):
     knob = _dodge_knob(prof, s, ev)
     assert "2 more clear it" in knob.evidence
     assert "0.33-degree flick floor" in knob.evidence
-    assert "instead of today's 2 degrees" in knob.evidence
+    assert f"instead of today's {MIN_FLICK_DEG:g} degrees" in knob.evidence
 
 
 def test_dropped_bias_does_not_read_as_a_recording_failure(tmp_path):
@@ -441,7 +441,8 @@ def test_dropped_bias_does_not_read_as_a_recording_failure(tmp_path):
     why = _dodge_knob(fresh, s, ev).evidence
     assert "no run has produced a usable directional-bias measurement" in why
     assert "dropped rather than lost to noise" in why
-    assert "a 0.33-degree flick floor instead of today's 2 degrees" in why
+    assert ("a 0.33-degree flick floor instead of "
+            f"today's {MIN_FLICK_DEG:g} degrees") in why
     assert "the next run re-earns one" in why
 
 

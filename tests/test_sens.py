@@ -185,12 +185,13 @@ def test_sub_degree_segmentation_artefacts_do_not_become_flicks():
 
     `directional_bias` takes a plain mean, so fifty of those outvoted six
     hundred real flicks and INVERTED the verdict — +0.041 (left weaker) at the
-    old floor, -0.216 (right weaker) at 2 degrees. That verdict is what writes
+    old floor, -0.216 (right weaker) above it. That verdict is what writes
     Left/RightStrafeTimeMult into the generated .sce.
     """
     import numpy as np
 
-    from kovadapt.analysis.movement import MIN_FLICK_COUNTS, segment_flicks
+    from kovadapt.analysis.movement import (MIN_FLICK_COUNTS, MIN_FLICK_DEG,
+                                            YAW_DEG_PER_COUNT, segment_flicks)
     from test_telemetry import TraceBuilder
 
     # a clean 400-count flick, then a 40-count twitch that segments badly
@@ -204,12 +205,21 @@ def test_sub_degree_segmentation_artefacts_do_not_become_flicks():
     amps = np.array([f.amplitude for f in kept])
     # an ABSOLUTE bound, not MIN_FLICK_COUNTS: asserting against the constant
     # makes the test move with it, so lowering the floor back to 15 passes.
-    # 60 counts is 1.3 degrees at sens 1.0 — above the twitch, below the floor.
-    assert (amps >= 60).all(), (
+    # 40 counts is 0.9 degrees at sens 1.0 — above the twitch, below the floor.
+    assert (amps >= 40).all(), (
         f"a sub-degree movement was counted as a flick: {amps.round(1)}")
-    assert MIN_FLICK_COUNTS >= 60, (
-        f"the floor itself has dropped to {MIN_FLICK_COUNTS:.0f} counts, back "
-        "into the band where overshoot measures segmentation error")
+    # The FLOOR is asserted in degrees, which is the unit that survives a
+    # change of sensitivity. This used to read `MIN_FLICK_COUNTS >= 60` and
+    # that is exactly the mistake the whole area is about: 60 counts is a
+    # different angle for every player, so a count bound pins nothing. It also
+    # broke the moment the constant was corrected from a mislabelled 2.0 to a
+    # measured 1.0 while the behaviour barely moved (90.9 -> 89.3 counts on
+    # this machine).
+    assert 0.75 <= MIN_FLICK_DEG <= 1.5, (
+        f"the flick floor is {MIN_FLICK_DEG} deg — the measured knee on the "
+        "real trace library is at 1.01, with max overshoot 3.86 below it and "
+        "0.68 above")
+    assert MIN_FLICK_COUNTS == MIN_FLICK_DEG / YAW_DEG_PER_COUNT
 
 
 def test_the_page_and_the_profile_agree_about_what_a_flick_is(tmp_path):
@@ -228,3 +238,86 @@ def test_the_page_and_the_profile_agree_about_what_a_flick_is(tmp_path):
     assert "min_flick_counts" in src, (
         "the Analysis page segments with the default floor while the report "
         "uses the sens-derived one")
+
+
+def test_the_sensitivity_comes_from_the_game_not_from_a_settings_field():
+    """KovaaK's writes "Sens Scale:", "Horiz Sens:" and "DPI:" into every stats
+    file. This app ignored all three and applied the Source-lineage yaw of
+    0.022 against a `game_sens` that defaults to 1.0 and that nothing in the
+    UI ever asks for.
+
+    On this machine all 398 stats files read Valorant at 0.16, so the true
+    angle per count is 0.07 x 0.16 = 0.0112 and the assumed one was 0.022 —
+    1.96x out. That is how a flick floor honestly measured at 1.01 degrees got
+    written down as 2.0 in v0.5.2.
+
+    It hid because cm/360 uses DPI x sens x yaw, and the two wrong inputs
+    cancel there: 800 x 1.0 x 0.022 = 17.6 against 1600 x 0.16 x 0.07 = 17.92,
+    1.8% apart. The number a user would sanity-check looked right; the one
+    deciding what counts as a flick was off by half.
+    """
+    from datetime import datetime
+
+    from kovadapt.analysis.movement import MIN_FLICK_DEG
+    from kovadapt.analysis.sens import (deg_per_count, min_flick_counts,
+                                        min_flick_counts_for)
+    from kovadapt.config import Settings
+    from kovadapt.stats.models import Run
+
+    def run(scale="Valorant", sens="0.16", dpi="1600"):
+        return Run(scenario="x", started=datetime(2026, 8, 4, 10, 0),
+                   summary={"Sens Scale:": scale, "Horiz Sens:": sens,
+                            "DPI:": dpi, "Kills:": "10"})
+
+    s = Settings(game_sens=1.0, mouse_dpi=800.0)
+
+    # the run wins over the settings, and says which source it used
+    angle, source = deg_per_count(run(), s)
+    assert source == "run"
+    assert angle == pytest.approx(0.0112)
+    assert min_flick_counts_for(run(), s) == pytest.approx(MIN_FLICK_DEG / 0.0112)
+
+    # the same number on the KovaaK's-native scale is a different angle
+    assert deg_per_count(run(scale="KovaaK's"), s)[0] == pytest.approx(0.022 * 0.16)
+
+    # no run: the settings field, explicitly labelled as the weaker source
+    assert deg_per_count(None, s) == (0.022, "settings")
+    assert min_flick_counts_for(None, s) == pytest.approx(min_flick_counts(s))
+
+    # A SCALE WE CANNOT CONVERT IS NOT A GUESS. Returning 0.022 for an unknown
+    # game would be the exact failure this test exists for, one game later.
+    assert deg_per_count(run(scale="Splitgate"), s) == (0.0, "")
+    # ...and with nothing resolvable at all the floor falls back to the
+    # sens-1.0 reference rather than vanishing
+    from kovadapt.analysis.movement import MIN_FLICK_COUNTS
+    assert min_flick_counts_for(run(scale="Splitgate"), None) == MIN_FLICK_COUNTS
+
+    # a malformed sens does not raise or silently become 1.0
+    assert deg_per_count(run(sens="not-a-number"), None) == (0.0, "")
+    assert deg_per_count(run(sens="0"), None) == (0.0, "")
+
+
+def test_a_report_records_the_scale_its_run_was_played_at():
+    """One count is a different angle in different runs — the 398 stats files
+    here span five sensitivities and three DPI settings. A report that keeps
+    only the count is not comparable to the next one, which is the same
+    mistake as pooling across flick floors, one level down."""
+    from datetime import datetime
+
+    from kovadapt.analysis.movement import MIN_FLICK_DEG
+    from kovadapt.analysis.report import build_report
+    from kovadapt.stats.models import Run
+
+    run = Run(scenario="x", started=datetime(2026, 8, 4, 10, 0),
+              summary={"Sens Scale:": "Valorant", "Horiz Sens:": "0.16",
+                       "DPI:": "1600", "Kills:": "0"})
+    rep, _, _ = build_report(run, None)
+    assert rep.deg_per_count == pytest.approx(0.0112)
+    assert rep.mouse_dpi == 1600.0
+
+    # an unresolvable scale records 0.0 rather than a plausible number
+    blind = Run(scenario="x", started=datetime(2026, 8, 4, 10, 0),
+                summary={"Sens Scale:": "Splitgate", "Horiz Sens:": "1.0",
+                         "Kills:": "0"})
+    assert build_report(blind, None)[0].deg_per_count == 0.0
+    assert MIN_FLICK_DEG == 1.0, "the measured knee, not a round number"

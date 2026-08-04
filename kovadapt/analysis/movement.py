@@ -63,37 +63,49 @@ def _smooth(v: np.ndarray, rate: float, tau_ms: float = 8.0) -> np.ndarray:
     return np.convolve(np.asarray(v, dtype=np.float64), k)[:n] + v[0] * decay
 
 
-#: Smallest movement that counts as a FLICK, in mouse counts. 91 counts is
-#: 2.0 degrees at in-game sens 1.0 (YAW 0.022), and 2 degrees is where the
-#: overshoot statistic stops being noise — measured, not chosen.
+#: Smallest movement that counts as a FLICK, as an ANGLE. One degree, and the
+#: number is measured rather than chosen.
 #:
 #: Overshoot is a FRACTION of amplitude, so a small amplitude with a small
 #: absolute error produces an enormous ratio, and a mis-segmented onset
-#: underestimates amplitude directly. At the old 15-count floor (0.33 deg) the
-#: real trace library here carried 37 "flicks" between 30 and 60 counts with a
-#: MEAN overshoot of 1.737 and a maximum of 17.4 — against 0.030 for the 596
-#: flicks above 120 counts. Those are not overshoots, they are segmentation
-#: artefacts, and `directional_bias` takes a plain mean, so fifty of them
-#: outvoted six hundred real flicks.
+#: underestimates amplitude directly. Below about a degree the statistic stops
+#: measuring aim and starts measuring segmentation error. `directional_bias`
+#: takes a plain mean, so a handful of those artefacts outvote hundreds of real
+#: flicks — and that verdict is what writes Left/RightStrafeTimeMult into the
+#: generated .sce.
 #:
-#: The knee, swept over that library: max overshoot 17.4 at 30 counts, 3.9 at
-#: 60, 0.68 at 90, and flat from there to 300. The bias verdict is unstable
-#: below 45 and settles into a single band above 90. It also SIGN-FLIPPED —
-#: +0.041 (left weaker) at the old floor, -0.216 (right weaker) at this one —
-#: and that verdict is what writes Left/RightStrafeTimeMult into the .sce.
+#: Swept over the five real traces here, max overshoot per bucket against the
+#: floor that would exclude it:
 #:
-#: In COUNTS rather than degrees because this module is a pure leaf over
-#: telemetry and knows nothing about the player's settings.
-#: `sens.min_flick_counts` converts for a configured sensitivity; this is the
-#: sens-1.0 reference. It does NOT depend on DPI — a count is a count, and
-#: DPI decides how much desk a count costs, not how far the view turns.
-MIN_FLICK_DEG = 2.0
+#:     0.34 deg  17.42        0.84 deg   3.86
+#:     0.50 deg  16.83        1.01 deg   0.68   <- the cliff
+#:     0.67 deg   3.86        1.34 deg   0.68
+#:
+#: It is flat above the knee, so a higher floor discards real flicks and buys
+#: nothing: 2.0 degrees would drop ~25 more of the 600 for no change in the
+#: statistic.
+#:
+#: THIS SHIPPED AS 2.0 IN v0.5.2 AND THE LABEL WAS WRONG, not the behaviour.
+#: The knee was measured in COUNTS (90.9) — that part never passed through a
+#: conversion and still holds — then written down in degrees using
+#: `YAW_DEG_PER_COUNT * game_sens`, where `game_sens` was the untouched default
+#: of 1.0 and the real setting was the Valorant scale at 0.16. Those differ by
+#: 1.96x, so a floor honestly measured at 1.01 degrees was recorded as 2.0.
+#: The lesson is in `sens.deg_per_count`: KovaaK's writes the scale, the
+#: sensitivity and the DPI into every stats file, and the app was asking a
+#: settings field that nobody had ever set.
+MIN_FLICK_DEG = 1.0
 #: KovaaK's (Quake/Source lineage) yaw: degrees turned per mouse count at
 #: in-game sensitivity 1.0. Defined here rather than in `sens` because this is
 #: the leaf both need and `sens` imports `report`, which imports this — a cycle
 #: the other way round. `sens.YAW_DEG_PER_COUNT` re-exports it.
 YAW_DEG_PER_COUNT = 0.022
-MIN_FLICK_COUNTS = MIN_FLICK_DEG / YAW_DEG_PER_COUNT   # 90.9 at sens 1.0
+#: The floor in COUNTS at the KovaaK's-native scale, sens 1.0 — the reference
+#: `sens.min_flick_counts_for` falls back to when a run's scale cannot be
+#: resolved. It does NOT depend on DPI: a count is a count, and DPI decides how
+#: much desk a count costs, not how far the view turns. Sens and SCALE decide
+#: that, which is why the fallback is a last resort rather than a default.
+MIN_FLICK_COUNTS = MIN_FLICK_DEG / YAW_DEG_PER_COUNT   # 45.5 at sens 1.0
 
 
 def segment_flicks(

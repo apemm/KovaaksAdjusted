@@ -117,6 +117,15 @@ class RunReport:
     # different population, not a longer run of the same one. 0.0 means
     # "written before this field existed", i.e. the 0.33-degree floor.
     flick_floor_deg: float = 0.0
+    #: Degrees of view turn per mouse count for THIS run, read out of the
+    #: game's own record of the sensitivity it was played at. 0.0 means the
+    #: scale could not be resolved, so nothing derived from it may be stated
+    #: as an angle. Stored per run because it MOVES: the 398 stats files here
+    #: span five sensitivities and three DPI settings, so one count is a
+    #: different angle in different runs and pooling them without this is the
+    #: same mistake as pooling across flick floors.
+    deg_per_count: float = 0.0
+    mouse_dpi: float = 0.0
     bias: dict = field(default_factory=dict)
     region_deficits: dict = field(default_factory=dict)
     notable: list[dict] = field(default_factory=list)
@@ -325,6 +334,15 @@ def build_report(
         kills=run.kill_count,
         kps=run.kills_per_second(),
     )
+    # The run's own sensitivity, from the game's record of it. Read before
+    # anything is segmented, because it decides what the floor MEANS.
+    from .sens import deg_per_count as _deg_per_count
+    rep.deg_per_count = _deg_per_count(run)[0]
+    try:
+        rep.mouse_dpi = float(run.summary.get("DPI:", 0) or 0)
+    except (TypeError, ValueError):
+        rep.mouse_dpi = 0.0
+
     flicks: list = []
     heat = None
     if trace is not None and len(trace) > 10:
@@ -338,6 +356,12 @@ def build_report(
         # on in-game sens — so the caller converts (sens.min_flick_counts) and
         # every surface that segments the same run has to be given the same
         # number, or the page and the profile disagree about what a flick is.
+        # Default the floor from the run itself rather than the sens-1.0
+        # reference: the caller may still override, but a caller that passes
+        # nothing now gets the right answer instead of a plausible one.
+        if min_amplitude is None and rep.deg_per_count > 0:
+            min_amplitude = MIN_FLICK_DEG / rep.deg_per_count
+            flick_floor_deg = MIN_FLICK_DEG
         flicks = segment_flicks(rt, grid=grid, **(
             {} if min_amplitude is None else {"min_amplitude": min_amplitude}))
         # The angle cannot be recovered from the count here: the caller divided

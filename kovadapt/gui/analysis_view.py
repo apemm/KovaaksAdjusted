@@ -687,9 +687,15 @@ class AnalysisView(QWidget):
         # flicks aren't serialized in the report — recompute from the trace at
         # the SAME floor the rest of the page uses, or the replay overlay marks
         # flicks the page's own numbers never counted.
-        self.flicks = (segment_flicks(
-            self.trace, min_amplitude=min_flick_counts(self._settings))
-            if self.trace is not None and len(self.trace) > 10 else [])
+        # The floor for THIS run, from the sensitivity the run itself records.
+        # Falling back to the settings field is the weaker path and is what
+        # made the v0.5.2 floor 1.96x wrong here; `rep.deg_per_count` carries
+        # the game's own answer, and a run recorded before that field existed
+        # is exactly the case the settings fallback is for.
+        floor = (MIN_FLICK_DEG / rep.deg_per_count if rep.deg_per_count > 0
+                 else min_flick_counts(self._settings))
+        self.flicks = (segment_flicks(self.trace, min_amplitude=floor)
+                       if self.trace is not None and len(self.trace) > 10 else [])
         # ...and when the SAVED numbers came from a different floor, that is
         # exactly what happens: the file says one thing about a run and the
         # overlay draws another. This report was written at 0.33 degrees,
