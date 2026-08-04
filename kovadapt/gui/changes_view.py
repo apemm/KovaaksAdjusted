@@ -1192,11 +1192,19 @@ def _spawn_knob(profile: PlayerProfile, s: Settings, facts: SceFacts,
     # prior. The spawn shift is real and verifiable, but calling it evidenced
     # would dress up the bandit's exploration as a measured weakness.
     has_obs = arm is not None and arm.n > 0
+    # This sentence ended "— roughly a fifth of focus picks are", stopping mid
+    # clause, and the missing half would have been a frequency claim nothing
+    # here can source: Thompson sampling has no exploration RATE to quote, the
+    # draw depends on every arm's posterior. What IS checkable is how many arms
+    # remain unmapped, which is on screen one clause earlier and is what makes
+    # a draw like this one likely, so the sentence ends on that instead.
+    unmapped = cells - mapped
     explore_note = (
         "" if has_obs else
         f"exploration, not a finding: {focus} has no observations behind it, so "
         "the shift you can see in the file is the bandit deliberately spending "
-        "a run on an unmapped region — roughly a fifth of focus picks are")
+        f"a run on an unmapped region — {unmapped} of {cells} arms are still "
+        "unmapped, and draws keep landing on them until they are not")
     arm_text = (f"arm {focus} ({where}) carries n={arm.n} observations, posterior "
                 f"mean {arm.mean:+.2f} (mean > 0 = weaker there)" if has_obs else
                 f"arm {focus} ({where}) carries no observations at all and its "

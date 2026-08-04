@@ -332,6 +332,13 @@ def test_an_unobserved_focus_arm_is_exploration_not_a_finding(tmp_path):
     assert not knob.measured and knob.flag == "exploration"
     assert "no observations at all" in knob.evidence
     assert "exploration, not a finding" in knob.note
+    # ...and it FINISHES. This note shipped ending "— roughly a fifth of focus
+    # picks are", stopping mid-clause on a frequency Thompson sampling has no
+    # rate to quote. Every claim here has to be checkable against something on
+    # the same screen, so it ends on the unmapped-arm count instead.
+    assert knob.note.rstrip().endswith("until they are not"), knob.note
+    assert "25 of 25 arms are still unmapped" in knob.note
+    assert "fifth" not in knob.note
 
 
 def test_planned_weights_never_touch_the_profile(tmp_path):
