@@ -224,3 +224,27 @@ def sens_case(
 
     return SensCase(cm360=cm360, style_range=style, for_lower=lower,
                     for_higher=higher, neutral=neutral, sources=_dedup(src))
+
+
+def min_flick_counts(settings) -> float:
+    """The flick-amplitude floor in mouse counts for THIS player's mouse.
+
+    The floor means an ANGLE — below about 2 degrees the overshoot ratio stops
+    measuring aim and starts measuring segmentation error — and the angle a
+    count is worth is `YAW_DEG_PER_COUNT * sens`.
+
+    NOT DPI. A count is a count: DPI decides how many counts a centimetre of
+    desk produces, not how far the view turns for one of them. So the floor
+    moves with in-game sensitivity alone, and a 1600 DPI player at sens 1.0
+    gets exactly the same count floor as an 800 DPI player at sens 1.0 — they
+    just reach it with less hand movement.
+
+    `movement.MIN_FLICK_COUNTS` is the sens-1.0 reference, returned unchanged
+    when sens is unconfigured: without it there is nothing to convert with,
+    and the reference is a better answer than no floor at all.
+    """
+    from .movement import MIN_FLICK_COUNTS, MIN_FLICK_DEG
+
+    sens = float(getattr(settings, "game_sens", 0) or 0)
+    per_count = YAW_DEG_PER_COUNT * sens
+    return MIN_FLICK_DEG / per_count if per_count > 0 else MIN_FLICK_COUNTS

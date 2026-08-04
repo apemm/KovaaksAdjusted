@@ -254,6 +254,7 @@ def build_report(
     *,
     region_cols: int = 3,
     region_rows: int = 3,
+    min_amplitude: float | None = None,
 ) -> tuple[RunReport, list, np.ndarray | None]:
     """-> (report, flicks, heatmap). Flicks/heatmap returned separately for
     the GUI (not serialized into JSON).
@@ -280,7 +281,12 @@ def build_report(
         # packets once (500 Hz); movement_heatmap's 250 Hz grid is then derived
         # from that cache instead of re-binning the whole packet stream.
         grid = ResampleCache(rt)
-        flicks = segment_flicks(rt, grid=grid)
+        # The flick floor is an ANGLE, and the angle a count is worth depends
+        # on in-game sens — so the caller converts (sens.min_flick_counts) and
+        # every surface that segments the same run has to be given the same
+        # number, or the page and the profile disagree about what a flick is.
+        flicks = segment_flicks(rt, grid=grid, **(
+            {} if min_amplitude is None else {"min_amplitude": min_amplitude}))
         rep.n_flicks = len(flicks)
         rep.bias = directional_bias(flicks)
         rep.region_deficits = region_deficits(flicks, cols=region_cols, rows=region_rows)

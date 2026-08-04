@@ -144,3 +144,87 @@ def test_deterministic():
     rep = make_rep(overshoot_rate=0.45, mean_corrections=2.5)
     assert sens_case(rep, make_prof(), settings()) == \
         sens_case(rep, make_prof(), settings())
+
+
+# ------------------------------------------------- the flick amplitude floor
+def test_the_flick_floor_is_an_angle_and_follows_sens_not_dpi():
+    """The floor means "big enough that the overshoot ratio measures aim" —
+    which is an ANGLE. The angle a mouse count is worth is
+    YAW_DEG_PER_COUNT * sens.
+
+    NOT DPI. A count is a count: DPI decides how many counts a centimetre of
+    desk produces, not how far the view turns for one of them. Getting that
+    backwards would give two players at the same sensitivity different floors
+    for no reason.
+    """
+    from types import SimpleNamespace
+
+    from kovadapt.analysis.movement import MIN_FLICK_COUNTS, MIN_FLICK_DEG
+    from kovadapt.analysis.sens import YAW_DEG_PER_COUNT, min_flick_counts
+
+    for sens in (0.4, 1.0, 2.5):
+        counts = min_flick_counts(SimpleNamespace(game_sens=sens, mouse_dpi=800))
+        assert counts * YAW_DEG_PER_COUNT * sens == pytest.approx(MIN_FLICK_DEG), (
+            f"sens {sens} does not resolve to {MIN_FLICK_DEG} degrees")
+
+    # DPI must not move it
+    at_800 = min_flick_counts(SimpleNamespace(game_sens=1.0, mouse_dpi=800))
+    at_1600 = min_flick_counts(SimpleNamespace(game_sens=1.0, mouse_dpi=1600))
+    assert at_800 == at_1600, "the floor moved with DPI, which cannot affect an angle"
+
+    # unconfigured falls back to the sens-1.0 reference rather than no floor
+    assert min_flick_counts(SimpleNamespace(game_sens=0)) == MIN_FLICK_COUNTS
+
+
+def test_sub_degree_segmentation_artefacts_do_not_become_flicks():
+    """Overshoot is a FRACTION of amplitude, so a mis-segmented onset — which
+    underestimates amplitude — produces an enormous ratio from a tiny
+    movement. On the real trace library at the old 15-count floor (0.33 deg),
+    37 "flicks" between 30 and 60 counts carried a MEAN overshoot of 1.737 and
+    a maximum of 17.4, against 0.030 for the 596 flicks above 120 counts.
+
+    `directional_bias` takes a plain mean, so fifty of those outvoted six
+    hundred real flicks and INVERTED the verdict — +0.041 (left weaker) at the
+    old floor, -0.216 (right weaker) at 2 degrees. That verdict is what writes
+    Left/RightStrafeTimeMult into the generated .sce.
+    """
+    import numpy as np
+
+    from kovadapt.analysis.movement import MIN_FLICK_COUNTS, segment_flicks
+    from test_telemetry import TraceBuilder
+
+    # a clean 400-count flick, then a 40-count twitch that segments badly
+    b = TraceBuilder(t0=1000.0)
+    b.rest(0.4).move(0.16, 400.0, 0.0).click(0.02)
+    b.rest(0.4).move(0.05, 40.0, 0.0).move(0.10, 600.0, 0.0).click(0.02)
+    trace = b.build()
+
+    kept = segment_flicks(trace)
+    assert kept, "the real flick was thrown away too"
+    amps = np.array([f.amplitude for f in kept])
+    # an ABSOLUTE bound, not MIN_FLICK_COUNTS: asserting against the constant
+    # makes the test move with it, so lowering the floor back to 15 passes.
+    # 60 counts is 1.3 degrees at sens 1.0 — above the twitch, below the floor.
+    assert (amps >= 60).all(), (
+        f"a sub-degree movement was counted as a flick: {amps.round(1)}")
+    assert MIN_FLICK_COUNTS >= 60, (
+        f"the floor itself has dropped to {MIN_FLICK_COUNTS:.0f} counts, back "
+        "into the band where overshoot measures segmentation error")
+
+
+def test_the_page_and_the_profile_agree_about_what_a_flick_is(tmp_path):
+    """The report writes the profile and the .sce; the Analysis page
+    re-segments the same trace for its replay overlay. Given different floors
+    they would mark flicks the page's own numbers never counted."""
+    import inspect
+
+    from kovadapt.analysis import report as report_mod
+    from kovadapt.gui import analysis_view
+
+    assert "min_amplitude" in inspect.signature(report_mod.build_report).parameters, (
+        "build_report cannot be told the floor, so the caller cannot keep the "
+        "two in step")
+    src = inspect.getsource(analysis_view.AnalysisView.show_report)
+    assert "min_flick_counts" in src, (
+        "the Analysis page segments with the default floor while the report "
+        "uses the sens-derived one")

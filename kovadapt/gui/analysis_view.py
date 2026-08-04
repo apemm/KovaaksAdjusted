@@ -49,6 +49,7 @@ from ..analysis.insights import (
 )
 from ..analysis.movement import movement_heatmap, segment_flicks
 from ..analysis.report import input_degraded, summary_text_for
+from ..analysis.sens import min_flick_counts
 from ..analysis.report import RunReport
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
@@ -681,8 +682,11 @@ class AnalysisView(QWidget):
                 self.trace = None
                 self._trace_unreadable = True
         # flicks aren't serialized in the report — recompute from the trace
-        self.flicks = (segment_flicks(self.trace)
-                       if self.trace is not None and len(self.trace) > 10 else [])
+        # SAME floor the report used, or the replay overlay marks flicks the
+        # page's own numbers never counted.
+        self.flicks = (segment_flicks(
+            self.trace, min_amplitude=min_flick_counts(self._settings))
+            if self.trace is not None and len(self.trace) > 10 else [])
 
         self.title.setText(f"{rep.scenario} — {rep.started_iso.replace('T', ' ')[:19]}")
         # RE-DERIVED, not the stored string. See analysis.report.

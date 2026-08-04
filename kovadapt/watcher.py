@@ -18,6 +18,7 @@ from .adapt.archetype import stamp_archetype
 from .adapt.engine import AdaptationEngine, settle_focus
 from .analysis.fatigue import SessionFatigueTracker
 from .analysis.report import RunReport, build_report, run_time_window
+from .analysis.sens import min_flick_counts
 from .config import ADAPTIVE_SUFFIX, Settings
 from .profile.player import PlayerProfile
 from .scenario.generator import generate_adaptive_variant
@@ -210,7 +211,8 @@ class SessionWatcher:
         """Build + persist the post-run report (trace, clips, JSON)."""
         trace = self._run_trace(run)
         rep, flicks, _ = build_report(run, trace, region_cols=self.s.region_cols,
-                                      region_rows=self.s.region_rows)
+                                      region_rows=self.s.region_rows,
+                                      min_amplitude=min_flick_counts(self.s))
         if self.s.fatigue_detection_enabled:
             state = self.fatigue.add_run(rep.n_flicks, rep.overshoot_rate, rep.mean_flick_ms)
             rep.fatigue = state.as_dict()

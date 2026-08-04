@@ -63,12 +63,40 @@ def _smooth(v: np.ndarray, rate: float, tau_ms: float = 8.0) -> np.ndarray:
     return np.convolve(np.asarray(v, dtype=np.float64), k)[:n] + v[0] * decay
 
 
+#: Smallest movement that counts as a FLICK, in mouse counts. 91 counts is
+#: 2.0 degrees at in-game sens 1.0 (YAW 0.022), and 2 degrees is where the
+#: overshoot statistic stops being noise — measured, not chosen.
+#:
+#: Overshoot is a FRACTION of amplitude, so a small amplitude with a small
+#: absolute error produces an enormous ratio, and a mis-segmented onset
+#: underestimates amplitude directly. At the old 15-count floor (0.33 deg) the
+#: real trace library here carried 37 "flicks" between 30 and 60 counts with a
+#: MEAN overshoot of 1.737 and a maximum of 17.4 — against 0.030 for the 596
+#: flicks above 120 counts. Those are not overshoots, they are segmentation
+#: artefacts, and `directional_bias` takes a plain mean, so fifty of them
+#: outvoted six hundred real flicks.
+#:
+#: The knee, swept over that library: max overshoot 17.4 at 30 counts, 3.9 at
+#: 60, 0.68 at 90, and flat from there to 300. The bias verdict is unstable
+#: below 45 and settles into a single band above 90. It also SIGN-FLIPPED —
+#: +0.041 (left weaker) at the old floor, -0.216 (right weaker) at this one —
+#: and that verdict is what writes Left/RightStrafeTimeMult into the .sce.
+#:
+#: In COUNTS rather than degrees because this module is a pure leaf over
+#: telemetry and knows nothing about the player's settings.
+#: `sens.min_flick_counts` converts for a configured sensitivity; this is the
+#: sens-1.0 reference. It does NOT depend on DPI — a count is a count, and
+#: DPI decides how much desk a count costs, not how far the view turns.
+MIN_FLICK_DEG = 2.0
+MIN_FLICK_COUNTS = MIN_FLICK_DEG / 0.022   # 90.9; sens 1.0, KovaaK yaw
+
+
 def segment_flicks(
     trace: MouseTrace,
     rate: float = 500.0,
     lookback: float = 0.8,
     onset_frac: float = 0.08,
-    min_amplitude: float = 15.0,
+    min_amplitude: float = MIN_FLICK_COUNTS,
     *,
     grid: ResampleCache | None = None,
 ) -> list[Flick]:
