@@ -29,9 +29,11 @@ if sys.platform == "win32":
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from kovadapt.config import ADAPTIVE_SUFFIX, Settings  # noqa: E402
+from kovadapt.analysis.movement import MIN_FLICK_DEG  # noqa: E402
 from kovadapt.gui import motion  # noqa: E402
 from kovadapt.gui.changes_view import (  # noqa: E402
     ChangesView,
+    _dodge_knob,
     Knob,
     build_knobs,
     planned_weights,
@@ -145,8 +147,8 @@ def _trained(name="Wall Task", runs=14) -> PlayerProfile:
     prof.run_count = runs
     prof.ewma_accuracy = 0.97
     prof.ewma_kps = 1.5
-    prof.ewma_bias = 0.30
-    prof.bias_obs = 6
+    for _ in range(6):          # observe_bias, not hand-set: it is what stamps
+        prof.observe_bias(0.30)  # the flick floor the EWMA was earned under
     prof.target_scale = 0.80
     prof.movement = 0.55
     prof.ou_state = 0.2
@@ -350,6 +352,11 @@ def _write_report(s: Settings, slug: str, ts: str, **over) -> None:
     body = {"scenario": "Wall Task", "started_iso": ts, "score": 1.0,
             "accuracy": 0.9, "avg_ttk": 0.5, "kills": 10, "kps": 1.0,
             "n_flicks": 20,
+            # A report without this is a report from before the floor moved,
+            # and the page is right to exclude it. Stamped here so the default
+            # fixture models a run the CURRENT app produced; the exclusion
+            # itself is tested by overriding it.
+            "flick_floor_deg": MIN_FLICK_DEG,
             "bias": {"left": {"n": 9}, "right": {"n": 8}, "bias_score": 0.3},
             "region_deficits": {"r2c1": 0.8},
             "input_health": {"jitter_ms": 0.3, "polling_hz_est": 1000.0}}
@@ -382,6 +389,53 @@ def test_bias_evidence_applies_the_watchers_own_gate(tmp_path):
     _write_report(s, "Wall_Task", "2026-07-28T20-02-00")      # the only usable one
     ev = read_report_evidence(s.profile_path, "Wall Task")
     assert ev.files == 3 and ev.bias_runs == 1
+
+
+def test_reports_from_an_older_flick_floor_are_excluded_and_named(tmp_path):
+    """A bias score is only comparable to another one measured the same way.
+
+    These reports clear the flick gate — they are not noisy, not short, not
+    one-sided. They were segmented at 0.33 degrees, where the overshoot ratio
+    measures segmentation error rather than aim, and pooling them into the
+    mean is how a wrong verdict outlives the rule that produced it.
+
+    Excluding them silently would be its own defect: the page would read "0
+    contributing" over a directory holding five reports, which looks like the
+    recording broke. So the count and the floor are both named.
+    """
+    s = _install(tmp_path)
+    _write_report(s, "Wall_Task", "2026-07-28T20-00-00", flick_floor_deg=0.33)
+    _write_report(s, "Wall_Task", "2026-07-28T20-01-00")          # current
+    _write_report(s, "Wall_Task", "2026-07-28T20-02-00", flick_floor_deg=None)
+    ev = read_report_evidence(s.profile_path, "Wall Task")
+    assert ev.files == 3
+    assert ev.bias_runs == 1, "only the report on the current floor counts"
+    assert ev.bias_stale == 2, "a missing floor is an OLD floor, not a pass"
+    assert ev.stale_floors == (0.33,)
+
+    prof = PlayerProfile(scenario="Wall Task" + ADAPTIVE_SUFFIX)
+    prof.observe_bias(0.3)
+    knob = _dodge_knob(prof, s, ev)
+    assert "2 more clear it" in knob.evidence
+    assert "0.33-degree flick floor" in knob.evidence
+    assert "instead of today's 2 degrees" in knob.evidence
+
+
+def test_dropped_bias_does_not_read_as_a_recording_failure(tmp_path):
+    """The first launch after the floor moved shows a profile with no bias and
+    a directory full of reports that used to supply one. "No run has produced
+    a usable measurement yet" is true of the profile and false about the
+    runs — on its own it sends the user to the Optimizer for a fault that is
+    not there."""
+    s = _install(tmp_path)
+    _write_report(s, "Wall_Task", "2026-07-28T20-00-00", flick_floor_deg=0.33)
+    ev = read_report_evidence(s.profile_path, "Wall Task")
+    fresh = PlayerProfile(scenario="Wall Task" + ADAPTIVE_SUFFIX)
+    why = _dodge_knob(fresh, s, ev).evidence
+    assert "no run has produced a usable directional-bias measurement" in why
+    assert "dropped rather than lost to noise" in why
+    assert "a 0.33-degree flick floor instead of today's 2 degrees" in why
+    assert "the next run re-earns one" in why
 
 
 def test_noisy_runs_are_counted_with_the_one_shared_gate(tmp_path):

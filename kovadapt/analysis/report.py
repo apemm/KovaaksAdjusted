@@ -11,7 +11,8 @@ import numpy as np
 
 from ..stats.models import Run
 from ..telemetry.trace import MouseTrace, ResampleCache
-from .movement import segment_flicks, directional_bias, region_deficits, movement_heatmap
+from .movement import (segment_flicks, directional_bias, region_deficits,
+                       movement_heatmap, MIN_FLICK_DEG, YAW_DEG_PER_COUNT)
 from .notable import find_notable_moments
 
 
@@ -109,6 +110,13 @@ class RunReport:
     kps: float
     # telemetry-derived (empty/zero when no trace was captured)
     n_flicks: int = 0
+    # The flick-amplitude floor `n_flicks`, `bias` and everything else derived
+    # from segmentation were measured at, in DEGREES. Reports are the app's
+    # long-lived evidence — the Changes ledger pools bias across every one on
+    # disk — so a change to what counts as a flick makes the older files a
+    # different population, not a longer run of the same one. 0.0 means
+    # "written before this field existed", i.e. the 0.33-degree floor.
+    flick_floor_deg: float = 0.0
     bias: dict = field(default_factory=dict)
     region_deficits: dict = field(default_factory=dict)
     notable: list[dict] = field(default_factory=list)
@@ -255,6 +263,7 @@ def build_report(
     region_cols: int = 3,
     region_rows: int = 3,
     min_amplitude: float | None = None,
+    flick_floor_deg: float | None = None,
 ) -> tuple[RunReport, list, np.ndarray | None]:
     """-> (report, flicks, heatmap). Flicks/heatmap returned separately for
     the GUI (not serialized into JSON).
@@ -262,7 +271,13 @@ def build_report(
     region_cols/region_rows must match Settings.region_cols/region_rows so
     the report's region_deficits keys line up with the bandit's region grid
     (the r{row}c{col} cross-module contract); defaults preserve the 3x3
-    behavior for callers without Settings."""
+    behavior for callers without Settings.
+
+    min_amplitude is in mouse COUNTS and flick_floor_deg is the ANGLE it was
+    converted from. A caller that converts (sens.min_flick_counts) passes
+    both; they are stored together in the report so a later reader can tell
+    two runs at different sensitivities apart from two runs measured by
+    different rules."""
     rep = RunReport(
         scenario=run.scenario,
         started_iso=run.started.isoformat(),
@@ -287,6 +302,15 @@ def build_report(
         # number, or the page and the profile disagree about what a flick is.
         flicks = segment_flicks(rt, grid=grid, **(
             {} if min_amplitude is None else {"min_amplitude": min_amplitude}))
+        # The angle cannot be recovered from the count here: the caller divided
+        # by the player's sens to get it, and this function is not given sens.
+        # So the caller that converted states what it converted FROM, and a
+        # caller passing raw counts is taken at the sens-1.0 reference — which
+        # is the only reading a bare count has.
+        rep.flick_floor_deg = (
+            flick_floor_deg if flick_floor_deg is not None
+            else MIN_FLICK_DEG if min_amplitude is None
+            else min_amplitude * YAW_DEG_PER_COUNT)
         rep.n_flicks = len(flicks)
         rep.bias = directional_bias(flicks)
         rep.region_deficits = region_deficits(flicks, cols=region_cols, rows=region_rows)

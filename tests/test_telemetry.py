@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from kovadapt.analysis.movement import (
+    MIN_FLICK_DEG,
+    YAW_DEG_PER_COUNT,
     directional_bias,
     movement_heatmap,
     region_deficits,
@@ -142,7 +144,7 @@ def test_up_flick_angle_convention():
 
 
 def test_min_amplitude_filters_micro_movements():
-    tr = TraceBuilder().flick(8, 0).build()   # below min_amplitude=15
+    tr = TraceBuilder().flick(8, 0).build()   # 0.18 deg, under the 2.0 floor
     assert segment_flicks(tr) == []
 
 
@@ -193,6 +195,42 @@ def test_notable_moments_kinds_and_bounds():
 
 
 # ----------------------------------------------------------------- run report
+def test_a_report_records_the_flick_floor_it_was_measured_at(fixtures, tmp_path):
+    """Reports are this app's long-lived evidence — the Changes ledger pools
+    bias across every one on disk — so each has to carry the rule that
+    produced it. Without that, moving the flick floor silently turns the
+    archive into two populations averaged as one.
+
+    The angle cannot be recovered from `min_amplitude`: a caller divides by
+    the player's sens to get counts, and build_report is not given sens. So a
+    converting caller states the angle, and a caller passing bare counts is
+    read at the sens-1.0 yaw, which is the only meaning a bare count has.
+    """
+    run = parse_stats_csv(fixtures / "sample_stats.csv")
+    win = run_time_window(run)
+    b = TraceBuilder(t0=win[0] + 0.2)
+    for _ in range(4):
+        b.flick(200, 0)
+        b.flick(-200, 0, overshoot=0.25)
+    trace = b.build()
+
+    default, _, _ = build_report(run, trace)
+    assert default.flick_floor_deg == MIN_FLICK_DEG
+
+    # 0.5 sens: half the degrees per count, so twice the counts for one angle
+    converted, _, _ = build_report(run, trace, min_amplitude=MIN_FLICK_DEG / (
+        YAW_DEG_PER_COUNT * 0.5), flick_floor_deg=MIN_FLICK_DEG)
+    assert converted.flick_floor_deg == MIN_FLICK_DEG,         "two sensitivities must agree in degrees, which is the comparable unit"
+
+    bare, _, _ = build_report(run, trace, min_amplitude=15.0)
+    assert bare.flick_floor_deg == pytest.approx(0.33, abs=0.005)
+
+    # and it survives the round trip, which is the only reason it exists
+    assert RunReport.load(default.save(tmp_path / "r.json")).flick_floor_deg         == MIN_FLICK_DEG
+    # a report with no trace never segmented anything, so it claims no floor
+    assert build_report(run, None)[0].flick_floor_deg == 0.0
+
+
 def test_report_without_trace(fixtures, tmp_path):
     run = parse_stats_csv(fixtures / "sample_stats.csv")
     rep, flicks, heat = build_report(run, None)

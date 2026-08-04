@@ -78,6 +78,7 @@ from PySide6.QtWidgets import (
 from ..adapt.bandit import ThompsonRegionBandit
 from ..adapt.stochastic import movement_speed, speed_multiplier
 from ..analysis.insights import _region_words
+from ..analysis.movement import MIN_FLICK_DEG, YAW_DEG_PER_COUNT
 from ..analysis.report import input_degraded
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile, _slug
@@ -139,6 +140,24 @@ MOVE_EPS_FRAC = 0.01
 # analysis.directional_bias returns a flat 0.0 below that and a 0.0 that means
 # "not measured" must never be counted as an observation.
 _BIAS_MIN_FLICKS = 8
+# What a report with no `flick_floor_deg` was measured at: 15 counts at the
+# sens-1.0 yaw. Named rather than inlined so the page can say the number.
+_LEGACY_FLOOR_DEG = round(15.0 * YAW_DEG_PER_COUNT, 2)
+
+
+def _floor_phrase(floors: tuple[float, ...]) -> str:
+    """A NOUN phrase — "a 0.33-degree flick floor" — so the callers own their
+    own verbs. It read "were measured at a 0.33-degree flick floor rather
+    than today's 2 were dropped" when this returned a clause, which is the
+    kind of thing only rendering the sentence and reading it finds.
+
+    The number is named because a user who wants to check the claim can only
+    do it against a number. Reports can carry more than one (a sens change
+    moves the count, not the angle, but a hand-edited or future floor moves
+    the angle), so the plural case degrades to a count rather than a list."""
+    if len(floors) == 1:
+        return f"a {floors[0]:g}-degree flick floor"
+    return f"{len(floors)} older flick floors"
 _BIAS_MIN_PER_SIDE = 3
 
 # Newest-first cap on report JSONs read for evidence. Reports accumulate one
@@ -262,6 +281,14 @@ class ReportEvidence:
     region_mean: dict[str, float] = field(default_factory=dict)
     bias_runs: int = 0
     bias_mean: float = 0.0
+    # Reports that clear the flick gate but were segmented at a DIFFERENT
+    # amplitude floor. They are excluded from bias_mean rather than pooled
+    # into it: below 2 degrees the overshoot ratio measures segmentation
+    # error, and on the real library here that inverted the verdict. Counted
+    # and named on the page, because "5 reports on disk, 0 contributing" with
+    # no explanation is the kind of silence this ledger exists to remove.
+    bias_stale: int = 0
+    stale_floors: tuple[float, ...] = ()
     degraded: int = 0
     latest: str = ""
 
@@ -476,6 +503,7 @@ def read_report_evidence(profile_dir: Path | str, base: str) -> ReportEvidence:
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
     bias_vals: list[float] = []
+    stale, stale_floors = 0, set()
     degraded = 0
     read = 0
     for path in paths:
@@ -498,6 +526,14 @@ def read_report_evidence(profile_dir: Path | str, base: str) -> ReportEvidence:
         right = int((bias.get("right") or {}).get("n", 0) or 0)
         if (int(raw.get("n_flicks") or 0) >= _BIAS_MIN_FLICKS
                 and left >= _BIAS_MIN_PER_SIDE and right >= _BIAS_MIN_PER_SIDE):
+            # Missing field == written before it existed == the 0.33-degree
+            # floor, which is why the fallback is that value and not the
+            # current one: absent provenance is old provenance, never current.
+            floor = float(raw.get("flick_floor_deg") or 0.0) or _LEGACY_FLOOR_DEG
+            if abs(floor - MIN_FLICK_DEG) > 1e-6:
+                stale += 1
+                stale_floors.add(round(floor, 2))
+                continue
             bias_vals.append(float(bias.get("bias_score") or 0.0))
             # input_degraded reads an ATTRIBUTE, so a dict will silently pass;
             # the shim keeps the one shared definition (analysis/report.py) as
@@ -511,6 +547,8 @@ def read_report_evidence(profile_dir: Path | str, base: str) -> ReportEvidence:
         region_mean={k: totals[k] / counts[k] for k in counts},
         bias_runs=len(bias_vals),
         bias_mean=(sum(bias_vals) / len(bias_vals)) if bias_vals else 0.0,
+        bias_stale=stale,
+        stale_floors=tuple(sorted(stale_floors)),
         degraded=degraded,
         latest=paths[-1].stem if paths else "",
     )
@@ -1224,15 +1262,42 @@ def _dodge_knob(profile: PlayerProfile, s: Settings, ev: ReportEvidence) -> Knob
                     f"yet — that needs {_BIAS_MIN_FLICKS}+ flicks in a run with "
                     f"{_BIAS_MIN_PER_SIDE}+ per side, so strafing stays exactly "
                     "as symmetric as the author wrote it")
+        # "None yet" is a different claim from "some, discarded", and the
+        # second one is what a user sees the first time they open this after
+        # the flick floor moved. Saying only the first reads as a recording
+        # failure, which would send them to the Optimizer for nothing.
+        if ev.bias_stale:
+            n = ev.bias_stale
+            evidence += (f" — and the {n} earlier "
+                         f"{'measurement was' if n == 1 else 'measurements were'} "
+                         f"dropped rather than lost to noise, having been taken at "
+                         f"{_floor_phrase(ev.stale_floors)} instead of today's "
+                         f"{MIN_FLICK_DEG:g} degrees; the next run re-earns one")
     else:
-        evidence = (f"because {profile.bias_obs} runs produced a usable bias "
+        # "1 runs" was always possible and always wrong; the reset above makes
+        # it the state EVERY profile passes through on its first run after
+        # upgrading, so it stopped being a rare blemish.
+        obs_s = "" if profile.bias_obs == 1 else "s"
+        evidence = (f"because {profile.bias_obs} run{obs_s} produced a usable bias "
                     f"measurement and the EWMA sits at {profile.ewma_bias:+.2f}, "
                     f"i.e. your {side} flicks measurably cost more, so targets "
                     f"strafe longer toward the {side}")
         if ev.bias_runs:
-            evidence += (f"; {ev.bias_runs} run reports clear the "
+            one = ev.bias_runs == 1
+            evidence += (f"; {ev.bias_runs} run report{'' if one else 's'} "
+                         f"{'clears' if one else 'clear'} the "
                          f"{_BIAS_MIN_FLICKS}-flick / {_BIAS_MIN_PER_SIDE}-per-side "
                          f"gate, mean score {ev.bias_mean:+.2f}")
+        if ev.bias_stale:
+            evidence += (f"; {ev.bias_stale} more "
+                         f"{'clears' if ev.bias_stale == 1 else 'clear'} it but "
+                         f"{'was' if ev.bias_stale == 1 else 'were'} taken at "
+                         f"{_floor_phrase(ev.stale_floors)} instead of today's "
+                         f"{MIN_FLICK_DEG:g} degrees, so "
+                         + ("its score is a different quantity and is not "
+                            if ev.bias_stale == 1 else
+                            "their scores are a different quantity and are not ")
+                         + "averaged in")
     note = ""
     # AT-BOUND, first: this value clamps to +-1.0, and amber is the only thing
     # that said so. Amber is `warn`, and the accent is fitted to the same

@@ -88,7 +88,12 @@ def _smooth(v: np.ndarray, rate: float, tau_ms: float = 8.0) -> np.ndarray:
 #: sens-1.0 reference. It does NOT depend on DPI — a count is a count, and
 #: DPI decides how much desk a count costs, not how far the view turns.
 MIN_FLICK_DEG = 2.0
-MIN_FLICK_COUNTS = MIN_FLICK_DEG / 0.022   # 90.9; sens 1.0, KovaaK yaw
+#: KovaaK's (Quake/Source lineage) yaw: degrees turned per mouse count at
+#: in-game sensitivity 1.0. Defined here rather than in `sens` because this is
+#: the leaf both need and `sens` imports `report`, which imports this — a cycle
+#: the other way round. `sens.YAW_DEG_PER_COUNT` re-exports it.
+YAW_DEG_PER_COUNT = 0.022
+MIN_FLICK_COUNTS = MIN_FLICK_DEG / YAW_DEG_PER_COUNT   # 90.9 at sens 1.0
 
 
 def segment_flicks(

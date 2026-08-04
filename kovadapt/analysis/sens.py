@@ -32,7 +32,10 @@ from .skill import SkillTrends
 
 # KovaaK's (Quake/Source lineage) yaw: degrees turned per mouse count at
 # in-game sensitivity 1.0. cm/360 = 2.54 * 360 / (dpi * sens * YAW).
-YAW_DEG_PER_COUNT = 0.022
+# Defined in `movement` (the leaf) and re-exported here, where it is named:
+# two copies of 0.022 is two places for the flick floor and cm/360 to drift
+# apart, and they are the same physical fact.
+from .movement import YAW_DEG_PER_COUNT  # noqa: E402
 
 # Aimer7's community cm/360 ranges by play style (kb p-sensitivity-doctrine:
 # tracking 20-25, click-timing 30+, versatile 21-27). Keyed by kovadapt
