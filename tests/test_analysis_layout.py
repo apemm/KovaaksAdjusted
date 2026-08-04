@@ -676,7 +676,10 @@ def test_a_damaged_recording_does_not_take_the_report_down(qapp, settings, tmp_p
 
     assert view.trace is None
     assert view._trace_unreadable is True
-    assert view.summary.text() == "30 kills at 61% accuracy.", "the stats half rendered"
+    # the headline is RE-DERIVED now, not the report's stored string, so
+    # assert what it must contain rather than the fixture's cached sentence
+    assert "61%" in view.summary.text(), (
+        f"the stats half did not render: {view.summary.text()!r}")
     assert view.kpis["accuracy"].value.text() == "61%", "stats survived"
     assert not view.full_btn.isEnabled(), "nothing to replay"
     view.deleteLater()
@@ -1043,4 +1046,38 @@ def test_the_moments_placeholder_survives_a_run_that_produced_none(qapp, setting
     assert view.moments.item(0).text() == _MOMENTS_EMPTY, (
         "a run with no notable moments left the panel blank")
     assert not (view.moments.item(0).flags() & Qt.ItemIsSelectable)
+    view.deleteLater()
+
+
+def test_a_saved_report_is_not_still_saying_what_was_true_when_it_was_written(
+        qapp, settings):
+    """`summary_text` is the only headline on this page that was PERSISTED —
+    every other surface re-evaluates `input_degraded` at render time. So when
+    POLLING_LOW_HZ moved 490 -> 100, four of the five real reports on this
+    machine still read "findings are withheld for this run; run the Optimizer
+    checkup" directly above a page showing every one of those findings, and
+    prescribing the exact wrong cause the change had removed. One click away
+    via "Open report...".
+
+    A stored sentence about a threshold is a cache of a judgement.
+    """
+    stale = _report(
+        n_flicks=119,
+        input_health={"jitter_ms": 0.9, "polling_hz_est": 125.0},
+        bias=_bias(left=0.42, vertical=0.10, right=0.16),
+        summary_text=("Accuracy 61%. Input timing is too noisy to read flick "
+                      "microstructure from (polling ~125Hz) — overshoot and "
+                      "bias findings are withheld for this run; run the "
+                      "Optimizer checkup (background apps or USB contention)."))
+    view = AnalysisView(settings)
+    view.show_report(stale)
+
+    shown = view.summary.text().lower()
+    assert "withheld" not in shown, (
+        f"the page is repeating a stored verdict the gate no longer makes: {shown!r}")
+    assert "optimizer checkup" not in shown, (
+        "it is still prescribing the cause this was changed to stop naming")
+    # ...and the rest of the page agrees, which is the point
+    assert "x more" in view.bias_bars._title.lower(), (
+        "the bias chart withheld its verdict while the headline did not")
     view.deleteLater()

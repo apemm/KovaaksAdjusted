@@ -521,7 +521,39 @@ def test_control_chrome_weighs_the_same_on_every_theme(name, kw, accent):
     and every theme lands on the floor.
     """
     pal = build_palette(accent=accent, **kw)
-    ratio = color.contrast_ratio(pal.border_control, pal.bg)
-    assert abs(ratio - CONTROL_CONTRAST) < 0.25, (
-        f"{name}: control chrome is {ratio:.2f}:1 against a {CONTROL_CONTRAST} "
-        "floor — it is not being fitted, only checked")
+    # against every surface a control is actually drawn on, not just the
+    # page: inputs take bg_alt, buttons bg_raised, and NOTHING is filled with
+    # bg. Fitted against the page it read 3.01 there and 2.62-2.92 where it
+    # is really used — a floor cleared against a background that never
+    # appears under a control.
+    ratios = {n: color.contrast_ratio(pal.border_control, surface)
+              for n, surface in (("bg", pal.bg), ("bg_alt", pal.bg_alt),
+                                 ("bg_raised", pal.bg_raised))}
+    worst = min(ratios.values())
+    assert worst >= CONTROL_CONTRAST - 0.05, (
+        f"{name}: control chrome is {worst:.2f}:1 against the surface it sits "
+        f"on — {ratios}")
+    assert worst < CONTROL_CONTRAST + 0.75, (
+        f"{name}: control chrome is {worst:.2f}:1, well over its own "
+        f"{CONTROL_CONTRAST} floor — it is not being fitted, only checked")
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_no_disabled_state_is_painted_in_the_invisible_token(name, kw):
+    """`border` measures 1.07-1.37:1 against the page — theme.py's own comment
+    calls it a hairline that "may be low contrast". Two disabled rules were
+    written against it, so a disabled checkbox indicator and a disabled slider
+    fill vanished entirely while the groove beside them sat at 3:1. Making a
+    control look disabled is not the same as making it disappear."""
+    import re
+
+    pal = build_palette(accent="indigo", **kw)
+    sheet = build_qss(pal)
+    offenders = []
+    for rule in re.finditer(r"([^\n{}]*:disabled[^\n{}]*)\{([^}]*)\}", sheet):
+        selector, body = rule.group(1).strip(), rule.group(2)
+        if pal.border in body and pal.border_control not in body:
+            offenders.append(f"{selector} -> {body.strip()}")
+    assert not offenders, (
+        f"{name}: disabled states painted in the invisible `border` token:\n  "
+        + "\n  ".join(offenders))

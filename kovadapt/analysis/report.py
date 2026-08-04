@@ -138,6 +138,25 @@ class RunReport:
         return cls(**json.loads(Path(path).read_text()))
 
 
+def summary_text_for(rep: "RunReport") -> str:
+    """The headline this report supports RIGHT NOW.
+
+    `summary_text` is the only string on the Analysis page that is persisted
+    rather than derived — every other surface re-evaluates `input_degraded`
+    at render time. So the moment a threshold moves, a saved report keeps
+    saying what was true when it was written: after POLLING_LOW_HZ went
+    490 -> 100, four of the five real reports on this machine still read
+    "findings are withheld for this run; run the Optimizer checkup" directly
+    above a page showing every one of those findings, and prescribing the
+    exact wrong cause the change had just removed.
+
+    A stored sentence about a threshold is a cache of a judgement, and this
+    is what invalidates it. Pure function of the report, so it costs nothing
+    to re-derive.
+    """
+    return _summary_text(rep, bool(rep.n_flicks))
+
+
 def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
     lines = [f"Accuracy {rep.accuracy:.0%}, {rep.kills} kills at {rep.kps:.2f}/s."]
     if not flicks_exist:
@@ -182,9 +201,20 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
         lines.append(
             f"Your {weak} side is measurably weaker "
             f"({rep.bias[weak]['overshoot']:.0%} overshoot vs "
-            f"{rep.bias['right' if weak == 'left' else 'left']['overshoot']:.0%}) — "
-            f"spawns will shift {weak}."
+            f"{rep.bias['right' if weak == 'left' else 'left']['overshoot']:.0%})."
         )
+        # NO forward-looking clause. This said "spawns will shift {weak}" and
+        # was wrong twice. Wrong mechanism: nothing about spawns moves — a
+        # directional bias writes Left/RightStrafeTimeMult. And wrong side:
+        # this function has only the REPORT, so it read THIS run's
+        # bias_score, while engine.py acts on profile.ewma_bias behind a 0.05
+        # gate. Replayed over the five real runs here, two printed "shift
+        # left" while the engine wrote right skew and the What-changed page
+        # agreed with the engine.
+        #
+        # A report describes a run. What the engine does next depends on
+        # profile state a report does not carry, and the Adaptability page
+        # already says it — from the profile, with the gate applied.
     else:
         lines.append("Left/right flicks are balanced this run.")
     if rep.overshoot_rate > 0.25:
@@ -195,7 +225,10 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
     # `or 0.0`: a report carrying a null polling value used to raise TypeError
     # here rather than simply skipping the note.
     polling = float(ih.get("polling_hz_est", 0.0) or 0.0)
-    if polling >= 125:
+    # the CONSTANT, not a literal 125. When the gate moved to 100 this left a
+    # dead band at [100, 125): a rate the analysis now trusts and never
+    # mentioned, so the reader had no way to know it was borderline.
+    if polling >= POLLING_LOW_HZ:
         note = f"Mouse polling ~{polling:.0f}Hz"
         if float(ih.get("jitter_ms", 0.0) or 0.0) > 1.0:
             note += (f", timing jitter {float(ih['jitter_ms']):.1f}ms — high; run "

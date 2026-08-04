@@ -143,7 +143,14 @@ def build_palette(dark: bool, accent: str = "indigo",
     #
     # Starting at the page's own lightness always fails, so the bisection
     # always runs, and every theme lands on the floor: 3.01:1 across all four.
-    border_control = color.fit_contrast(base_l, base_c, base_h, against=bg,
+    # Against BG_RAISED, not bg. Nothing is filled with the page: inputs take
+    # bg_alt and buttons bg_raised, and bg_raised is the closest surface to
+    # this token on every theme — so it is the worst case and the only one
+    # worth fitting. Fitted against the page it measured 3.01:1 there and
+    # 2.62-2.92 on the surfaces controls are actually drawn on, which is a
+    # floor cleared against a background that never appears under a control.
+    border_control = color.fit_contrast(base_l, base_c, base_h,
+                                        against=bg_raised,
                                         target=CONTROL_CONTRAST,
                                         prefer_lighter=is_dark)
 
@@ -657,12 +664,12 @@ QCheckBox::indicator:checked {{ background: {p.accent}; border-color: {p.accent}
    a canvas with no data. A control that looks live and does nothing is worse
    than one that is visibly out of service. */
 QCheckBox:disabled {{ color: {p.fg_dim}; }}
-QCheckBox::indicator:disabled {{ border-color: {p.border}; background: {p.bg}; }}
+QCheckBox::indicator:disabled {{ border-color: {p.border_control}; background: {p.bg}; }}
 QCheckBox::indicator:checked:disabled {{
     background: {p.border_control}; border-color: {p.border_control};
 }}
 QSlider::handle:horizontal:disabled {{ background: {p.border_control}; }}
-QSlider::sub-page:horizontal:disabled {{ background: {p.border}; }}
+QSlider::sub-page:horizontal:disabled {{ background: {p.border_control}; }}
 QLabel:disabled {{ color: {p.fg_dim}; }}
 
 /* Transparent, all three, for one reason: `QMainWindow, QDialog, QWidget`

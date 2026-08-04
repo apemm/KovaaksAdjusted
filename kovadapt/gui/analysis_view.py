@@ -48,7 +48,7 @@ from ..analysis.insights import (
     generate_insights,
 )
 from ..analysis.movement import movement_heatmap, segment_flicks
-from ..analysis.report import input_degraded
+from ..analysis.report import input_degraded, summary_text_for
 from ..analysis.report import RunReport
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile
@@ -685,7 +685,11 @@ class AnalysisView(QWidget):
                        if self.trace is not None and len(self.trace) > 10 else [])
 
         self.title.setText(f"{rep.scenario} — {rep.started_iso.replace('T', ' ')[:19]}")
-        self.summary.setText(rep.summary_text)
+        # RE-DERIVED, not the stored string. See analysis.report.
+        # summary_text_for: this is the only headline on the page that was
+        # persisted, so a saved report kept asserting whatever was true when
+        # it was written.
+        self.summary.setText(summary_text_for(rep))
         self._draw_bias(rep)
         self._draw_heat(rep)
         has_trace = self.trace is not None and len(self.trace) > 1

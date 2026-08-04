@@ -435,7 +435,14 @@ def test_an_untouched_layout_paints_no_density_and_no_focus_ring(tmp_path, qapp)
     touched.set_map(SpawnMap(cols=sm.cols, rows=sm.rows, base=dict(sm.base),
                              adaptive=dict(sm.base), focus=sm.focus))
     touched.resize(1200, touched.height())
-    quiet, loud = _ink(grid, 240), _ink(touched, 240)
+    # 360, not 240: the threshold has to sit ABOVE the occupied-cell hairline
+    # so this measures the DENSITY RAMP, which is the emphasis an untouched
+    # layout must not paint. 240 was calibrated when that hairline was drawn
+    # in `border` and later `border_control` at 231 summed delta — i.e. below
+    # "real glyph ink", which was the invisibility later fixed. Now it reads
+    # 258 on dark and 327 on light and the old cutoff counted it as emphasis.
+    # The hairline is deliberate; the ramp is the claim.
+    quiet, loud = _ink(grid, 360), _ink(touched, 360)
     assert loud > 8 * max(quiet, 1), \
         f"the untouched layout renders as loud as an adapted one ({quiet} vs {loud})"
     grid.deleteLater()
