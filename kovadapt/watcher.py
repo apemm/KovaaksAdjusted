@@ -105,9 +105,11 @@ class SessionWatcher:
         win = run_time_window(run)
         if win:
             return self.recorder.snapshot(*win).window(*win)
-        # No reconstructable window (e.g. a zero-kill run): analyzing the
-        # whole live recording as if it were this run would poison the
-        # profile with session-wide telemetry.
+        # No anchor at all — neither kills nor a "Challenge Start:" line.
+        # Analyzing the whole live recording as if it were this run would
+        # poison the profile with session-wide telemetry. A zero-kill run is
+        # NOT this case: it is bounded by its challenge start and the
+        # filename's end time, and every real stats file carries both.
         return None
 
     def _report_path(self, run) -> Path:

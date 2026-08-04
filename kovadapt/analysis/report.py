@@ -45,7 +45,15 @@ def run_time_window(run: Run) -> tuple[float, float] | None:
     time happened before midnight and belongs to the previous day
     (midnight-spanning runs)."""
     start_str = run.summary.get("Challenge Start:")
-    if not run.kills:
+    # A run needs an ANCHOR, not a kill. "Challenge Start:" is one, and the
+    # filename timestamp is the challenge END — together they bound the run
+    # without a single kill row. Bailing on `not run.kills` threw that away
+    # for every invincible-target scenario: nothing dies, so the CSV reports
+    # none, and 162 of the 398 real stats files here banked NO telemetry at
+    # all. Those are precisely the tracking scenarios whose flick data is
+    # worth having, and the recording was being discarded seconds after it
+    # was made.
+    if not run.kills and not start_str:
         return None
     day = datetime(run.started.year, run.started.month, run.started.day)
     end_epoch = run.started.timestamp()
@@ -66,7 +74,9 @@ def run_time_window(run: Run) -> tuple[float, float] | None:
         # Older stats files lack "Challenge Start:" — reconstruct from the
         # first kill (its TTK covers the time since that target appeared).
         t0 = to_epoch(run.kills[0].timestamp) - max(run.kills[0].ttk, 0.0) - 1.0
-    t1 = to_epoch(run.kills[-1].timestamp) + 2.0
+    # With kills, the last one plus follow-through; without, the challenge
+    # end from the filename, which is what run.started already is.
+    t1 = (to_epoch(run.kills[-1].timestamp) + 2.0) if run.kills else end_epoch
     if t1 < t0:  # crossed midnight
         t1 += 86400.0
     return t0, t1

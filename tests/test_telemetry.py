@@ -632,3 +632,46 @@ def test_a_corrupt_profile_is_quarantined_instead_of_bricking_the_app(tmp_path):
     assert back.run_count == 7
     assert back.region("r1c1").n == 1
     assert isinstance(json.loads(path.read_text(encoding="utf-8-sig")), dict)
+
+
+# ------------------------------------------- a run needs an anchor, not a kill
+def test_a_zero_kill_run_still_has_a_reconstructable_window():
+    """Invincible-target scenarios kill nothing, so the CSV reports no kill
+    rows — and `run_time_window` bailed on `not run.kills`, so every one of
+    them banked NO telemetry at all. 162 of the 398 real stats files here.
+    Those are exactly the tracking scenarios whose flick data is worth having,
+    and the recording was discarded seconds after it was made.
+
+    The anchor was there the whole time: "Challenge Start:" in the summary
+    block, and the filename timestamp, which IS the challenge end.
+    """
+    from datetime import datetime
+
+    from kovadapt.analysis.report import run_time_window
+    from kovadapt.stats.models import Run
+
+    ended = datetime(2026, 5, 5, 19, 39, 43)
+    run = Run(scenario="Air Angelic 4 Voltaic Easy", started=ended,
+              summary={"Challenge Start:": "19:38:43.293", "Kills:": "0",
+                       "Hit Count:": "3068", "Miss Count:": "900"})
+    win = run_time_window(run)
+    assert win is not None, "a zero-kill run still reconstructs no window"
+    t0, t1 = win
+    assert t1 - t0 == pytest.approx(59.7, abs=0.5), (
+        f"window is {t1 - t0:.1f}s — a 60s challenge should read about that")
+    assert t1 == pytest.approx(ended.timestamp(), abs=0.01), (
+        "the window must end at the challenge end the filename records")
+
+
+def test_a_run_with_no_anchor_at_all_is_still_refused():
+    """The guard has to survive: with neither kills nor a challenge start
+    there is nothing to bound the run, and slicing the whole live recording
+    would fold session-wide telemetry into one scenario's profile."""
+    from datetime import datetime
+
+    from kovadapt.analysis.report import run_time_window
+    from kovadapt.stats.models import Run
+
+    run = Run(scenario="X", started=datetime(2026, 5, 5, 19, 39, 43),
+              summary={"Kills:": "0", "Hit Count:": "3068"})
+    assert run_time_window(run) is None
