@@ -321,3 +321,53 @@ def test_a_report_records_the_scale_its_run_was_played_at():
                          "Kills:": "0"})
     assert build_report(blind, None)[0].deg_per_count == 0.0
     assert MIN_FLICK_DEG == 1.0, "the measured knee, not a round number"
+
+
+def test_cm_per_360_reads_the_run_not_the_settings_pair():
+    """cm/360 is the number a player already knows and would sanity-check, so
+    it is the number most likely to hide a wrong input — and here it did.
+    Configured 800 dpi x sens 1.0 x 0.022 = 17.6; real 1600 dpi x 0.16 x 0.07
+    = 17.92. The two errors cancel to 1.8% in THIS formula and nowhere else,
+    which is exactly why the flick floor could be 1.96x out for a year with
+    the headline number looking fine.
+    """
+    from datetime import datetime
+
+    from kovadapt.analysis.report import RunReport
+    from kovadapt.analysis.sens import cm_per_360, cm_per_360_at, sens_case
+    from kovadapt.config import Settings
+    from kovadapt.profile.player import PlayerProfile
+
+    assert cm_per_360_at(1600, 0.0112) == pytest.approx(51.03, abs=0.02)
+    assert cm_per_360(800, 1.0) == pytest.approx(51.95, abs=0.02)
+    # the primitive and the settings wrapper agree when the scale is native
+    assert cm_per_360(800, 1.0) == pytest.approx(cm_per_360_at(800, 0.022))
+    for bad in ((0, 0.022), (800, 0.0), (-1, 0.022)):
+        with pytest.raises(ValueError):
+            cm_per_360_at(*bad)
+
+    # a report carrying the run's own scale overrides the settings pair
+    rep = RunReport(scenario="x", started_iso=datetime(2026, 8, 4, 10, 0).isoformat(),
+                    score=1.0, accuracy=0.9, avg_ttk=0.5, kills=10, kps=1.0,
+                    deg_per_count=0.0112, mouse_dpi=1600.0, n_flicks=40,
+                    input_health={"jitter_ms": 0.3, "polling_hz_est": 1000.0},
+                    overshoot_rate=0.5, mean_corrections=2.5)
+    prof = PlayerProfile(scenario="x")
+    prof.archetype = "clicking"
+    case = sens_case(rep, prof, Settings(game_sens=1.0, mouse_dpi=800.0))
+    assert case is not None
+    assert case.cm360 == pytest.approx(51.03, abs=0.02), \
+        "the settings pair won over the game's own record"
+    # and the sentence states the angle rather than asserting a yaw it did
+    # not use — it read "KovaaK's yaw 0.022" on a Valorant-scale run
+    assert "0.0112 degrees of turn per mouse count" in case.neutral
+    assert "0.022 deg/count" not in case.neutral
+
+    # with no run-derived scale it falls back and still produces a case
+    blind = RunReport(scenario="x", started_iso=rep.started_iso, score=1.0,
+                      accuracy=0.9, avg_ttk=0.5, kills=10, kps=1.0, n_flicks=40,
+                      input_health={"jitter_ms": 0.3, "polling_hz_est": 1000.0},
+                      overshoot_rate=0.5, mean_corrections=2.5)
+    fell_back = sens_case(blind, prof, Settings(game_sens=1.0, mouse_dpi=800.0))
+    assert fell_back is not None
+    assert fell_back.cm360 == pytest.approx(51.95, abs=0.02)

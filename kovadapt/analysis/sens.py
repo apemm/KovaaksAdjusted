@@ -60,14 +60,30 @@ _FITTS_SLOW_MS_PER_BIT = 150.0   # ms/bit that reads as a positive Fitts residua
 _TRAVEL_CM_PER_KILL = 12.0       # hand travel per kill that reads as excursion/clutch risk
 
 
-def cm_per_360(dpi: float, sens: float) -> float:
-    """Centimetres of mousepad travel for one full 360-degree turn.
+def cm_per_360_at(dpi: float, deg_per_count: float) -> float:
+    """Centimetres of mousepad travel for one full 360-degree turn, given the
+    angle a count is actually worth.
 
-    cm/360 = 2.54 * 360 / (dpi * sens * 0.022) — 800 dpi at sens 1.0 is
-    ~51.95 cm/360. Raises ValueError on non-positive inputs."""
-    if dpi <= 0 or sens <= 0:
+    This is the primitive, because `deg_per_count` is the quantity that
+    survives a change of game: sens alone is meaningless without the scale it
+    is written in. Raises ValueError on non-positive inputs."""
+    if dpi <= 0 or deg_per_count <= 0:
+        raise ValueError(
+            f"dpi and deg/count must be positive (got {dpi}, {deg_per_count})")
+    return 2.54 * 360.0 / (dpi * deg_per_count)
+
+
+def cm_per_360(dpi: float, sens: float) -> float:
+    """cm/360 for a sens assumed to be in KovaaK's-NATIVE units.
+
+    Kept for callers that have only the settings pair, and weaker for exactly
+    that reason: on this machine the configured 800 dpi at sens 1.0 lands 1.8%
+    from the truth (1600 dpi, Valorant 0.16) purely because two wrong inputs
+    cancel in this one formula. Prefer `cm_per_360_at` with a run-derived
+    angle."""
+    if sens <= 0:
         raise ValueError(f"dpi and sens must be positive (got {dpi}, {sens})")
-    return 2.54 * 360.0 / (dpi * sens * YAW_DEG_PER_COUNT)
+    return cm_per_360_at(dpi, sens * YAW_DEG_PER_COUNT)
 
 
 @dataclass(frozen=True)
@@ -100,10 +116,19 @@ def sens_case(
 ) -> SensCase | None:
     """Build the both-sided case, or ``None`` when sensitivity is not
     configured (dpi/sens <= 0) or no side has substantive evidence."""
-    dpi, sens = float(settings.mouse_dpi), float(settings.game_sens)
-    if dpi <= 0 or sens <= 0:
+    # THE RUN FIRST. `rep` carries the dpi and the angle-per-count KovaaK's
+    # itself recorded for this run; the settings pair is a fallback that
+    # assumes the configured sens is in KovaaK's-native units. Both wrong here
+    # (800/1.0 against a real 1600/Valorant-0.16) and cm/360 still came out
+    # 1.8% right, because the errors cancel in this formula and nowhere else.
+    dpi = float(getattr(rep, "mouse_dpi", 0.0) or 0.0) or float(settings.mouse_dpi)
+    per_count = float(getattr(rep, "deg_per_count", 0.0) or 0.0)
+    if per_count <= 0:
+        per_count = float(settings.game_sens) * YAW_DEG_PER_COUNT
+    if dpi <= 0 or per_count <= 0:
         return None
-    cm360 = cm_per_360(dpi, sens)
+    cm360 = cm_per_360_at(dpi, per_count)
+    sens = per_count / YAW_DEG_PER_COUNT      # KovaaK's-native equivalent
     mm_per_deg = 10.0 * cm360 / 360.0    # hand travel cost of one degree of aim
 
     style = _STYLE_RANGES.get(profile.archetype or "")
@@ -218,7 +243,8 @@ def sens_case(
     else:
         range_note = ""
     neutral = (
-        f"At {dpi:g} dpi x {sens:g} in-game (KovaaK's yaw {YAW_DEG_PER_COUNT} deg/count) you "
+        f"At {dpi:g} dpi and {per_count:.4f} degrees of turn per mouse count "
+        f"(KovaaK's-native sens {sens:.3g}) you "
         f"turn 360 degrees in {cm360:.1f} cm of mousepad.{range_note} Performance vs sensitivity "
         "is U-shaped with a broad usable middle, and whether to change sens at all is genuinely "
         "contested (s1mple held one sens for years; TenZ tweaks constantly) — so the evidence is "
