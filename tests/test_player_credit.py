@@ -72,20 +72,32 @@ def test_bias_second_measurement_blends_at_ewma_rate():
     assert prof.bias_obs == 2
 
 
-def test_legacy_profile_with_bias_evidence_is_not_reseeded(tmp_path):
-    """Profiles written before bias_obs existed load with bias_obs == 0 but
-    a real EWMA; the migration must blend into it, never overwrite it."""
+def test_legacy_profile_bias_is_dropped_not_credited(tmp_path):
+    """This used to assert the opposite, and the reversal is the point.
+
+    A profile written before `bias_obs` existed was granted full BIAS_RUNS
+    credit for its legacy EWMA, so readiness counted measurements everywhere
+    and could not fall when a real one landed. But a file that predates
+    bias_obs also predates the 2-degree flick floor, and that value was
+    therefore accumulated by a method measured to INVERT the left/right
+    verdict on this machine's own trace library. Full credit for a number
+    known to be produced wrongly is the worse of the two rules.
+
+    Readiness still cannot go backwards — bias_obs goes 0 -> 1 on the next
+    measurement, which is a rise from a lower floor rather than a fall from
+    a granted ceiling.
+    """
     d = tmp_path / "prof"
     (d / "profiles").mkdir(parents=True)
     legacy = {"scenario": "t", "run_count": 30, "ewma_bias": 0.4}
     PlayerProfile.path_for("t", d).write_text(json.dumps(legacy))
 
     prof = PlayerProfile.load("t", d)
-    # load() migrates the legacy EWMA into explicit credit, so readiness has
-    # one rule (count measurements) and cannot fall when a real one arrives
-    assert prof.bias_obs == PlayerProfile.BIAS_RUNS
+    assert prof.ewma_bias == 0.0 and prof.bias_obs == 0
+    before = prof.readiness(9)["score"]
     prof.observe_bias(-0.2)
-    assert prof.ewma_bias == pytest.approx(0.4 + _alpha() * (-0.2 - 0.4))
+    assert prof.ewma_bias == pytest.approx(-0.2), "re-earned, not blended"
+    assert prof.readiness(9)["score"] >= before
 
 
 def test_bias_obs_round_trips_through_json(tmp_path):
@@ -145,3 +157,38 @@ def test_both_credit_paths_agree_on_the_deficit_sign(fixtures):
     # a third and three times a run-level accuracy miss, not 10x either way.
     ratio = telemetry.region("r1c1").mean / run_level.region("r1c1").mean
     assert 0.33 < ratio < 3.0
+
+
+def test_a_bias_ewma_earned_under_a_different_flick_floor_is_dropped(tmp_path):
+    """An EWMA is a cache of a judgement. Change the rule that produced its
+    inputs and the stored number keeps asserting the old one for as many runs
+    as its half-life takes to wash out — while still writing strafe skew into
+    the .sce every one of them.
+
+    Below 2 degrees the overshoot ratio measures segmentation error rather
+    than aim, and on the real trace library those artefacts INVERTED the
+    verdict: +0.041 (left weaker) to -0.216 (right weaker). So a value earned
+    under the old floor is dropped and re-earned. One run is the whole cost —
+    the first measurement seeds the EWMA directly, and all five real traces
+    still clear the gate that decides whether a run yields one.
+    """
+    from kovadapt.analysis.movement import MIN_FLICK_DEG
+    from kovadapt.profile.player import PlayerProfile
+
+    stale = PlayerProfile(scenario="X [Adaptive]")
+    stale.run_count, stale.ewma_bias, stale.bias_obs = 40, 0.42, 12
+    stale.save(tmp_path)                       # written with bias_floor_deg 0.0
+
+    back = PlayerProfile.load("X [Adaptive]", tmp_path)
+    assert back.ewma_bias == 0.0, "a bias from the old floor survived the load"
+    assert back.bias_obs == 0, "its confidence survived without the value"
+    assert back.bias_floor_deg == MIN_FLICK_DEG
+    # everything NOT derived from flick microstructure is untouched
+    assert back.run_count == 40
+
+    # ...and a profile already on the current floor is left completely alone
+    back.ewma_bias, back.bias_obs = -0.31, 7
+    back.save(tmp_path)
+    again = PlayerProfile.load("X [Adaptive]", tmp_path)
+    assert again.ewma_bias == pytest.approx(-0.31)
+    assert again.bias_obs == 7

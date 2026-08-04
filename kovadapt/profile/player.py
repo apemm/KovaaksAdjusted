@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import math
 import re
+
+from ..analysis.movement import MIN_FLICK_DEG
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -56,6 +58,13 @@ class PlayerProfile:
     last_focus: str | None = None    # region arm used for the run in flight
     last_run_ts: str = ""
     ewma_bias: float = 0.0           # directional flick bias (+ = left weaker)
+    # The flick-amplitude floor `ewma_bias` was accumulated under, in degrees.
+    # An EWMA is a cache of a judgement: change the rule that produced its
+    # inputs and the stored number keeps asserting the old one for as many
+    # runs as its half-life takes to wash out — while still writing strafe
+    # skew into the .sce. 0.0 means "written before this field existed", i.e.
+    # under the 0.33-degree floor whose artefacts inverted the verdict.
+    bias_floor_deg: float = 0.0
     bias_obs: int = 0                # runs with a usable bias measurement folded in
     archetype: str = ""              # clicking | tracking | switching ("" = unknown)
     # WHICH evidence produced `archetype` — see adapt.archetype.EVIDENCE.
@@ -116,15 +125,19 @@ class PlayerProfile:
         20+. Keying on run_count folded that first measurement into a 0.0
         EWMA at the EWMA rate (~13% at the default half-life), so a real
         0.30 skew registered as 0.04 and stayed under the engine's 0.05
-        dodge gate for another two runs. Legacy profiles predate bias_obs,
-        so a non-zero EWMA also counts as evidence: the migration must
-        blend into it, never overwrite it.
+        dodge gate for another two runs.
+
+        Stamping the flick floor here, rather than in `save`, is what makes
+        the EWMA's provenance a fact about how it was ACCUMULATED instead of
+        a fact about when it was last written. This is the only place a bias
+        sample enters a profile, so it is the only place that can know.
         """
         if self.bias_obs == 0 and self.ewma_bias == 0.0:
             self.ewma_bias = float(bias_score)
         else:
             self.ewma_bias += self._alpha(half_life) * (float(bias_score) - self.ewma_bias)
         self.bias_obs += 1
+        self.bias_floor_deg = MIN_FLICK_DEG
 
     def observe_fitts(self, fitts_slope_ms: float, half_life: float = 5.0) -> None:
         """Fold one run's Fitts slope (analysis/report.py: ms of flick time
@@ -237,9 +250,9 @@ class PlayerProfile:
         "What changed" ledger on the same screen correctly said no run had
         yet produced a usable measurement.
 
-        Legacy profiles predate bias_obs and are migrated at LOAD (see
-        `load`), so this can simply count measurements — no allowance, and no
-        way for the score to fall when one arrives.
+        Legacy profiles are handled at LOAD (see `load`), so this can simply
+        count measurements — no allowance, and no way for the score to fall
+        when one arrives.
         """
         baseline = min(self.run_count / float(self.BASELINE_RUNS), 1.0)
         observed = sum(1 for p in self.regions.values() if p.n >= self.REGION_OBS)
@@ -317,16 +330,36 @@ class PlayerProfile:
             regions = {k: RegionPosterior(**r)
                        for k, r in d.pop("regions", {}).items()}
             prof = cls(**d)
-            # MIGRATION: profiles written before `bias_obs` existed carry only
-            # the EWMA. Crediting them inside readiness() instead made the
-            # score go BACKWARDS the moment such a profile took its first real
-            # measurement — 100% "dialed in" falling to 87% "calibrating",
-            # because the legacy allowance stopped applying the instant
-            # bias_obs became 1. Stamping the credit here means there is one
-            # rule downstream (count the measurements) and the number only
-            # ever moves forward.
-            if prof.bias_obs == 0 and prof.ewma_bias:
-                prof.bias_obs = cls.BIAS_RUNS
+            # MIGRATION: a bias EWMA accumulated under a different flick floor
+            # was built from a different population of flicks. Below 2 degrees
+            # the overshoot ratio measures segmentation error rather than aim,
+            # and on the real library here those artefacts INVERTED the verdict
+            # (+0.041 left-weaker to -0.216 right-weaker). Carrying that value
+            # forward keeps writing the wrong strafe skew until the half-life
+            # washes it out, so it is dropped and re-earned.
+            #
+            # Re-earning costs one run, not a season. `replay` cannot rebuild
+            # it — it works from stats files, which carry no mouse trace — but
+            # the next live run does, and the higher floor does not starve the
+            # gate that decides whether a run yields a measurement at all:
+            # across the five real traces here, flick counts fall ~10% (127 ->
+            # 114, 139 -> 124) and all five still clear watcher.py's ">= 8
+            # flicks, >= 3 per side". The first measurement seeds the EWMA
+            # directly rather than blending into 0.0, so one run restores a
+            # usable value.
+            #
+            # This SUPERSEDES the `bias_obs` credit migration that used to sit
+            # here. That one granted a pre-bias_obs profile full BIAS_RUNS
+            # credit for its legacy EWMA — but a profile that predates bias_obs
+            # also predates this floor by definition, so the two rules
+            # contradicted: one said trust the legacy value completely, the
+            # other says it was measured by a method now known to invert. The
+            # floor rule wins on the merits, and it makes the credit rule
+            # unreachable rather than merely unused: every file that could have
+            # taken the credit is wiped one line later.
+            if prof.bias_floor_deg != MIN_FLICK_DEG:
+                prof.ewma_bias, prof.bias_obs = 0.0, 0
+                prof.bias_floor_deg = MIN_FLICK_DEG
             # NON-FINITE FIELDS reset to their defaults. json reads a bare NaN
             # token straight back, and a NaN `target_scale` or `movement`
             # reaches the Adaptability knob validator — which quite correctly

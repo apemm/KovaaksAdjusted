@@ -81,9 +81,13 @@ def _profile(scenario: str, accs: list[float], *, regions: int = 0,
     prof.history = [{"ts": ts, "accuracy": round(a, 4)} for a in accs]
     for i in range(regions):
         prof.regions[f"r{i // 5}c{i % 5}"] = RegionPosterior(mean=0.1, var=0.2, n=4)
-    if bias_obs:
-        prof.bias_obs = bias_obs
-        prof.ewma_bias = 0.2
+    # through observe_bias, not by hand: it is what stamps the flick floor the
+    # EWMA was accumulated under, and a profile without that stamp is wiped by
+    # the load-time migration. A helper that skips it builds a profile no run
+    # can produce. (Repeated identical samples land exactly on 0.2 — the first
+    # seeds directly, the rest blend toward a value they already hold.)
+    for _ in range(bias_obs):
+        prof.observe_bias(0.2)
     return prof
 
 

@@ -447,32 +447,34 @@ def test_readiness_bias_counts_measurements_not_runs():
     assert r2["stage"] == "dialed in"
 
 
-def test_readiness_bias_legacy_profiles_keep_their_credit(tmp_path):
-    """Profiles written before bias_obs existed carry only the EWMA. Losing
-    their credit would be a silent regression on every existing install.
+def test_readiness_bias_credit_survives_a_reload_and_never_falls(tmp_path):
+    """Readiness counts measurements, and the count must survive the disk
+    round trip that happens after every single run.
 
-    The credit is stamped by `load` — the path every real profile takes —
-    rather than granted inside readiness(). Doing it in readiness() made the
-    score go BACKWARDS the moment such a profile took its first real
-    measurement: the allowance stopped applying the instant bias_obs became
-    1, so 100% "dialed in" fell to 87% "calibrating".
+    Two ways this has gone wrong. Granting legacy credit inside readiness()
+    made the score go BACKWARDS the moment the profile took its first real
+    measurement — the allowance stopped applying the instant bias_obs became
+    1, so 100% "dialed in" fell to 87% "calibrating". And a load-time
+    migration that resets bias on a floor change has to leave profiles
+    already on the current floor completely alone, or every install loses its
+    evidence on every launch instead of once.
     """
-    import json
-
     d = tmp_path / "prof"
-    (d / "profiles").mkdir(parents=True)
-    legacy = {"scenario": "r", "run_count": 30, "ewma_bias": 0.4}
-    PlayerProfile.path_for("r", d).write_text(json.dumps(legacy))
+    prof = PlayerProfile(scenario="r")
+    prof.run_count = 30
+    for _ in range(PlayerProfile.BIAS_RUNS):
+        prof.observe_bias(0.4)
+    prof.save(d)
 
-    prof = PlayerProfile.load("r", d)
-    assert prof.bias_obs == PlayerProfile.BIAS_RUNS
-    assert prof.readiness(9)["bias"] == 1.0
+    back = PlayerProfile.load("r", d)
+    assert back.bias_obs == PlayerProfile.BIAS_RUNS
+    assert back.readiness(9)["bias"] == 1.0
 
-    # ...and it does not fall when a real measurement finally lands
-    before = prof.readiness(9)["score"]
-    prof.observe_bias(0.3)
-    assert prof.readiness(9)["bias"] == 1.0
-    assert prof.readiness(9)["score"] >= before
+    # ...and it does not fall when the next measurement lands
+    before = back.readiness(9)["score"]
+    back.observe_bias(0.3)
+    assert back.readiness(9)["bias"] == 1.0
+    assert back.readiness(9)["score"] >= before
 
 
 # ------------------------------------------------ v0.3.x hardening regressions
