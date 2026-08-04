@@ -231,8 +231,16 @@ _LID_LEVELS = 24        # lid alphas bucketed so one QPen serves hundreds
 # a single character row of its true position at every closure, and the whole
 # table can be prefetched inside two seconds of open-eye frames.
 _BLINK_STEPS = 32
+# Activation belongs here with the rest. This app's whole purpose is to sit
+# behind a game you are playing, and a window you alt-tabbed away from is
+# still `isVisible()` to Qt — so the ambient layer went on animating a
+# full-window parallax at 21Hz while the user was in Valorant. Measured on
+# this machine: 23% of a core at motion=full, 275 QLabel repaints a second
+# cascading off one backdrop tick.
 _VISIBILITY = frozenset((QEvent.Type.Show, QEvent.Type.Hide,
-                         QEvent.Type.WindowStateChange))
+                         QEvent.Type.WindowStateChange,
+                         QEvent.Type.WindowActivate,
+                         QEvent.Type.WindowDeactivate))
 
 
 def _seed(i: int, salt: float) -> float:
@@ -288,6 +296,15 @@ class _WindowEvents(QObject):
             bd = self._bd()
             if bd is not None:
                 try:
+                    if event.type() == QEvent.Type.WindowDeactivate:
+                        bd._active = False
+                    elif event.type() in (QEvent.Type.WindowActivate,
+                                          QEvent.Type.Show):
+                        # Show counts as coming to the front. Hiding a window
+                        # also emits Deactivate, so without this a hide/show
+                        # cycle left the flag stuck false and the backdrop
+                        # never came back.
+                        bd._active = True
                     bd._sync_timer()
                 except RuntimeError:
                     pass    # teardown order: the window's C++ side can
@@ -355,6 +372,13 @@ class Backdrop:
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_timeout)
+        # Assumed active until Qt says otherwise, rather than polled through
+        # isActiveWindow(): a window that has never been activated at all —
+        # every headless and offscreen context — reports False there, which
+        # would freeze the backdrop in exactly the places it is measured.
+        # The DEACTIVATION event is the reliable signal, and it is the one
+        # that actually matters: alt-tabbing to the game.
+        self._active = True
         self._events = _WindowEvents(self, window)
         window.installEventFilter(self._events)
         self._sync_timer()
@@ -367,7 +391,13 @@ class Backdrop:
         return self._s if self._s is not None else getattr(self._win, "s", None)
 
     def _sync_timer(self) -> None:
-        live = self._win.isVisible() and not self._win.isMinimized()
+        # ON SCREEN, IN FRONT, and asked for. `motion=off` used to leave this
+        # timer running at 30Hz with a no-op tick: cheaper than full, but
+        # "off" should mean the frames stop, not that they cost less.
+        live = (self._win.isVisible()
+                and not self._win.isMinimized()
+                and self._active
+                and motion.ambient(self._cfg()))
         if live and not self._timer.isActive():
             # Start the measurement WITH the timer, so even the first tick
             # measures a real gap. Deferring it to that first tick credited it

@@ -128,3 +128,46 @@ def test_motion_survives_a_settings_json_round_trip(tmp_path, monkeypatch):
     raw.pop("motion")
     (tmp_path / "old.json").write_text(json.dumps(raw), encoding="utf-8")
     assert Settings.load(tmp_path / "old.json").motion == motion.FULL
+
+
+def test_the_theme_wipe_is_the_one_animation_that_ignored_the_setting():
+    """`transition.ascii_wipe` had no reference to gui/motion at all — the
+    only animation in the app that ran at full length whatever the user had
+    asked for. Someone who set motion=off to stop things moving still got
+    720ms of churning glyphs across the whole window every time they touched
+    the theme picker.
+
+    `reduced` keeps purposeful reveals and a theme change is one, so only
+    `off` skips it.
+    """
+    import os
+    import sys
+
+    import pytest
+
+    pytest.importorskip("PySide6")
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from kovadapt.config import Settings
+    from kovadapt.gui import transition
+
+    qapp = QApplication.instance() or QApplication([])
+
+    def wave_count(level):
+        win = QWidget()
+        win.resize(400, 300)
+        win.show()
+        qapp.processEvents()
+        transition.ascii_wipe(win, Settings(motion=level, telemetry_enabled=False))
+        qapp.processEvents()
+        n = len([c for c in win.children()
+                 if type(c).__name__ == "_Wave"])
+        win.deleteLater()
+        qapp.processEvents()
+        return n
+
+    assert wave_count("full") == 1, "the wipe never ran at all"
+    assert wave_count("reduced") == 1, "a theme change is a purposeful reveal"
+    assert wave_count("off") == 0, "motion=off still animates the theme change"

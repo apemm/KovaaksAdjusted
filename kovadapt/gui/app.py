@@ -241,11 +241,11 @@ class MainWindow(QMainWindow):
         return w
 
     def _pick_mode(self, i: int) -> None:
-        transition.ascii_wipe(self)   # capture the old look, then restyle
+        transition.ascii_wipe(self, self.s)   # capture the old look, then restyle
         self.themes.set_mode(self.theme_pick.itemData(i))
 
     def _pick_accent(self, i: int) -> None:
-        transition.ascii_wipe(self)
+        transition.ascii_wipe(self, self.s)
         self.themes.set_accent(self.accent_pick.itemData(i))
 
     def _sync_hints_action(self) -> None:

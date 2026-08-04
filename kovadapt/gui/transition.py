@@ -15,7 +15,7 @@ from PySide6.QtCore import QEasingCurve, QRect, QRectF, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from . import theme
+from . import motion, theme
 
 _DURATION_MS = 720
 _CELL_W = 11          # px; glyph cells of the wave grid
@@ -103,10 +103,20 @@ class _Wave(QWidget):
                            Qt.AlignLeft | Qt.AlignTop, g)
 
 
-def ascii_wipe(window: QWidget) -> None:
+def ascii_wipe(window: QWidget, settings=None) -> None:
     """Capture the window's current look and sweep the new one in behind a
-    wave of glyphs. Call BEFORE restyling."""
+    wave of glyphs. Call BEFORE restyling.
+
+    Honours the motion setting, which this module ignored entirely: it is the
+    only animation in the app that ran at full length whatever the user had
+    asked for, so someone who set motion=off to stop things moving still got
+    720ms of churning glyphs across the whole window every time they touched
+    the theme picker. `reduced` keeps purposeful reveals, and a theme change
+    is one, so only `off` skips it.
+    """
     if not window.isVisible():
+        return
+    if motion.level(settings) == motion.OFF:
         return
     old = window.grab()
     old.setDevicePixelRatio(window.devicePixelRatioF())

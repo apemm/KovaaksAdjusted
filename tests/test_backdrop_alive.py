@@ -32,7 +32,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
-from PySide6.QtCore import QPointF  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF  # noqa: E402
 from PySide6.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
@@ -617,4 +617,48 @@ def test_backdrop_paints_over_a_window_with_live_state(qapp):
     bd.paint(p)
     p.end()
     assert canvas.toImage() != flat.toImage()
+    win.deleteLater()
+
+
+def test_the_backdrop_stops_while_you_are_in_the_game(qapp):
+    """This app exists to sit behind a game you are playing, and a window you
+    alt-tabbed away from is still `isVisible()` to Qt — so the ambient layer
+    went on animating a full-window parallax at 21Hz the whole time you were
+    in Valorant. Measured on this machine: 26% of a core focused, and the
+    same 26% backgrounded, with 275 QLabel repaints a second cascading off
+    one backdrop tick. Backgrounded now costs 2%.
+
+    Driven by the DEACTIVATION event rather than isActiveWindow(), which
+    reports False for a window that has never been activated at all — every
+    headless context — and would freeze the backdrop exactly where it is
+    measured.
+    """
+    win, bd = _backdrop()
+    win.show()
+    qapp.processEvents()
+    assert bd._timer.isActive()
+
+    qapp.sendEvent(win, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.processEvents()
+    assert not bd._timer.isActive(), (
+        "the backdrop keeps animating while the user is in another window")
+
+    qapp.sendEvent(win, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+    assert bd._timer.isActive(), "it never comes back when you tab in"
+    win.deleteLater()
+
+
+def test_motion_off_actually_stops_the_frames(qapp):
+    """`off` used to leave the timer running at 30Hz with a no-op tick —
+    cheaper than full, but "off" should mean the frames stop, not that they
+    cost less."""
+    from kovadapt.config import Settings
+
+    win = QWidget()
+    win.resize(800, 600)
+    bd = Backdrop(win, Settings(motion="off", telemetry_enabled=False))
+    win.show()
+    qapp.processEvents()
+    assert not bd._timer.isActive(), "motion=off still runs the ambient timer"
     win.deleteLater()
