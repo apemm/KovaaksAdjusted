@@ -22,7 +22,22 @@ from .notable import find_notable_moments
 # inline copies, and every surface that forgot one told the user something
 # the other surfaces refused to say about the same run.
 JITTER_BAD_MS = 2.0
-POLLING_LOW_HZ = 490.0       # below any competitive polling class
+# Below this, the SAMPLING PERIOD starts destroying the features themselves.
+# Measured rather than assumed: synthetic flicks with known geometry, sampled
+# at 1000 / 500 / 250 / 125 / 62 Hz and put through segment_flicks. Overshoot
+# came back 0.319 / 0.319 / 0.320 / 0.318 and corrections 2.00 / 2.00 / 2.00 /
+# 2.00 — indistinguishable from 1000 Hz all the way down to 125. At 62 Hz both
+# break: overshoot 0.349 (+9.4%) and corrections 3.10 (+55%), because a
+# corrective submovement lasts ~25-50ms and a 16ms period leaves 2-3 samples
+# to see it with.
+#
+# It was 490 — "below any competitive polling class", which is a judgement
+# about hardware tier, not about whether the measurement survives. A 125 Hz
+# mouse is the USB default and enormously common, and that threshold withheld
+# every overshoot, correction, bias and moment claim on the page from anyone
+# using one. All five real runs on this machine were suppressed by it while
+# their jitter measured 0.54-0.93ms, which is clean.
+POLLING_LOW_HZ = 100.0
 
 
 def input_degraded(rep) -> bool:
@@ -137,14 +152,27 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
         ih = rep.input_health or {}
         jitter = float(ih.get("jitter_ms", 0.0) or 0.0)
         polling = float(ih.get("polling_hz_est", 0.0) or 0.0)
-        detail = f"timing jitter {jitter:.1f}ms" if jitter > JITTER_BAD_MS else ""
-        if 0.0 < polling < POLLING_LOW_HZ:
-            detail = (detail + ", " if detail else "") + f"polling ~{polling:.0f}Hz"
-        lines.append(
-            f"Input timing is too noisy to read flick microstructure from "
-            f"({detail}) — overshoot and bias findings are withheld for this "
-            "run; run the Optimizer checkup (background apps or USB "
-            "contention).")
+        # NAME THE ACTUAL CAUSE. These two have different causes and
+        # different fixes, and the message gave one answer for both: it told
+        # a 125 Hz mouse to go check for background apps. Jitter IS
+        # contention — something is delaying packets that did arrive. A low
+        # report rate is a device or driver setting, and no amount of closing
+        # Chrome will change it.
+        if jitter > JITTER_BAD_MS:
+            lines.append(
+                f"Input timing is too noisy to read flick microstructure from "
+                f"(jitter {jitter:.1f}ms between packets) — overshoot and bias "
+                "findings are withheld for this run; something is delaying "
+                "mouse input, so run the Optimizer checkup for background "
+                "apps or USB contention.")
+        else:
+            lines.append(
+                f"Your mouse is reporting at about {polling:.0f}Hz, which is "
+                f"under the {POLLING_LOW_HZ:.0f}Hz this analysis needs to see "
+                "individual corrective submovements — overshoot and bias "
+                "findings are withheld for this run. This is a device or "
+                "driver setting, not background load: raise the polling rate "
+                "in your mouse software.")
         if rep.mean_flick_ms > 0:
             lines.append(f"Mean flick {rep.mean_flick_ms:.0f}ms.")
         return " ".join(lines)

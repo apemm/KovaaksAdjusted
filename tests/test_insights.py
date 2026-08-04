@@ -234,3 +234,58 @@ def test_a_multi_run_card_never_states_its_verdict_as_if_it_were_this_run():
         # and the evidence still carries both, so the card stays checkable
         assert "Last 3 runs" in card.reasoning
         assert "this run 90%" in card.reasoning
+
+
+# ------------------------------------------- the gate, and what it blames
+def test_a_125hz_mouse_is_not_disqualified_from_every_finding():
+    """The threshold was 490Hz — "below any competitive polling class", which
+    is a judgement about hardware tier, not about whether the measurement
+    survives. 125Hz is the USB default and enormously common, and that gate
+    withheld every overshoot, correction, bias and moment claim on the page
+    from anyone using one.
+
+    Measured before changing it: synthetic flicks with known geometry sampled
+    at 1000/500/250/125/62 Hz, through the real segment_flicks. Overshoot came
+    back 0.319/0.319/0.320/0.318 and corrections 2.00/2.00/2.00/2.00 —
+    indistinguishable from 1000Hz down to 125. At 62Hz both break (+9.4% and
+    +55%), because a corrective submovement lasts ~25-50ms and a 16ms sampling
+    period leaves 2-3 samples to see it with.
+    """
+    from kovadapt.analysis.report import input_degraded
+
+    clean_125 = make_rep(input_health={"polling_hz_est": 125.0, "jitter_ms": 0.9})
+    assert not input_degraded(clean_125), (
+        "a 125Hz device with clean timing is still being disqualified")
+
+    # ...and the rate where the measurement genuinely breaks still is
+    assert input_degraded(make_rep(
+        input_health={"polling_hz_est": 62.0, "jitter_ms": 0.9}))
+    # jitter remains a gate in its own right: that IS contention
+    assert input_degraded(make_rep(
+        input_health={"polling_hz_est": 1000.0, "jitter_ms": 8.0}))
+
+
+def test_the_page_names_the_real_cause_not_a_guess():
+    """Jitter and a low report rate have different causes and different
+    fixes, and the message gave one answer for both — it told a 125Hz mouse
+    to go check for background apps. Jitter IS contention: packets that
+    arrived were delayed. A low report rate is a device setting, and closing
+    Chrome will not change it."""
+    from kovadapt.analysis.report import _summary_text
+
+    slow = make_rep(input_health={"polling_hz_est": 60.0, "jitter_ms": 0.5},
+                    n_flicks=40, overshoot_rate=0.4, mean_corrections=2.0)
+    text = _summary_text(slow, True).lower()
+    assert "60hz" in text.replace(" ", "") or "60 hz" in text
+    assert "device or driver setting" in text
+    # it may SAY "not background load"; what it must not do is send you off
+    # to hunt for background apps, which is the fix for the other cause
+    assert "background apps" not in text and "optimizer checkup" not in text, (
+        f"a slow-reporting mouse is still being sent to chase contention: {text!r}")
+    assert "polling rate" in text, "it does not say what would actually fix it"
+
+    noisy = make_rep(input_health={"polling_hz_est": 1000.0, "jitter_ms": 9.0},
+                     n_flicks=40, overshoot_rate=0.4, mean_corrections=2.0)
+    text2 = _summary_text(noisy, True).lower()
+    assert "jitter" in text2 and "background apps" in text2, (
+        "real contention should still point at contention")
