@@ -4,4 +4,4 @@ Between-run adaptation loop:
     stats CSV -> parser -> player profile -> adaptation engine -> .sce generator
 """
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
