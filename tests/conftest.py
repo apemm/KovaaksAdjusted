@@ -69,3 +69,30 @@ def kovaaks_root() -> Path:
     if not (p / "stats").is_dir():
         pytest.skip("KovaaK's install not available")
     return p
+
+
+@pytest.fixture(autouse=True)
+def _drain_deferred_deletes():
+    """Flush Qt's DeferredDelete queue after every test.
+
+    `close()` only HIDES a window, so a MainWindow that a test closed stays
+    live — measured, 526 widgets leaked per window and never reclaimed. Six of
+    them across the smoke tests put ~3100 permanently-live widgets in the
+    QApplication, and `theme._apply` re-polishes EVERY live widget on every
+    call (superlinear, about n^1.2: 0.7ms at 0 widgets, 150ms at 850, 2069ms
+    at 6800). So the rendered theme tests were paying for windows that six
+    earlier tests had "closed", and 72% of the suite's wall clock was that
+    one effect rather than any work.
+
+    Explicitly NOT gc.collect(): measured at +118s for nothing, because the
+    windows are strongly held and the collector has nothing to reclaim. What
+    they need is the deleteLater() their tests now call, and a loop turn for
+    Qt to act on it.
+    """
+    yield
+    try:
+        from PySide6.QtCore import QCoreApplication, QEvent
+    except Exception:
+        return
+    if QCoreApplication.instance() is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

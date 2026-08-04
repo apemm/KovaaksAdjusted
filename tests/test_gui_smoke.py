@@ -82,6 +82,7 @@ def test_main_window_constructs_and_closes(qapp, settings):
     assert [b.text() for b in win.nav.links()] == expected
     assert win.dashboard.worker is None
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_editorial_column_caps_content_width(qapp, settings):
@@ -110,6 +111,7 @@ def test_editorial_column_caps_content_width(qapp, settings):
         assert left >= 20 and right >= 20                 # backdrop rails
         assert abs(left - right) <= 60                    # centered
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_sections_use_their_content_measure(qapp, settings):
@@ -128,6 +130,7 @@ def test_sections_use_their_content_measure(qapp, settings):
         assert widths["How it learns"] == COLUMN_WIDTHS["prose"]
         assert widths["How it learns"] < widths["Analysis"]
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_shell_sections_lay_out_and_nav_scrolls(qapp, settings):
@@ -154,6 +157,7 @@ def test_shell_sections_lay_out_and_nav_scrolls(qapp, settings):
     assert bar.value() > 0
     assert win.space.current_index() == 3
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_browser_play_scrolls_home_and_reaches_dashboard(qapp, settings):
@@ -176,6 +180,7 @@ def test_browser_play_scrolls_home_and_reaches_dashboard(qapp, settings):
     QTest.qWait(600)                                # smooth-scroll home plays out
     assert win.space.current_index() == 0
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_report_badges_analysis_nav_link(qapp, settings):
@@ -201,6 +206,7 @@ def test_report_badges_analysis_nav_link(qapp, settings):
     assert win.space.current_index() == idx
     assert win.nav.links()[idx].text() == "Analysis"
     win.close()
+    win.deleteLater()   # close() only hides it
 
 
 def test_theme_switch_relayers_the_app(qapp, settings):

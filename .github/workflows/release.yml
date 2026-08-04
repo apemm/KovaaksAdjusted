@@ -29,9 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 3.14, because that is the ONLY interpreter this app has ever been
+      # built and verified on. A PyInstaller one-dir bundles the interpreter
+      # it was built with, so this line decides what every user runs — and it
+      # said 3.12 while every local build, including the one that shipped as
+      # v0.5.0, was 3.14. CI would have published a bundle nobody had ever
+      # started. `requires-python = ">=3.10"` is about installing from source
+      # and is a separate question from what the exe carries.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       # Deliberately NOT packaging/build.ps1: that script runs
       # `pip install ".[gui]"`, which is right on a fresh runner but replaces
