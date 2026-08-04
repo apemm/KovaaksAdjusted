@@ -131,7 +131,19 @@ def build_palette(dark: bool, accent: str = "indigo",
     fg_dim = color.fit_contrast(0.62 if is_dark else 0.52, base_c * 0.7, base_h,
                                 against=bg, target=DIM_CONTRAST,
                                 prefer_lighter=is_dark)
-    border_control = color.fit_contrast(0.50, base_c, base_h, against=bg,
+    # Seeded from the PAGE, not from a fixed L=0.50. fit_contrast returns its
+    # seed unmodified when that already clears the target — correct for an
+    # accent, where being dragged further from the page than the floor
+    # requires just makes it duller for nothing. Chrome is the opposite case:
+    # what it wants is the SAME weight on every theme. At L=0.50 the seed
+    # already cleared 3:1 on cream and came back untouched at 5.46:1, while
+    # dark had to walk out to 3.00 — so the identical token drew a hairline on
+    # one theme and a hard line on another, and the light scrollbar handle
+    # ended up the darkest uniform object on the page.
+    #
+    # Starting at the page's own lightness always fails, so the bisection
+    # always runs, and every theme lands on the floor: 3.01:1 across all four.
+    border_control = color.fit_contrast(base_l, base_c, base_h, against=bg,
                                         target=CONTROL_CONTRAST,
                                         prefer_lighter=is_dark)
 
@@ -683,9 +695,16 @@ QSlider::sub-page:horizontal {{ background: {p.accent}; border-radius: 2px; }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {p.border_control}; border-radius: 5px; min-height: 24px; }}
-QScrollBar::handle:vertical:hover {{ background: {p.fg_dim}; }}
+/* accent, not fg_dim: a hover has to be LOUDER than the rest state, and on
+   the cream theme fg_dim measures 4.98:1 against the page while the handle's
+   own border_control measures 5.46 — so hovering made the handle FAINTER, by
+   a margin too small to read as anything but a rendering glitch. The accent
+   is louder on every theme and is already the app's affordance colour. */
+QScrollBar::handle:vertical:hover {{ background: {p.accent}; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: {p.border_control}; border-radius: 5px; min-width: 24px; }}
+/* the horizontal handle had NO hover state at all, on any theme */
+QScrollBar::handle:horizontal:hover {{ background: {p.accent}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 

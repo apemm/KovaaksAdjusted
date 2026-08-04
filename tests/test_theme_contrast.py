@@ -479,3 +479,49 @@ def test_a_disabled_control_looks_disabled(name, kw):
             app.processEvents()
     finally:
         app.setStyleSheet(previous)
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_a_scrollbar_hover_is_louder_than_its_rest_state(name, kw):
+    """The handle rests in `border_control` and hovered in `fg_dim` — and on
+    the cream theme fg_dim measures 4.98:1 against the page while
+    border_control measures 5.46, so hovering made the handle FAINTER by a
+    margin too small to read as anything but a glitch. The dark themes
+    happened to brighten, which is why it survived.
+
+    The horizontal handle had no hover rule at all, on any theme.
+    """
+    import re
+
+    pal = build_palette(accent="indigo", **kw)
+    sheet = build_qss(pal)
+    for axis in ("vertical", "horizontal"):
+        rule = re.search(
+            r"QScrollBar::handle:%s:hover\s*\{([^}]*)\}" % axis, sheet)
+        assert rule, f"{name}: no hover state for the {axis} scrollbar handle"
+        assert pal.accent in rule.group(1), (
+            f"{name}: the {axis} handle's hover is not the accent")
+    rest = color.contrast_ratio(pal.border_control, pal.bg)
+    hover = color.contrast_ratio(pal.accent, pal.bg)
+    assert hover > rest, (
+        f"{name}: hover {hover:.2f}:1 is quieter than rest {rest:.2f}:1")
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+@pytest.mark.parametrize("accent", ["indigo", "mint", "rose"])
+def test_control_chrome_weighs_the_same_on_every_theme(name, kw, accent):
+    """`border_control` was seeded at a fixed L=0.50 and `fit_contrast`
+    returns its seed untouched when that already clears the target — right
+    for an accent, wrong for chrome. On cream the seed cleared 3:1 on its own
+    and came back at 5.46:1 while dark walked out to 3.00, so one token drew a
+    hairline on one theme and a hard line on another; the light scrollbar
+    handle was the darkest uniform object on the page.
+
+    Seeded from the page it always fails first, so the bisection always runs
+    and every theme lands on the floor.
+    """
+    pal = build_palette(accent=accent, **kw)
+    ratio = color.contrast_ratio(pal.border_control, pal.bg)
+    assert abs(ratio - CONTROL_CONTRAST) < 0.25, (
+        f"{name}: control chrome is {ratio:.2f}:1 against a {CONTROL_CONTRAST} "
+        "floor — it is not being fitted, only checked")
