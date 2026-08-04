@@ -662,3 +662,33 @@ def test_motion_off_actually_stops_the_frames(qapp):
     qapp.processEvents()
     assert not bd._timer.isActive(), "motion=off still runs the ambient timer"
     win.deleteLater()
+
+
+def test_changing_the_motion_setting_takes_effect_immediately(qapp):
+    """`_sync_timer` reads motion.ambient(), but only ran on show / hide /
+    activation — so a settings change did nothing until the next alt-tab.
+    `config_view.settings_changed` was declared AND emitted with zero
+    connected receivers.
+
+    Turning motion off left a 30Hz timer running; turning it on left the
+    backdrop frozen, which is the worse direction because it looks broken
+    rather than merely costly.
+    """
+    from kovadapt.config import Settings
+
+    s = Settings(motion="full", telemetry_enabled=False)
+    win = QWidget()
+    win.resize(800, 600)
+    bd = Backdrop(win, s)
+    win.show()
+    qapp.processEvents()
+    assert bd._timer.isActive()
+
+    s.motion = "off"
+    bd.motion_changed()
+    assert not bd._timer.isActive(), "turning motion off left the timer running"
+
+    s.motion = "full"
+    bd.motion_changed()
+    assert bd._timer.isActive(), "turning motion back on left the backdrop frozen"
+    win.deleteLater()

@@ -90,10 +90,12 @@ def generate_insights(
             "dx-input-health", "health", "warning", "Input health is degrading the data",
             f"Timing jitter {jitter:.1f} ms"
             + (f", estimated polling {polling:.0f} Hz" if polling else "")
-            + f" (kovadapt's cutoffs — jitter > {_JITTER_BAD_MS:.0f} ms or polling "
-              "below the competitive class — are editorial calibration; no primary "
-              "source defines numeric limits). Flick-microstructure diagnoses for "
-              "this run are suppressed rather than reported on noisy data."))
+            + f" (the cutoffs are jitter > {_JITTER_BAD_MS:.0f} ms, or a report "
+              f"rate under {_POLLING_LOW_HZ:.0f} Hz — below that a corrective "
+              "submovement lasts too few samples to measure, which was tested "
+              "against synthetic flicks rather than assumed. No primary source "
+              "defines numeric limits). Flick-microstructure diagnoses for this "
+              "run are suppressed rather than reported on noisy data."))
 
     # ---- accuracy vs the archetype band ----------------------------------
     lo, hi = eff.target_accuracy_low, eff.target_accuracy_high

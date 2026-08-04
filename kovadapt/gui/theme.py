@@ -670,7 +670,6 @@ QCheckBox::indicator:checked:disabled {{
 }}
 QSlider::handle:horizontal:disabled {{ background: {p.border_control}; }}
 QSlider::sub-page:horizontal:disabled {{ background: {p.border_control}; }}
-QLabel:disabled {{ color: {p.fg_dim}; }}
 
 /* Transparent, all three, for one reason: `QMainWindow, QDialog, QWidget`
    above sets the PAGE colour, and a Qt type selector matches subclasses — so
@@ -688,6 +687,13 @@ QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QLabel[dim="true"] {{ color: {p.fg_dim}; }}
 QLabel[headline="true"] {{ font-size: 17px; font-weight: 600; }}
 QLabel[stat="true"] {{ color: {p.accent}; font-weight: 600; }}
+/* AFTER the [attr] rules, not before. An attribute selector and a
+   pseudo-state carry equal CSS2 specificity, so whichever is declared later
+   wins — declared first, this lost to QLabel[stat="true"] and a disabled
+   stat label kept its full accent, measured identical hex on every theme.
+   The same trap that made the primary button have no pressed state. */
+QLabel:disabled, QLabel[dim="true"]:disabled, QLabel[stat="true"]:disabled,
+QLabel[headline="true"]:disabled {{ color: {p.fg_dim}; }}
 
 /* Tracks, handles and chunks are CONTROLS, not rules: drawn in the hairline
    `border` role they sat at ~1.2:1 and effectively vanished. */

@@ -177,7 +177,18 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
         # contention — something is delaying packets that did arrive. A low
         # report rate is a device or driver setting, and no amount of closing
         # Chrome will change it.
-        if jitter > JITTER_BAD_MS:
+        # BOTH, when both are wrong. Branching on jitter alone meant a device
+        # that was slow AND contended got told only about the contention, and
+        # the user fixed one thing and wondered why nothing changed.
+        if jitter > JITTER_BAD_MS and 0.0 < polling < POLLING_LOW_HZ:
+            lines.append(
+                f"Two things are stopping flick microstructure being read this "
+                f"run: your mouse reports at about {polling:.0f}Hz, under the "
+                f"{POLLING_LOW_HZ:.0f}Hz needed to see corrective submovements, "
+                f"and packets are arriving {jitter:.1f}ms apart when they do. "
+                "The first is a device or driver setting; the second is "
+                "something on the system delaying input. Both need fixing.")
+        elif jitter > JITTER_BAD_MS:
             lines.append(
                 f"Input timing is too noisy to read flick microstructure from "
                 f"(jitter {jitter:.1f}ms between packets) — overshoot and bias "

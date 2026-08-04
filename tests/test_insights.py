@@ -289,3 +289,18 @@ def test_the_page_names_the_real_cause_not_a_guess():
     text2 = _summary_text(noisy, True).lower()
     assert "jitter" in text2 and "background apps" in text2, (
         "real contention should still point at contention")
+
+
+def test_when_both_causes_are_wrong_the_page_names_both():
+    """Branching on jitter alone meant a device that was slow AND contended
+    got told only about the contention — so you fix one thing and wonder why
+    nothing changed. They have different fixes; both have to be said."""
+    from kovadapt.analysis.report import _summary_text
+
+    both = make_rep(input_health={"polling_hz_est": 60.0, "jitter_ms": 9.0},
+                    n_flicks=40, overshoot_rate=0.4, mean_corrections=2.0)
+    text = _summary_text(both, True).lower()
+    assert "60hz" in text.replace(" ", "") or "60 hz" in text, text
+    assert "9.0ms" in text.replace(" ", "") or "jitter" in text, text
+    assert "device or driver setting" in text
+    assert "delaying input" in text

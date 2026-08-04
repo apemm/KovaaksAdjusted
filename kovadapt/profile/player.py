@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -327,6 +327,23 @@ class PlayerProfile:
             # ever moves forward.
             if prof.bias_obs == 0 and prof.ewma_bias:
                 prof.bias_obs = cls.BIAS_RUNS
+            # NON-FINITE FIELDS reset to their defaults. json reads a bare NaN
+            # token straight back, and a NaN `target_scale` or `movement`
+            # reaches the Adaptability knob validator — which quite correctly
+            # refuses to plot a value outside its own rail, raising from
+            # inside MainWindow.__init__ where nothing catches it. So the app
+            # would not open, and it never healed: the EWMA update keeps a NaN
+            # NaN forever, so no amount of clean runs recovers it.
+            #
+            # The same reasoning as the quarantine below: losing one field's
+            # learning is recoverable, losing the app is not. Reset rather
+            # than quarantine, because a single poisoned float is not a reason
+            # to discard a whole history.
+            spoiled = [f.name for f in fields(cls)
+                       if isinstance(getattr(prof, f.name, None), float)
+                       and not math.isfinite(getattr(prof, f.name))]
+            for name in spoiled:
+                setattr(prof, name, getattr(cls(scenario=scenario), name))
         except (ValueError, TypeError, AttributeError, KeyError, OSError):
             # A corrupt profile must never brick the app. `Settings.load` has
             # always quarantined and booted on defaults; this did not, so one

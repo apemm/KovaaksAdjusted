@@ -162,6 +162,13 @@ class MainWindow(QMainWindow):
         # motion choice, and the backdrop never leaves its deterministic loop.
         viz.use_settings(settings)
         self.backdrop = Backdrop(self, settings)
+        # ConfigView mutates this same Settings object in place, so the values
+        # are already current — what was missing is anything TELLING the
+        # backdrop to look again. The signal was declared and emitted with no
+        # receivers at all, so the motion setting did not take effect until
+        # the next alt-tab.
+        self.config.settings_changed.connect(
+            lambda _s: self.backdrop.motion_changed())
 
         # Ctrl+1..N jump straight to a section (Ctrl+6 = How it learns)
         for i in range(self.space.count()):

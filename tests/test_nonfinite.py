@@ -158,3 +158,47 @@ def test_a_profile_carrying_a_nan_still_opens_the_app(tmp_path, monkeypatch):
     from kovadapt.gui import viz
     assert viz.finite(accs) == [], (
         "a poisoned history reaches the chart as drawable data")
+
+
+def test_a_profile_with_a_nan_knob_still_opens_the_app(tmp_path, monkeypatch):
+    """The commit that fixed the NaN crash claimed the app could no longer be
+    made un-openable, and left this: a profile carrying a non-finite
+    `target_scale` or `movement` reaches the Adaptability knob validator,
+    which quite correctly refuses to plot a value outside its own rail — and
+    raises from inside MainWindow.__init__ where nothing catches it.
+
+    It never healed either: the EWMA update keeps a NaN NaN forever, so no
+    number of clean runs recovers it. Subprocess, because the failure is the
+    app not starting.
+    """
+    pytest.importorskip("PySide6")
+    import json as _json
+    import textwrap
+
+    state = tmp_path / "state"
+    (state / "profiles").mkdir(parents=True)
+    prof = {"scenario": "X [Adaptive]", "run_count": 9,
+            "target_scale": float("nan"), "movement": float("inf")}
+    for name in ("X [Adaptive].json", "X_Adaptive_.json"):
+        (state / "profiles" / name).write_text(_json.dumps(prof), encoding="utf-8")
+
+    probe = tmp_path / "probe.py"
+    probe.write_text(textwrap.dedent(
+        """
+        import math, sys
+        sys.path.insert(0, {repo!r})
+        from kovadapt.profile.player import PlayerProfile
+        from pathlib import Path
+        p = PlayerProfile.load("X [Adaptive]", Path({state!r}))
+        assert math.isfinite(p.target_scale), p.target_scale
+        assert math.isfinite(p.movement), p.movement
+        print("SURVIVED", p.target_scale, p.movement)
+        """
+    ).format(repo=str(REPO), state=str(state)), encoding="utf-8")
+
+    done = subprocess.run([sys.executable, str(probe)], capture_output=True,
+                          text=True, timeout=120)
+    assert done.returncode == 0, (
+        "a NaN knob still breaks the load path: " + done.stderr[-400:])
+    assert "SURVIVED" in done.stdout
+

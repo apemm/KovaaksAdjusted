@@ -494,3 +494,38 @@ def test_filtering_the_selection_off_screen_disarms_the_actions(qapp, settings):
     assert b.selected()
     assert b.play_btn.isEnabled()
     b.deleteLater()
+
+
+def test_the_motion_setting_reaches_the_backdrop_through_the_signal(qapp, settings):
+    """`config_view.settings_changed` was declared AND emitted with zero
+    connected receivers, so changing motion in Settings did nothing until the
+    next alt-tab — and turning it ON left the backdrop frozen, which looks
+    broken rather than merely costly.
+
+    Driven through the SIGNAL, not by calling the backdrop directly: the
+    defect was the missing connection, and a test that calls the slot itself
+    cannot see it.
+    """
+    from kovadapt.gui.app import MainWindow
+    from kovadapt.gui.theme import ThemeManager
+
+    settings.motion = "full"
+    themes = ThemeManager(qapp, settings)
+    win = MainWindow(settings, themes)
+    win.show()
+    qapp.processEvents()
+    assert win.backdrop._timer.isActive()
+
+    settings.motion = "off"
+    win.config.settings_changed.emit(settings)
+    qapp.processEvents()
+    assert not win.backdrop._timer.isActive(), (
+        "changing motion in Settings did not reach the backdrop")
+
+    settings.motion = "full"
+    win.config.settings_changed.emit(settings)
+    qapp.processEvents()
+    assert win.backdrop._timer.isActive(), (
+        "turning motion back on left the backdrop frozen")
+    win.close()
+    win.deleteLater()

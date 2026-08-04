@@ -557,3 +557,26 @@ def test_no_disabled_state_is_painted_in_the_invisible_token(name, kw):
     assert not offenders, (
         f"{name}: disabled states painted in the invisible `border` token:\n  "
         + "\n  ".join(offenders))
+
+
+@pytest.mark.parametrize("name,kw", MODES)
+def test_a_disabled_label_is_dimmed_whatever_role_it_carries(name, kw):
+    """An attribute selector and a pseudo-state carry EQUAL CSS2 specificity,
+    so whichever is declared later wins. `QLabel:disabled` was declared before
+    `QLabel[stat="true"]`, so a disabled stat label kept its full accent —
+    measured identical hex on every theme. Exactly the trap that left the
+    primary button with no pressed state, in the same file that documents it.
+    """
+    import re
+
+    pal = build_palette(accent="indigo", **kw)
+    sheet = build_qss(pal)
+    disabled = [m.start() for m in re.finditer(r"QLabel[^\n{]*:disabled[^\n{]*\{", sheet)]
+    assert disabled, f"{name}: no disabled rule for QLabel at all"
+    for role in ("stat", "dim", "headline"):
+        m = re.search(r'QLabel\[%s="true"\]\s*\{' % role, sheet)
+        if not m:
+            continue
+        assert max(disabled) > m.start(), (
+            f"{name}: QLabel:disabled is declared before QLabel[{role}=\"true\"], "
+            "so a disabled label keeps that role's colour")

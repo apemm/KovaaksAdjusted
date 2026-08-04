@@ -390,6 +390,17 @@ class Backdrop:
         its owner's setting rather than a global reached for."""
         return self._s if self._s is not None else getattr(self._win, "s", None)
 
+    def motion_changed(self) -> None:
+        """Re-evaluate the timer after the motion setting moved.
+
+        `_sync_timer` reads `motion.ambient()` — but it only ran on
+        show/hide/activation, so a settings change did nothing until the next
+        alt-tab. Turning motion OFF left a 30Hz timer running; turning it ON
+        left the backdrop frozen, which is the worse direction because it
+        looks broken rather than merely costly.
+        """
+        self._sync_timer()
+
     def _sync_timer(self) -> None:
         # ON SCREEN, IN FRONT, and asked for. `motion=off` used to leave this
         # timer running at 30Hz with a no-op tick: cheaper than full, but

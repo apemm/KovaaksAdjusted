@@ -954,9 +954,11 @@ DIAGNOSTICS: dict[str, dict] = {
         ),
         "interpretation": (
             "Device/system noise, not player skill — and it degrades every telemetry inference "
-            "downstream. Standard competitive setups run 1000 Hz+ polling (pro settings pages "
-            "uniformly list 1000 Hz+). No primary community source defines numeric jitter cutoffs; "
-            "kovadapt's thresholds are editorial."
+            "downstream. Competitive setups commonly run 1000 Hz+ polling, but that is a norm, "
+            "not a measurement floor: kovadapt suppresses on the rate at which its own analysis "
+            "stops working, measured against synthetic flicks of known geometry (overshoot and "
+            "correction counts recover unchanged down to 125 Hz and break by 9-55% at 62 Hz). "
+            "No primary community source defines numeric jitter cutoffs; that one is editorial."
         ),
         "prescription": (
             "Treat as a hardware/system fix, not a training item: check polling rate "
