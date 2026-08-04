@@ -174,7 +174,13 @@ def test_watchdog_applies_once_per_pid(monkeypatch):
     wd.start()
     import time
 
-    deadline = time.time() + 2.0
+    # 10s, not 2. The loop exits the moment the second apply lands, so a
+    # healthy run still finishes in ~70ms and the ceiling costs nothing —
+    # but this waits on a background thread polling every 10ms, and in a full
+    # suite run competing with Qt widget teardown that thread gets starved
+    # often enough to miss a 2s wall-clock deadline. Observed once in four
+    # full runs. A deadline that fails under load is testing the machine.
+    deadline = time.time() + 10.0
     while len(applied) < 2 and time.time() < deadline:
         time.sleep(0.01)
     wd.stop()
