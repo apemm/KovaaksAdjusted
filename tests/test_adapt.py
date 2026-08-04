@@ -539,3 +539,102 @@ def test_a_named_archetype_still_beats_no_evidence():
     assert (prof.archetype, prof.archetype_source) == ("tracking", "name")
     assert stamp_archetype(prof, "Close Strafes Invincible") is None
     assert prof.archetype == "tracking"
+
+
+def test_the_switching_keyword_could_not_match_the_naming_convention():
+    """`" ts "` was space-delimited on both sides. The community writes target
+    switching as a SUFFIX — waldoTS, beanTS, FloatTS, devTS — or the Voltaic
+    numeric wall form, 1w2ts / 1w3ts. On the real 95-scenario library that
+    keyword matched exactly none of the 16 scenarios carrying the convention.
+
+    Nine landed on `clicking` and were scored against an 0.85-0.95 accuracy
+    band instead of switching's 0.65-0.85, so the size controller shrank
+    targets every run chasing a number a switching task does not produce.
+
+    The trap in fixing it: a case-insensitive `ts` word match also catches
+    "6targets", "2targets" and "4 Targets", which would have relabelled
+    `1wall 6targets small [Adaptive]` — the main adaptive scenario on this
+    machine — as target-switching. Case is what separates them, and
+    lowercasing the name first is what threw it away.
+    """
+    from kovadapt.adapt.archetype import classify_archetype
+
+    for name in ("waldoTS Novice", "beanTS", "beanTS Larger", "devTS Goated",
+                 "FloatTS Angelic Easy", "1w2ts Pasu Perfected",
+                 "1w3ts reload Larger", "psalm TS", "Voltaic TS Hard"):
+        assert classify_archetype(name) == ("switching", "name"), name
+
+    # ...and every one of these is NOT switching, however much "ts" they carry
+    for name in ("1wall 6targets small [Adaptive]", "Wide Wall 4 Targets Small",
+                 "1wall 2targets small - valorant", "6 targets TE",
+                 "TARGETS ONLY", "Ground Plaza Sixshot"):
+        arch, _ = classify_archetype(name)
+        assert arch != "switching", name
+
+
+def test_stats_may_not_overturn_a_switching_stamp():
+    """The stats heuristic can only ever answer tracking or clicking, so its
+    disagreement with `switching` is the heuristic reporting from outside its
+    own range — not evidence.
+
+    Eight scenarios here prove it: domiSwitch, voxTargetSwitch and
+    tamTargetSwitch read 30-216 shots per kill, because you TRACK a target and
+    then switch to the next. The name is the better authority, and no stats
+    signature could ever say otherwise.
+    """
+    from datetime import datetime
+
+    from kovadapt.adapt.archetype import classify_archetype
+    from kovadapt.stats.models import Run
+
+    # 167 shots per kill — far past the tracking threshold, and decisively so
+    trackingish = Run(scenario="domiSwitch Easy",
+                      started=datetime(2026, 8, 3, 10, 0),
+                      summary={"Kills:": "30", "Hit Count:": "4200",
+                               "Miss Count:": "819", "Score:": "900"})
+    assert classify_archetype("domiSwitch Easy", trackingish) == ("switching", "name")
+    assert classify_archetype("waldoTS Novice", trackingish) == ("switching", "name")
+
+    # a click-based switching scenario is still switching, from the other side
+    clicky = Run(scenario="voxTargetSwitch Click",
+                 started=datetime(2026, 8, 3, 10, 0),
+                 summary={"Kills:": "60", "Hit Count:": "62",
+                          "Miss Count:": "22", "Score:": "800"})
+    assert classify_archetype("voxTargetSwitch Click", clicky) == ("switching", "name")
+
+
+def test_decisive_stats_overturn_a_name_keyword_but_a_marginal_run_does_not():
+    """`Controlsphere Click Easy` takes "tracking" from the `controlsphere`
+    keyword and reads 1.8 shots per kill against a threshold of 20. No reading
+    of 1.8 is tracking, and the name is simply wrong about that scenario.
+
+    But a name keyword is usually right, so only DECISIVE evidence may
+    overturn it. Measured across the 55 real scenarios that record kills: 39
+    sit below 10 shots per kill, 6 above 40, and every one of the 10 in
+    between is a TS or Switch scenario — a genuine hybrid. A factor-of-two
+    band therefore fires on the one real error and on none of the hybrids.
+    """
+    from datetime import datetime
+
+    from kovadapt.adapt.archetype import classify_archetype
+    from kovadapt.stats.models import Run
+
+    def run(kills, hits, misses, name="Controlsphere Click Easy"):
+        return Run(scenario=name, started=datetime(2026, 8, 3, 10, 0),
+                   summary={"Kills:": str(kills), "Hit Count:": str(hits),
+                            "Miss Count:": str(misses), "Score:": "800"})
+
+    name = "Controlsphere Click Easy"
+    assert classify_archetype(name) == ("tracking", "name")     # name alone
+    # 42 kills, 76 shots -> 1.8 per kill. Decisive, 11x clear of the threshold.
+    assert classify_archetype(name, run(42, 60, 16)) == ("clicking", "stats")
+
+    # 15 per kill: under the threshold, so it reads clicking — but not by the
+    # factor of two the override needs, so the keyword holds.
+    assert classify_archetype(name, run(10, 100, 50)) == ("tracking", "name")
+    # 30 per kill: over the threshold and agrees with the name anyway
+    assert classify_archetype(name, run(10, 200, 100)) == ("tracking", "name")
+
+    # an unnamed scenario still takes the stats answer outright, decisive or not
+    assert classify_archetype("unnamed", run(10, 100, 50, "unnamed")) == \
+        ("clicking", "stats")

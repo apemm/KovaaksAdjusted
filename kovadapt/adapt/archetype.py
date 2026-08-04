@@ -9,13 +9,15 @@ so one detection sticks for the scenario's lifetime.
 
 from __future__ import annotations
 
+import re
+
 from ..stats.models import Run
 
 # Lowercase substrings of scenario names, checked in order. Switching is
 # checked before tracking because hybrid names ("tracking switch") are
 # switching-style tasks.
 _NAME_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("switching", ("switch", " ts ", "psalmts", "voltaic ts", "pokeball",
+    ("switching", ("switch", "psalmts", "pokeball",
                    "bounce", "multi", "reflex flick")),
     ("tracking", ("track", "smoothbot", "controlsphere", "air ", " air",
                   "thin gauntlet", "ground plaza", "fuglaa", "orbit",
@@ -49,6 +51,68 @@ _TRACKING_MIN_HITS = 30
 EVIDENCE = ("default", "name", "stats")
 
 
+#: The community writes target-switching as a TS token, and it is almost
+#: always a SUFFIX — waldoTS, beanTS, FloatTS, devTS — or the Voltaic numeric
+#: wall form, 1w2ts / 1w3ts. The keyword was `" ts "`, space-delimited on both
+#: sides, which matched **none** of the 16 TS-named scenarios in the real
+#: 95-scenario library here. Nine of them landed on `clicking` and were scored
+#: against an 0.85-0.95 accuracy band instead of switching's 0.65-0.85, so the
+#: size controller shrank targets every run chasing a number a switching task
+#: does not produce. `" ts "` and `"voltaic ts"` are gone from the keyword list
+#: below: `_TS_WORD` subsumes both. `"psalmts"` stays — it is an all-lowercase
+#: spelling no pattern here can see.
+#:
+#: CASE IS THE SIGNAL, and lowercasing the name before matching is exactly what
+#: threw it away. `waldoTS` carries a capital TS; `targets` does not. A naive
+#: case-insensitive word-bounded `ts` matches "6targets" and "4 Targets" —
+#: which would have relabelled `1wall 6targets small [Adaptive]`, the main
+#: adaptive scenario on this machine, as target-switching. So the suffix
+#: pattern is case-SENSITIVE and requires a lowercase letter or digit in front,
+#: which "TARGETS" cannot satisfy either.
+_TS_SUFFIX = re.compile(r"[a-z0-9]TS\b")            # waldoTS, beanTS, devTS
+_TS_NUMERIC = re.compile(r"\b\d+w\d+ts\b", re.I)    # 1w2ts, 1w3ts
+_TS_WORD = re.compile(r"\bts\b", re.I)              # "psalm TS", "voltaic ts"
+
+#: How far a run's shots-per-kill must sit from `_TRACKING_SHOTS_PER_KILL`
+#: before it is allowed to overturn a name-derived stamp. A name keyword is a
+#: claim about authoring convention and is usually right, so a marginal run
+#: must not flip it — but `Controlsphere Click Easy` takes "tracking" from the
+#: `controlsphere` keyword while its own stats read **1.8** shots per kill
+#: against a threshold of 20, and no reading of 1.8 is tracking.
+#:
+#: Measured across the 55 real scenarios that record kills: 39 sit below 10,
+#: 6 sit above 40, and every one of the 10 in between is a TS or Switch
+#: scenario — a genuine hybrid where the name is the better authority. So a
+#: factor-of-two band fires on the one real error and on none of the hybrids.
+_DECISIVE_FACTOR = 2.0
+
+
+def _is_switching_name(scenario_name: str) -> bool:
+    return bool(_TS_SUFFIX.search(scenario_name)
+                or _TS_NUMERIC.search(scenario_name)
+                or _TS_WORD.search(scenario_name))
+
+
+def _stats_archetype(run: Run) -> tuple[str, bool]:
+    """(archetype, is the evidence decisive enough to overturn a name?).
+
+    Note this can only ever answer tracking or clicking. Switching has no
+    reliable stats signature — a clicking run and a switching run look alike
+    — so this function's disagreement with a `switching` stamp is not
+    evidence against it, and the caller must not treat it as such.
+    """
+    if run.kill_count > 0:
+        ratio = (run.hit_count + run.miss_count) / run.kill_count
+        if ratio >= _TRACKING_SHOTS_PER_KILL:
+            return "tracking", ratio >= _TRACKING_SHOTS_PER_KILL * _DECISIVE_FACTOR
+        return "clicking", ratio <= _TRACKING_SHOTS_PER_KILL / _DECISIVE_FACTOR
+    # Invincible targets: sustained hits and nothing ever dies. Structural,
+    # not marginal — a clicking hit kills, so this cannot be a clicking run.
+    if run.hit_count >= _TRACKING_MIN_HITS:
+        return "tracking", True
+    return "clicking", False
+
+
 def detect_archetype(scenario_name: str, run: Run | None = None) -> str:
     """Best-effort archetype for a scenario. Never raises; defaults to
     "clicking" when the evidence is thin."""
@@ -73,21 +137,43 @@ def classify_archetype(scenario_name: str,
     Every one of them would have been scored against an accuracy band its
     invincible targets can never reach, forever, from one pre-run click.
     """
-    name = f" {scenario_name.lower()} "
-    for arch, keywords in _NAME_KEYWORDS:
-        if any(k in name for k in keywords):
-            return arch, "name"
-    if run is not None:
-        if run.kill_count > 0:
-            shots = run.hit_count + run.miss_count
-            if shots / run.kill_count >= _TRACKING_SHOTS_PER_KILL:
-                return "tracking", "stats"
-        elif run.hit_count >= _TRACKING_MIN_HITS:
-            return "tracking", "stats"   # invincible targets: ticks, no deaths
-        # A run that does NOT trip the heuristic is real evidence of clicking,
-        # not an absence of evidence — that distinction is the whole point.
-        return "clicking", "stats"
-    return "clicking", "default"
+    padded = f" {scenario_name.lower()} "
+    named = ""
+    if _is_switching_name(scenario_name):
+        named = "switching"
+    else:
+        for arch, keywords in _NAME_KEYWORDS:
+            if any(k in padded for k in keywords):
+                named = arch
+                break
+
+    # SWITCHING IS TERMINAL. `_stats_archetype` can only ever answer tracking
+    # or clicking, so when it disagrees with a switching stamp that is not
+    # evidence against it — it is the heuristic reporting from outside its own
+    # range. Eight scenarios here prove the point: domiSwitch, voxTargetSwitch
+    # and tamTargetSwitch read 30-216 shots per kill, because you TRACK a
+    # target and then switch. The name is the better authority and there is no
+    # stats signature that could ever say otherwise.
+    if named == "switching":
+        return "switching", "name"
+
+    if run is None:
+        return (named, "name") if named else ("clicking", "default")
+
+    arch, decisive = _stats_archetype(run)
+    # A run that does NOT trip the tracking heuristic is real evidence of
+    # clicking, not an absence of evidence — that distinction is the whole
+    # point, and it is why an unnamed scenario takes the stats answer outright.
+    if not named:
+        return arch, "stats"
+    # With a name keyword present, the stats have to be DECISIVE to overturn
+    # it: a keyword is a claim about authoring convention and is usually
+    # right. `Controlsphere Click Easy` is why the door is not simply shut —
+    # it takes "tracking" from the `controlsphere` keyword while its own stats
+    # read 1.8 shots per kill against a threshold of 20.
+    if decisive and arch != named:
+        return arch, "stats"
+    return named, "name"
 
 
 def stamp_archetype(profile, scenario_name: str, run: Run | None = None):
