@@ -168,6 +168,11 @@ class SessionWatcher:
             sug = policy.propose(state)  # None until a policy is trained
             policy.log_transition({
                 "ts": run.started.isoformat(),
+                # WHICH TASK. v2's pairing rule said "for the same scenario"
+                # and no field recorded one, so the rule could not be applied
+                # to its own data — fine while exactly one scenario is being
+                # adapted, silently wrong the moment a second interleaves.
+                "scenario": self.adaptive_name,
                 "profile_state": json.loads(json.dumps(state, default=float)),
                 "plan": plan_d,
                 "suggestion": None if sug is None else dataclasses.asdict(sug),

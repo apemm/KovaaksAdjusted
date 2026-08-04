@@ -51,8 +51,19 @@ PROFILE_STATE_KEYS = (
 #: ``schema`` is a version tag: bump it on any breaking change and keep the
 #: reader tolerant of older records (same policy as the profile/report JSON).
 SHADOW_LOG_SCHEMA = {
-    "schema": "shadow-v2",
+    "schema": "shadow-v3",
     "ts": "ISO timestamp of the processed run",
+    "scenario": (
+        "The adaptive scenario this transition belongs to. v2 specified a "
+        "pairing rule that reads 'for the same scenario' and then recorded no "
+        "scenario anywhere — not in the record, not in profile_state — so the "
+        "rule could not be applied to its own data. With one scenario adapted "
+        "it works by accident; the moment a second is interleaved, a forward "
+        "pair joins one task's plan to another task's outcome, and run_count "
+        "(which is per profile, i.e. per scenario) reads as gaps everywhere. "
+        "Records without this field are unpairable in a multi-scenario log "
+        "and `training_pairs` drops them rather than guessing."
+    ),
     "profile_state": "dict of PROFILE_STATE_KEYS captured BEFORE observe()",
     "plan": "the emitted AdaptationPlan as a dict (target_scale, movement, ...)",
     "suggestion": "ShadowSuggestion as a dict, or null while untrained",
@@ -135,3 +146,91 @@ class DifficultyShadowPolicy:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
         return path
+
+
+def read_transitions(profile_dir: Path | str) -> tuple[list[dict], dict]:
+    """(records, diagnostics) from the JSONL log, oldest first.
+
+    Tolerant by policy: a malformed line is counted and skipped rather than
+    raising, because this file is append-only and one bad write must not make
+    the whole training set unreadable.
+    """
+    path = Path(profile_dir) / "ml" / LOG_NAME
+    diag = {"lines": 0, "unreadable": 0, "by_schema": {}}
+    records: list[dict] = []
+    if not path.is_file():
+        return records, diag
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        diag["lines"] += 1
+        try:
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                raise ValueError("record is not an object")
+        except (ValueError, TypeError):
+            diag["unreadable"] += 1
+            continue
+        tag = str(rec.get("schema", "?"))
+        diag["by_schema"][tag] = diag["by_schema"].get(tag, 0) + 1
+        records.append(rec)
+    return records, diag
+
+
+def training_pairs(profile_dir: Path | str) -> tuple[list[dict], dict]:
+    """([{state, plan, reward, scenario}], diagnostics) — the log's own
+    documented pairing rule, executed.
+
+    The rule: record[i]'s plan is rewarded by record[i+1]["run_outcome"] FOR
+    THE SAME SCENARIO, because the plan emitted after run i is what run i+1
+    was played on. Three things drop a pair, and each is counted rather than
+    silently skipped:
+
+    - **no scenario** (pre-v3): the rule cannot be applied to a record that
+      does not say what it belongs to. See the schema note.
+    - **a run_count gap**: `profile_state.run_count` increments by one per
+      processed run of a scenario, so a jump means a record was dropped and
+      the two neighbours are not consecutive runs.
+    - **no reward**: v1 rows carry `outcome: null` and no `run_outcome` at
+      all. Their reward is recoverable by joining the report library on
+      (scenario, ts) — deliberately NOT done here, because that join belongs
+      to a training pass that has the reports open, and inventing it here
+      would put a guess where the log promises a measurement.
+
+    Writing the reader is what found the missing field: the rule had been
+    specified for a release without anything executing it.
+    """
+    records, diag = read_transitions(profile_dir)
+    by_scenario: dict[str, list[dict]] = {}
+    dropped = {"no_scenario": 0, "no_reward": 0, "run_count_gap": 0}
+    for rec in records:
+        name = rec.get("scenario")
+        if not name:
+            dropped["no_scenario"] += 1
+            continue
+        by_scenario.setdefault(str(name), []).append(rec)
+
+    pairs: list[dict] = []
+    for name, rows in by_scenario.items():
+        rows.sort(key=lambda r: str(r.get("ts", "")))
+        for cur, nxt in zip(rows, rows[1:]):
+            reward = nxt.get("run_outcome")
+            if not reward:
+                dropped["no_reward"] += 1
+                continue
+            a = (cur.get("profile_state") or {}).get("run_count")
+            b = (nxt.get("profile_state") or {}).get("run_count")
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                if int(b) - int(a) != 1:
+                    dropped["run_count_gap"] += 1
+                    continue
+            pairs.append({
+                "scenario": name,
+                "state": cur.get("profile_state") or {},
+                "plan": cur.get("plan") or {},
+                "reward": reward,
+            })
+    diag["scenarios"] = sorted(by_scenario)
+    diag["dropped"] = dropped
+    diag["pairs"] = len(pairs)
+    return pairs, diag

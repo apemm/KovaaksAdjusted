@@ -140,7 +140,7 @@ def test_shadow_scaffold_is_torch_free_and_untrained(tmp_path):
     p = policy.log_transition({"ts": "2026-07-28T00:00:00", "suggestion": None})
     assert p is not None and p.is_file()
     rec = json.loads(p.read_text().splitlines()[0])
-    assert rec["schema"] == "shadow-v2"
+    assert rec["schema"] == "shadow-v3"
     assert DifficultyShadowPolicy().log_transition({}) is None
     s = ShadowSuggestion(target_scale=1.0, movement=0.5, confidence=0.0, reason="stub")
     assert s.target_scale == 1.0
@@ -373,9 +373,17 @@ def test_watcher_stamps_ml_digest_and_shadow_log(tmp_path, monkeypatch):
     lines = log.read_text().splitlines()
     assert len(lines) == 1
     rec = json.loads(lines[0])
-    assert rec["schema"] == "shadow-v2"
+    assert rec["schema"] == "shadow-v3"
     assert rec["ts"] == "2026-05-27T20:25:38"
     assert rec["suggestion"] is None, "an untrained policy proposed something"
+    # WHICH TASK. The pairing rule reads "for the same scenario", and v2 wrote
+    # no scenario anywhere — so a record could not be paired without guessing
+    # that every row belonged to the same task. Fine with one adapted
+    # scenario, silently wrong the moment a second interleaves, and permanent
+    # because the log is append-only.
+    assert rec["scenario"] == w.adaptive_name
+    from kovadapt.ml.shadow import training_pairs
+    assert training_pairs(s.profile_path)[1]["dropped"]["no_scenario"] == 0
     # The REWARD. v1 specified an `outcome` key as "next-run outcome when
     # known" and hard-coded it to None, so every transition ever logged was a
     # state and an action with nothing to learn from. record[i]'s plan is
@@ -470,3 +478,120 @@ def test_an_unmeasurable_pace_is_logged_as_null_not_zero(tmp_path, monkeypatch):
     # the measurable fields are still real
     assert isinstance(rec["run_outcome"]["accuracy"], float)
     assert isinstance(rec["run_outcome"]["score"], float)
+
+
+# ------------------------------------------------- shadow log: the pairing rule
+def _tx(scenario, ts, run_count, *, reward=True, schema="shadow-v3", **over):
+    rec = {"schema": schema, "ts": ts,
+           "profile_state": {"run_count": run_count, "ewma_accuracy": 0.9},
+           "plan": {"target_scale": 1.0, "movement": 0.4},
+           "suggestion": None}
+    if scenario is not None:
+        rec["scenario"] = scenario
+    if reward:
+        rec["run_outcome"] = {"accuracy": 0.9, "score": 800.0, "kps": 1.5}
+    rec.update(over)
+    return rec
+
+
+def _write_log(tmp_path, records):
+    p = tmp_path / "ml" / "shadow_log.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return p
+
+
+def test_the_shadow_log_pairing_rule_needs_a_scenario_and_now_has_one(tmp_path):
+    """v2 specified "the reward for record[i] is record[i+1]['run_outcome']
+    for the same scenario" and then recorded no scenario anywhere — not in the
+    record, not in profile_state. The rule could not be applied to its own
+    data.
+
+    With one scenario adapted it works by accident. Interleave a second and a
+    forward pair joins one task's plan to another task's outcome, while
+    run_count — which is per profile, i.e. per scenario — reads as gaps
+    everywhere. This is the failure that only appears once, on real data, long
+    after the records are unfixable: the log is append-only by design.
+
+    Writing the reader is what found it. The rule had shipped as prose with
+    nothing executing it.
+    """
+    from kovadapt.ml.shadow import training_pairs
+
+    # two scenarios, interleaved exactly as two adapted tasks in one session
+    _write_log(tmp_path, [
+        _tx("A [Adaptive]", "2026-08-04T10:00:00", 5),
+        _tx("B [Adaptive]", "2026-08-04T10:01:00", 40),
+        _tx("A [Adaptive]", "2026-08-04T10:02:00", 6),
+        _tx("B [Adaptive]", "2026-08-04T10:03:00", 41),
+    ])
+    pairs, diag = training_pairs(tmp_path)
+    assert diag["scenarios"] == ["A [Adaptive]", "B [Adaptive]"]
+    assert len(pairs) == 2, "one forward pair per scenario, not across them"
+    assert {p["scenario"] for p in pairs} == {"A [Adaptive]", "B [Adaptive]"}
+    assert diag["dropped"] == {"no_scenario": 0, "no_reward": 0, "run_count_gap": 0}
+
+
+def test_pre_v3_records_are_dropped_and_counted_never_guessed(tmp_path):
+    """A record that does not say what it belongs to cannot be paired, and
+    guessing "probably the same one" is how a training set silently learns
+    from another task's reward. Arjun's real log is four v1 records and this
+    is why it yields zero usable pairs rather than three plausible ones."""
+    from kovadapt.ml.shadow import training_pairs
+
+    _write_log(tmp_path, [
+        _tx(None, "2026-08-04T10:00:00", 1, reward=False, schema="shadow-v1",
+            outcome=None),
+        _tx(None, "2026-08-04T10:01:00", 2, reward=False, schema="shadow-v1",
+            outcome=None),
+        _tx("A [Adaptive]", "2026-08-04T10:02:00", 3),
+        _tx("A [Adaptive]", "2026-08-04T10:03:00", 4),
+    ])
+    pairs, diag = training_pairs(tmp_path)
+    assert len(pairs) == 1
+    assert diag["dropped"]["no_scenario"] == 2
+    assert diag["by_schema"] == {"shadow-v1": 2, "shadow-v3": 2}
+
+
+def test_a_run_count_gap_breaks_the_pair_and_a_bad_line_is_not_fatal(tmp_path):
+    """run_count increments by one per processed run, so a jump means a record
+    was dropped and the neighbours are not consecutive runs — pairing them
+    rewards a plan with an outcome from a run it never produced.
+
+    And one malformed append must not make the whole training set unreadable:
+    the log is append-only, so a single bad write would otherwise be permanent."""
+    from kovadapt.ml.shadow import read_transitions, training_pairs
+
+    p = _write_log(tmp_path, [
+        _tx("A [Adaptive]", "2026-08-04T10:00:00", 5),
+        _tx("A [Adaptive]", "2026-08-04T10:01:00", 9),      # gap: 5 -> 9
+        _tx("A [Adaptive]", "2026-08-04T10:02:00", 10),
+    ])
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write("{not json at all\n")
+
+    records, diag = read_transitions(tmp_path)
+    assert len(records) == 3 and diag["unreadable"] == 1
+
+    pairs, diag = training_pairs(tmp_path)
+    assert len(pairs) == 1, "only the 9 -> 10 pair is consecutive"
+    assert diag["dropped"]["run_count_gap"] == 1
+    assert pairs[0]["state"]["run_count"] == 9
+
+    # a missing reward is dropped too — v1 rows carry outcome: null, and the
+    # join that could recover it belongs to a pass holding the report library
+    _write_log(tmp_path, [
+        _tx("A [Adaptive]", "2026-08-04T10:00:00", 5),
+        _tx("A [Adaptive]", "2026-08-04T10:01:00", 6, reward=False),
+    ])
+    pairs, diag = training_pairs(tmp_path)
+    assert pairs == [] and diag["dropped"]["no_reward"] == 1
+
+
+def test_an_absent_log_reads_as_empty_not_as_an_error(tmp_path):
+    from kovadapt.ml.shadow import read_transitions, training_pairs
+
+    assert read_transitions(tmp_path / "nope") == ([], {
+        "lines": 0, "unreadable": 0, "by_schema": {}})
+    pairs, diag = training_pairs(tmp_path / "nope")
+    assert pairs == [] and diag["pairs"] == 0
