@@ -256,6 +256,44 @@ def _summary_text(rep: "RunReport", flicks_exist: bool) -> str:
     return " ".join(lines)
 
 
+def apply_flick_metrics(rep: "RunReport", flicks: list, *,
+                        cols: int = 3, rows: int = 3) -> "RunReport":
+    """Write every field derived from a flick SET onto `rep`, in place.
+
+    Split out of build_report because the Analysis page needs the same
+    derivation without the stats Run: a saved report segmented at a different
+    flick floor has to be re-derived from its trace before it is rendered, and
+    two copies of this arithmetic is two chances for the page and the file to
+    disagree about the same run.
+
+    Fields NOT here are the ones a floor change cannot move —
+    total_travel_counts and input_health come from the packet stream, not from
+    what was called a flick.
+    """
+    rep.n_flicks = len(flicks)
+    rep.bias = directional_bias(flicks)
+    rep.region_deficits = region_deficits(flicks, cols=cols, rows=rows)
+    rep.notable = [asdict(m) for m in find_notable_moments(flicks)]
+    # Reset rather than leave stale: re-deriving a report with FEWER flicks
+    # must not keep the old mean beside the new count.
+    rep.mean_flick_ms = rep.overshoot_rate = rep.mean_corrections = 0.0
+    rep.fitts_slope_ms = 0.0
+    if flicks:
+        rep.mean_flick_ms = float(np.mean([f.duration for f in flicks]) * 1000)
+        rep.overshoot_rate = float(np.mean([f.overshoot > 0.1 for f in flicks]))
+        rep.mean_corrections = float(np.mean([f.corrections for f in flicks]))
+        # Within-run Fitts fit: movement time vs log2 distance. The slope
+        # (ms/bit) falling across sessions is motor improvement even when
+        # scores plateau (see analysis/insights.py: dx-fitts-progress).
+        amps = np.array([f.amplitude for f in flicks], dtype=np.float64)
+        durs = np.array([f.duration for f in flicks], dtype=np.float64) * 1000.0
+        ok = amps > 1.0
+        if int(ok.sum()) >= 8:
+            x = np.log2(1.0 + amps[ok])
+            rep.fitts_slope_ms = float(np.polyfit(x, durs[ok], 1)[0])
+    return rep
+
+
 def build_report(
     run: Run,
     trace: MouseTrace | None,
@@ -311,25 +349,9 @@ def build_report(
             flick_floor_deg if flick_floor_deg is not None
             else MIN_FLICK_DEG if min_amplitude is None
             else min_amplitude * YAW_DEG_PER_COUNT)
-        rep.n_flicks = len(flicks)
-        rep.bias = directional_bias(flicks)
-        rep.region_deficits = region_deficits(flicks, cols=region_cols, rows=region_rows)
-        rep.notable = [asdict(m) for m in find_notable_moments(flicks)]
+        apply_flick_metrics(rep, flicks, cols=region_cols, rows=region_rows)
         rep.total_travel_counts = float(np.hypot(rt.dx.astype(np.float64), rt.dy.astype(np.float64)).sum())
         rep.input_health = rt.input_health()
-        if flicks:
-            rep.mean_flick_ms = float(np.mean([f.duration for f in flicks]) * 1000)
-            rep.overshoot_rate = float(np.mean([f.overshoot > 0.1 for f in flicks]))
-            rep.mean_corrections = float(np.mean([f.corrections for f in flicks]))
-            # Within-run Fitts fit: movement time vs log2 distance. The slope
-            # (ms/bit) falling across sessions is motor improvement even when
-            # scores plateau (see analysis/insights.py: dx-fitts-progress).
-            amps = np.array([f.amplitude for f in flicks], dtype=np.float64)
-            durs = np.array([f.duration for f in flicks], dtype=np.float64) * 1000.0
-            ok = amps > 1.0
-            if int(ok.sum()) >= 8:
-                x = np.log2(1.0 + amps[ok])
-                rep.fitts_slope_ms = float(np.polyfit(x, durs[ok], 1)[0])
         heat, _, _ = movement_heatmap(rt, grid=grid)
     rep.summary_text = _summary_text(rep, bool(flicks))
     return rep, flicks, heat

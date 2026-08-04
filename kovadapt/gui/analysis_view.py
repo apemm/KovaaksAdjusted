@@ -15,6 +15,7 @@ pyqtgraph remains only inside TrajectoryReplay's canvas."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -47,8 +48,9 @@ from ..analysis.insights import (
     _region_words,
     generate_insights,
 )
-from ..analysis.movement import movement_heatmap, segment_flicks
-from ..analysis.report import input_degraded, summary_text_for
+from ..analysis.movement import MIN_FLICK_DEG, movement_heatmap, segment_flicks
+from ..analysis.report import (apply_flick_metrics, input_degraded,
+                               summary_text_for)
 from ..analysis.sens import min_flick_counts
 from ..analysis.report import RunReport
 from ..config import ADAPTIVE_SUFFIX, Settings
@@ -661,9 +663,10 @@ class AnalysisView(QWidget):
         self.trace = trace
         profile = self._resolve_profile(rep, profile)
         self._coach_open = False           # a new run opens folded
-        self._fill_kpis(rep, profile)
-        self._fill_trend(profile)
-        self._fill_insights(rep, profile)
+        # The trace loads and the report is re-derived BEFORE anything is
+        # filled: the KPI tiles, the trend and the Coach all read `rep`, and
+        # filling them from the stored numbers and then correcting `rep`
+        # underneath leaves four surfaces disagreeing with the two below them.
         self._trace_unreadable = False
         if trace is None and rep.trace_file and Path(rep.trace_file).is_file():
             try:
@@ -681,19 +684,53 @@ class AnalysisView(QWidget):
                 # cannot be rebuilt from anything. Leave it for the user.
                 self.trace = None
                 self._trace_unreadable = True
-        # flicks aren't serialized in the report — recompute from the trace
-        # SAME floor the report used, or the replay overlay marks flicks the
-        # page's own numbers never counted.
+        # flicks aren't serialized in the report — recompute from the trace at
+        # the SAME floor the rest of the page uses, or the replay overlay marks
+        # flicks the page's own numbers never counted.
         self.flicks = (segment_flicks(
             self.trace, min_amplitude=min_flick_counts(self._settings))
             if self.trace is not None and len(self.trace) > 10 else [])
+        # ...and when the SAVED numbers came from a different floor, that is
+        # exactly what happens: the file says one thing about a run and the
+        # overlay draws another. This report was written at 0.33 degrees,
+        # where the overshoot ratio measures segmentation error rather than
+        # aim; on the five real runs here it inverted the left/right verdict,
+        # so the page opened saying "your left side is measurably weaker,
+        # 2.48x" about a run today's method reads as right-side weakness.
+        #
+        # Same rule as summary_text_for one call below: a stored value about a
+        # threshold is a cache of a judgement, and the trace is still on disk.
+        # Re-derived in memory only — the file on disk is the record of what
+        # was measured then, and rewriting it would destroy that.
+        self._rederived = False
+        if (self.flicks and rep.flick_floor_deg != MIN_FLICK_DEG
+                and self._settings is not None):
+            rep = replace(rep)          # never mutate the caller's report
+            apply_flick_metrics(rep, self.flicks,
+                                cols=self._settings.region_cols,
+                                rows=self._settings.region_rows)
+            rep.flick_floor_deg = MIN_FLICK_DEG
+            self.report = rep
+            self._rederived = True
 
+        self._fill_kpis(rep, profile)
+        self._fill_trend(profile)
+        self._fill_insights(rep, profile)
         self.title.setText(f"{rep.scenario} — {rep.started_iso.replace('T', ' ')[:19]}")
         # RE-DERIVED, not the stored string. See analysis.report.
         # summary_text_for: this is the only headline on the page that was
         # persisted, so a saved report kept asserting whatever was true when
         # it was written.
-        self.summary.setText(summary_text_for(rep))
+        head = summary_text_for(rep)
+        if self._rederived:
+            # Say it. A page that quietly disagrees with the JSON a user can
+            # open in a text editor is worse than one that never corrected it:
+            # the number changed, nothing on screen explains why, and the file
+            # is still sitting there saying the old thing.
+            head += (f" These numbers are re-derived from the recording at the "
+                     f"current {MIN_FLICK_DEG:g}-degree flick floor — the saved "
+                     "report was written at a different one.")
+        self.summary.setText(head)
         self._draw_bias(rep)
         self._draw_heat(rep)
         has_trace = self.trace is not None and len(self.trace) > 1

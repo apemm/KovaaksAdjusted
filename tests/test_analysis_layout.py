@@ -30,6 +30,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from test_telemetry import TraceBuilder  # noqa: E402
 
 from kovadapt.analysis.insights import generate_insights  # noqa: E402
+from kovadapt.analysis.movement import MIN_FLICK_DEG  # noqa: E402
 from kovadapt.analysis.report import RunReport  # noqa: E402
 from kovadapt.config import Settings  # noqa: E402
 from kovadapt.gui import theme, viz  # noqa: E402
@@ -80,6 +81,12 @@ def _report(**over) -> RunReport:
     base = dict(
         scenario="Beta 1wall Click", started_iso="2026-07-28T10:00:00",
         score=420.0, accuracy=0.61, avg_ttk=0.9, kills=30, kps=1.4,
+        # A report with no floor is a report from before the floor moved, and
+        # the page re-derives those from their trace. The default fixture
+        # models a run the CURRENT app wrote, so a test that means to exercise
+        # something else is not silently exercising the re-derivation instead;
+        # the re-derivation has its own test, which omits this.
+        flick_floor_deg=MIN_FLICK_DEG,
         summary_text="30 kills at 61% accuracy.")
     base.update(over)
     return RunReport(**base)
@@ -1081,3 +1088,50 @@ def test_a_saved_report_is_not_still_saying_what_was_true_when_it_was_written(
     assert "x more" in view.bias_bars._title.lower(), (
         "the bias chart withheld its verdict while the headline did not")
     view.deleteLater()
+
+
+def test_a_saved_report_from_an_older_flick_floor_is_re_derived(qapp, settings):
+    """The Analysis page opened a saved report and read its stored numbers out
+    loud. Those numbers were segmented at 0.33 degrees, where the overshoot
+    ratio measures segmentation error rather than aim — and on the five real
+    runs here that inverted the left/right verdict. So the page said "your
+    left side is measurably weaker, 2.48x" about a run today's method reads
+    as right-side weakness, while the replay overlay beside it drew flicks
+    from the CURRENT floor. One page, two definitions of a flick.
+
+    Same rule as summary_text_for: a stored value about a threshold is a
+    cache of a judgement, and the recording is still on disk. The file is not
+    rewritten — it is the record of what was measured then — and the page
+    says out loud that it re-derived, because a screen that silently
+    disagrees with a JSON the user can open is worse than one that never
+    corrected it.
+    """
+    trace = (TraceBuilder(t0=1000.0)
+             .flick(400, 0, 0.12).flick(-380, 40, 0.11)
+             .flick(360, -30, 0.12).flick(-400, 0, 0.10).build())
+    stale = _report(flick_floor_deg=0.33, n_flicks=999,
+                    bias={"left": {"n": 40, "overshoot": 0.9},
+                          "right": {"n": 40, "overshoot": 0.1},
+                          "bias_score": 0.87},
+                    overshoot_rate=0.95, mean_flick_ms=1234.0)
+    view = AnalysisView(settings)
+    view.show_report(stale, trace=trace, profile=_profile())
+
+    assert view.report.flick_floor_deg == MIN_FLICK_DEG
+    assert view.report.n_flicks == len(view.flicks) != 999, \
+        "the count on screen has to be the count the overlay drew"
+    assert view.report.bias["bias_score"] != 0.87
+    assert view.report.mean_flick_ms != 1234.0
+    assert "re-derived from the recording" in view.summary.text()
+    assert f"{MIN_FLICK_DEG:g}-degree" in view.summary.text()
+
+    # the caller's own object is untouched — it belongs to the caller, and the
+    # watcher hands the same report to the profile write on the live path
+    assert stale.n_flicks == 999 and stale.bias["bias_score"] == 0.87
+
+    # ...and a report already on the current floor is left exactly alone, with
+    # no sentence claiming a correction that did not happen
+    current = _report(n_flicks=7, mean_flick_ms=321.0)
+    view.show_report(current, trace=trace, profile=_profile())
+    assert view.report.n_flicks == 7 and view.report.mean_flick_ms == 321.0
+    assert "re-derived" not in view.summary.text()
