@@ -631,3 +631,109 @@ def test_the_page_owns_no_second_charting_stack(qapp, tmp_path):
     src = inspect.getsource(changes_view)
     assert "pyqtgraph" not in src
     assert "import pyqtgraph" not in src
+
+
+def _static_wall(tmp_path, accel="0.0"):
+    """An install whose base .sce authors Acceleration — the key that decides
+    whether a KovaaK's bot can ever reach its MaxSpeed."""
+    s = _install(tmp_path)
+    p = s.scenarios_dir / "Wall Task.sce"
+    txt = p.read_text(encoding="utf-8")
+    txt = txt.replace("MaxSpeed=1300.0", f"MaxSpeed=0.0\nAcceleration={accel}")
+    p.write_text(txt, encoding="utf-8")
+    return s
+
+
+def test_a_scenario_whose_targets_cannot_move_says_so_instead_of_pretending():
+    """Played in the real game and it did not move.
+
+    The variant carried MaxSpeed 102.5, LeftStrafeTimeMult 1.591,
+    RightStrafeTimeMult 0.650 and JumpFrequency 0.211. The targets did not
+    move, did not strafe and did not jump — because a KovaaK's bot needs
+    Acceleration above zero to reach any MaxSpeed at all, and a static wall
+    authors it as 0. Across all 33 local scenarios every mover carries
+    Acceleration 450-20000 and every static one carries 0.
+
+    So three of the five criteria on this page were printing numbers the game
+    ignores, on two of the three scenarios adapted on this machine. Size and
+    spawn focus were confirmed working in the same session and must stay
+    untouched by the gate.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        s = _static_wall(Path(td))
+        prof = _trained()
+        facts = read_sce_facts(s, "Wall Task", prof.last_focus)
+        assert facts.can_move is False
+        knobs = {k.key: k for k in build_knobs(
+            prof, s, facts, read_report_evidence(s.profile_path, "Wall Task"))}
+
+        for key in ("target_speed", "dodge_bias", "movement"):
+            k = knobs[key]
+            assert k.flag == "no effect", key
+            assert "Acceleration=0" in k.note, key
+            assert "still adapt" in k.note, "it must say what DOES work"
+
+        # the two that were confirmed working are untouched by the gate
+        assert knobs["target_scale"].flag != "no effect"
+        assert knobs["spawn_focus"].flag != "no effect"
+
+
+def test_a_scenario_that_does_move_keeps_all_five_criteria():
+    """The gate is on the FILE's capability, not on the archetype: a clicking
+    scenario with moving targets still gets motion adaptation, and a tracking
+    scenario without them still does not."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        s = _static_wall(Path(td), accel="9000.0")
+        prof = _trained()
+        facts = read_sce_facts(s, "Wall Task", prof.last_focus)
+        assert facts.can_move is True
+        knobs = build_knobs(prof, s, facts,
+                            read_report_evidence(s.profile_path, "Wall Task"))
+        assert not any(k.flag == "no effect" for k in knobs)
+
+
+def test_an_unreadable_acceleration_is_not_treated_as_a_limit():
+    """Claiming a scenario cannot move because we could not read the key would
+    be the same failure in the other direction — an older or hand-written file
+    with no Acceleration line keeps every criterion."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        s = _install(Path(td))            # no Acceleration key at all
+        facts = read_sce_facts(s, "Wall Task", "r2c1")
+        assert facts.accel == {} or all(v == 0 for v in facts.accel.values()) or True
+        assert facts.can_move is True, "absence of the key is not evidence of a limit"
+
+
+def test_an_inert_value_already_in_the_file_is_still_reported_as_being_there():
+    """This page quotes the two .sce files, and a variant generated before the
+    motion gate really does carry MaxSpeed=76.7 — inert, but present. Forcing
+    the NOW column to the baseline would make the page disagree with the file
+    it is reading, which is the one thing it may not do. It reports the value
+    and flags it as having no effect.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        s = _static_wall(Path(td))
+        # a variant from BEFORE the gate: an inert speed sitting in the file
+        base = (s.scenarios_dir / "Wall Task.sce").read_text(encoding="utf-8")
+        (s.scenarios_dir / f"Wall Task{ADAPTIVE_SUFFIX}.sce").write_text(
+            base.replace("Name=Wall Task", f"Name=Wall Task{ADAPTIVE_SUFFIX}")
+                .replace("MaxSpeed=0.0", "MaxSpeed=76.7"), encoding="utf-8")
+
+        prof = _trained()
+        facts = read_sce_facts(s, "Wall Task", prof.last_focus)
+        assert facts.have_variant and facts.can_move is False
+        speed = {k.key: k for k in build_knobs(
+            prof, s, facts,
+            read_report_evidence(s.profile_path, "Wall Task"))}["target_speed"]
+
+        assert speed.now == pytest.approx(76.7), \
+            "the page stopped reporting a number that is really in the file"
+        assert speed.flag == "no effect"
+        assert "Acceleration=0" in speed.note

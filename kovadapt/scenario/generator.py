@@ -139,6 +139,27 @@ def resample_spawns(sce: SceFile, weights: dict[str, float],
     return set(alloc)
 
 
+def _accel_of(sce: SceFile, char: str) -> float | None:
+    """Acceleration on one [Character Profile]; None when the key is ABSENT.
+
+    KovaaK's needs this above zero for a bot to ever reach its MaxSpeed — it
+    is the difference between a scenario whose targets strafe and one authored
+    as a static wall, and kovadapt had never read it.
+
+    Absent is not zero, the same distinction this module already draws for
+    MaxSpeed. A file with no Acceleration line has not said its targets are
+    static, and treating it as 0.0 would strip the speed and dodge changes off
+    every older or hand-written scenario.
+    """
+    raw = sce.get_in_section("Character Profile", char, "Acceleration")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _target_profiles(sce: SceFile) -> tuple[list[str], list[str]]:
     """(bot names, character profile names) for the AddedBots targets.
 
@@ -177,6 +198,13 @@ def generate_adaptive_variant(
     bot_names, char_names = _target_profiles(sce)
 
     # --- target size + speed ---------------------------------------------
+    # CAN THESE BOTS MOVE? Acceleration gates it: a bot with a MaxSpeed and no
+    # acceleration never leaves a standstill, which is exactly how a static
+    # wall is authored. Checked before anything is written, because it decides
+    # whether two of the three knobs below mean anything at all.
+    _known = [a for a in (_accel_of(sce, c) for c in char_names) if a is not None]
+    can_move = (not _known) or any(a > 0 for a in _known)
+
     for char in char_names:
         span = sce.find_section("Character Profile", char)
         assert span is not None
@@ -184,7 +212,7 @@ def generate_adaptive_variant(
             key = sce.lines[i].partition("=")[0]
             if key in _SIZE_KEYS:
                 sce.lines[i] = _scale_line(sce.lines[i], plan.target_scale)
-        if plan.target_max_speed > 0:
+        if can_move and plan.target_max_speed > 0:
             try:
                 base_speed = float(
                     sce.get_in_section("Character Profile", char, "MaxSpeed") or 0.0)
@@ -209,9 +237,15 @@ def generate_adaptive_variant(
         for ln in sce.lines[span[0]: span[1]]:
             if ln.startswith("DodgeProfileNames="):
                 dodge_names.update(d for d in ln.partition("=")[2].split(";") if d)
-    for dodge in sorted(dodge_names):
-        for key, val in plan.dodge_params.items():
-            sce.set_in_section("Dodge Profile", dodge, key, val)
+    # Dodge params are strafe-time multipliers and a jump frequency: every one
+    # of them modifies HOW something moves, so on a scenario that cannot move
+    # they are numbers written into a file that no longer describes anything.
+    # Left unwritten rather than written-and-ignored, so the .sce stays the
+    # author's on the axes kovadapt cannot actually drive.
+    if can_move:
+        for dodge in sorted(dodge_names):
+            for key, val in plan.dodge_params.items():
+                sce.set_in_section("Dodge Profile", dodge, key, val)
 
     # --- spawn region reweighting ------------------------------------------
     # The focus region only exists in the emitted scenario if the layout
@@ -228,6 +262,10 @@ def generate_adaptive_variant(
     # credited the arm on exactly the scenarios where the region bandit has no
     # causal channel.
     plan.focus_applied = plan.focus_region in used
+    # Same contract as focus_applied: the GENERATOR is the only thing that has
+    # read the file, so it is the only thing that can say whether the plan's
+    # motion terms survived contact with it.
+    plan.motion_applied = can_move
 
     if out_path is None:
         out_path = base_sce.parent / f"{base_name}{ADAPTIVE_SUFFIX}.sce"

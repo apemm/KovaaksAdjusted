@@ -139,6 +139,11 @@ MOVE_EPS_FRAC = 0.01
 # reaches observe_bias with >= 8 flicks AND >= 3 per side, because
 # analysis.directional_bias returns a flat 0.0 below that and a 0.0 that means
 # "not measured" must never be counted as an observation.
+#: The criteria that describe HOW SOMETHING MOVES. On a scenario whose targets
+#: cannot move, all three are inexpressible together — they are not three
+#: separate failures but one property of the file.
+_MOTION_KEYS = frozenset({"target_speed", "dodge_bias", "movement"})
+
 _BIAS_MIN_FLICKS = 8
 # What a report with no `flick_floor_deg` was measured at: 15 counts at the
 # sens-1.0 yaw. Named rather than inlined so the page can say the number.
@@ -398,6 +403,16 @@ class SceFacts:
     # arithmetic while the file never changes.
     authored: dict[str, float] = field(default_factory=dict)
     no_speed_key: tuple[str, ...] = ()
+    # ACCELERATION, per target character. A KovaaK's bot needs this above zero
+    # to ever reach its MaxSpeed, so a scenario authored `MaxSpeed=0,
+    # Acceleration=0` is a static wall and no speed, strafe or jump value
+    # written into it changes anything the game does.
+    #
+    # Established by playing a generated variant: MaxSpeed 102.5, strafe skew
+    # 1.591/0.650 and JumpFrequency 0.211, and the targets did not move,
+    # strafe or jump. Across all 33 local scenarios every mover carries
+    # Acceleration 450-20000 and every static one carries 0.
+    accel: dict[str, float] = field(default_factory=dict)
     # The MaxSpeed those same characters carry in the VARIANT. The ladder plots
     # its speed reading from these rather than from the model, because the
     # emitted plan is what the game loads: `plan(fatigue=...)` eases the emitted
@@ -409,6 +424,21 @@ class SceFacts:
     spawns: SpawnMap | None = None
     description: str = ""
     written: str = ""
+
+    @property
+    def can_move(self) -> bool:
+        """Whether the targets in this scenario can move at all.
+
+        False makes three of the five criteria on this page inexpressible —
+        target speed, movement/pace and dodge skew all describe HOW something
+        moves. The page says so instead of printing numbers the file will
+        carry and the game will ignore.
+
+        Unknown (no Acceleration read at all) counts as movable: it is the
+        older-file case, and claiming a limit we have not measured would be
+        the same failure in the other direction.
+        """
+        return (not self.accel) or any(v > 0 for v in self.accel.values())
 
     @property
     def speed_paths(self) -> dict[str, str]:
@@ -689,6 +719,7 @@ def read_sce_facts(settings: Settings, base: str,
     # collapsed to 0.0 here, which put such a scenario on the static-wall ramp
     # in this page's arithmetic while its file never moved.
     authored: dict[str, float] = {}
+    accel: dict[str, float] = {}
     no_key: list[str] = []
     written_speeds: dict[str, float] = {}
     for char in chars:
@@ -697,6 +728,14 @@ def read_sce_facts(settings: Settings, base: str,
             no_key.append(char)
             continue
         authored[char] = _num(raw) or 0.0
+        # ABSENT IS NOT ZERO. The same distinction this function already makes
+        # for MaxSpeed: a character with no Acceleration line has not told us
+        # it cannot move, and recording it as 0.0 would strip three criteria
+        # off every older or hand-written file. Only a key that is really
+        # there counts as evidence either way.
+        raw_accel = src.get_in_section("Character Profile", char, "Acceleration")
+        if raw_accel is not None:
+            accel[char] = _num(raw_accel) or 0.0
         # Only for characters the BASE authors a readable speed for: without the
         # author's own number there is nothing to read the written one against.
         wrote = _num(var.get_in_section("Character Profile", char, "MaxSpeed")) \
@@ -737,7 +776,7 @@ def read_sce_facts(settings: Settings, base: str,
     return SceFacts(
         base_path=base_path, variant_path=var_path, have_base=True,
         have_variant=var is not None, variant_on_disk=on_disk,
-        chars=tuple(chars), authored=authored,
+        chars=tuple(chars), authored=authored, accel=accel,
         no_speed_key=tuple(no_key), written_speeds=written_speeds,
         rows=tuple(rows), extra_sections=extra,
         spawns=spawns,
@@ -1474,6 +1513,39 @@ def build_knobs(profile: PlayerProfile, settings: Settings, facts: SceFacts,
         _dodge_knob(profile, s, ev),
         _movement_knob(profile, s, fresh),
     ]
+    if not facts.can_move:
+        # THREE OF THE FIVE CRITERIA DESCRIBE HOW SOMETHING MOVES, and this
+        # scenario's targets cannot. Every target character authors
+        # Acceleration=0, and a KovaaK's bot needs that above zero to ever
+        # reach a MaxSpeed — so a speed, a strafe-time skew and a jump
+        # frequency written here would sit in the file and change nothing.
+        #
+        # Established by playing one: a variant carrying MaxSpeed 102.5, skew
+        # 1.591/0.650 and JumpFrequency 0.211 produced targets that did not
+        # move, strafe or jump. The generator now leaves those fields as the
+        # author wrote them, so NOW is the baseline and the page says why
+        # rather than printing three numbers the game ignores.
+        #
+        # Size and spawn focus are untouched by this: both were confirmed
+        # working in the same session, and neither needs anything to move.
+        # NOW IS LEFT ALONE. This page reads its before/after out of the two
+        # .sce files, so forcing the column to the baseline would make it
+        # disagree with the file it is quoting — a variant generated before
+        # this gate really does carry MaxSpeed=76.7, inert but present, and
+        # the row must keep saying so. Once regenerated the file carries the
+        # author's own value and the row reads baseline-to-baseline on its
+        # own, with no special case.
+        why = ("no effect here: every target character authors "
+               "Acceleration=0, and a KovaaK's bot needs that above zero to "
+               "reach any MaxSpeed, so nothing written on this axis can move "
+               "anything. Size and spawn placement still adapt.")
+        knobs = [
+            replace(k, flag="no effect",
+                    note=(f"{k.note} — and {why}" if k.note else
+                          why[0].upper() + why[1:]))
+            if k.key in _MOTION_KEYS else k
+            for k in knobs
+        ]
     if not facts.have_variant:
         # The clause lands on every criterion whose number would otherwise read
         # as a change the game has already seen. An UNMEASURED knob already

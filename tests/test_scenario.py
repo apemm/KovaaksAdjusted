@@ -422,3 +422,74 @@ def test_generate_variant_authored_speed_is_scaled_not_replaced(tmp_path: Path):
         assert got > 170.0     # never collapsed to the absolute ramp's range
     else:
         assert got == pytest.approx(1300.0)   # untouched when speed edit is off
+
+
+def test_a_static_wall_gets_no_speed_skew_or_jump_written_into_it(mini_sce, tmp_path):
+    """Played in the real game: it did not move.
+
+    The variant carried MaxSpeed 102.5, LeftStrafeTimeMult 1.591,
+    RightStrafeTimeMult 0.650 and JumpFrequency 0.211 and the targets did not
+    move, strafe or jump. A KovaaK's bot needs Acceleration above zero to
+    reach any MaxSpeed at all, and a static wall authors it as 0 — so all
+    three of those were numbers the file carried and the game ignored.
+
+    Across all 33 local scenarios every one whose targets move carries
+    Acceleration 450-20000 and every static one carries 0, with no exceptions.
+
+    kovadapt does not ADD acceleration: a static click-timing wall is that by
+    design, and making it move would change what the task trains rather than
+    how hard it is. It writes nothing on those axes and says so on the page.
+    """
+    txt = mini_sce.read_text(encoding="utf-8")
+    assert "MaxSpeed=0.0" in txt
+    static = tmp_path / "static.sce"
+    static.write_text(txt.replace("MaxSpeed=0.0", "MaxSpeed=0.0\nAcceleration=0.0"),
+                      encoding="utf-8")
+
+    s = Settings(kovaaks_root=str(tmp_path))
+    engine = AdaptationEngine(s, rng=np.random.default_rng(7))
+    prof = PlayerProfile(scenario="mini test [Adaptive]")
+    prof.movement = 0.9                      # the planner really does want speed
+    plan = engine.plan(prof, None)
+    assert plan.target_max_speed > 0, "the plan must be asking for motion"
+
+    base = SceFile.read(static)
+    out = SceFile.read(generate_adaptive_variant(static, plan, s, tmp_path / "o.sce"))
+
+    for char in ("target_char",):
+        assert out.get_in_section("Character Profile", char, "MaxSpeed") == \
+            base.get_in_section("Character Profile", char, "MaxSpeed")
+    for key in ("JumpFrequency", "LeftStrafeTimeMult", "RightStrafeTimeMult"):
+        assert out.get_in_section("Dodge Profile", "Mimic", key) == \
+            base.get_in_section("Dodge Profile", "Mimic", key), key
+    # ...and the generator reports it, the same contract as focus_applied
+    assert plan.motion_applied is False
+
+    # SIZE AND SPAWNS STILL ADAPT. Both were confirmed working in the same
+    # in-game session, and the gate must not touch them.
+    assert float(out.get_in_section("Character Profile", "target_char",
+                                    "MainBBRadius")) != \
+        float(base.get_in_section("Character Profile", "target_char", "MainBBRadius"))
+
+
+def test_a_scenario_with_acceleration_still_gets_its_motion(mini_sce, tmp_path):
+    """The gate reads the FILE's capability, so a base that can move keeps
+    every change — and a base with no Acceleration line at all is not making
+    a claim either way and keeps them too."""
+    txt = mini_sce.read_text(encoding="utf-8")
+    s = Settings(kovaaks_root=str(tmp_path))
+    prof = PlayerProfile(scenario="mini test [Adaptive]")
+    prof.movement = 0.9
+
+    for label, body in (("accelerates", txt.replace(
+                            "MaxSpeed=0.0", "MaxSpeed=0.0\nAcceleration=9000.0")),
+                        ("no accel key", txt)):
+        src = tmp_path / f"{label.replace(' ', '_')}.sce"
+        src.write_text(body, encoding="utf-8")
+        engine = AdaptationEngine(s, rng=np.random.default_rng(7))
+        plan = engine.plan(prof, None)
+        out = SceFile.read(generate_adaptive_variant(
+            src, plan, s, tmp_path / f"{label.replace(' ', '_')}_out.sce"))
+        got = float(out.get_in_section("Character Profile", "target_char", "MaxSpeed"))
+        assert got == pytest.approx(plan.target_max_speed), label
+        assert plan.motion_applied is True, label

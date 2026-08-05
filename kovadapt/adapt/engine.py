@@ -66,6 +66,24 @@ class AdaptationPlan:
     # bandit arm for an emphasis the player never actually saw. Defaults True
     # so a plan that never reaches the generator behaves exactly as before.
     focus_applied: bool = True
+    # Also written by the GENERATOR: whether the target bots can MOVE at all.
+    # A KovaaK's bot needs Acceleration > 0 to ever reach its MaxSpeed, and a
+    # static-wall scenario is authored `MaxSpeed=0, Acceleration=0`. Setting
+    # MaxSpeed alone on one of those changes nothing the game can act on — and
+    # because nothing moves, the Left/RightStrafeTimeMult skew and the jump
+    # frequency are inert with it.
+    #
+    # Verified in the running game rather than inferred: a variant written with
+    # MaxSpeed 102.5, strafe skew 1.591/0.650 and JumpFrequency 0.211 was
+    # played, and the targets did not move, strafe or jump. Across all 33 local
+    # scenarios every one whose targets move carries Acceleration 450-20000 and
+    # every static one carries 0, with no exceptions.
+    #
+    # kovadapt does NOT add acceleration to a scenario that has none: a static
+    # click-timing wall is that by design, and making it move would change what
+    # the task trains rather than how hard it is. Motion adaptation is reserved
+    # for scenarios that already move.
+    motion_applied: bool = True
 
     def describe(self) -> str:
         out = (
