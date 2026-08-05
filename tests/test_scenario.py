@@ -481,8 +481,11 @@ def test_a_scenario_with_acceleration_still_gets_its_motion(mini_sce, tmp_path):
     prof = PlayerProfile(scenario="mini test [Adaptive]")
     prof.movement = 0.9
 
-    for label, body in (("accelerates", txt.replace(
-                            "MaxSpeed=0.0", "MaxSpeed=0.0\nAcceleration=9000.0")),
+    # BOTH keys. Acceleration alone is not motion: `1wall 2targets small -
+    # valorant` authors Acceleration=16000 against MaxSpeed=0 and stands
+    # still, and an earlier version of this test encoded that wrong rule.
+    for label, body in (("self-propelled", txt.replace(
+                            "MaxSpeed=0.0", "MaxSpeed=1300.0\nAcceleration=9000.0")),
                         ("no accel key", txt)):
         src = tmp_path / f"{label.replace(' ', '_')}.sce"
         src.write_text(body, encoding="utf-8")
@@ -491,7 +494,14 @@ def test_a_scenario_with_acceleration_still_gets_its_motion(mini_sce, tmp_path):
         out = SceFile.read(generate_adaptive_variant(
             src, plan, s, tmp_path / f"{label.replace(' ', '_')}_out.sce"))
         got = float(out.get_in_section("Character Profile", "target_char", "MaxSpeed"))
-        assert got == pytest.approx(plan.target_max_speed), label
+        # Two speed paths, chosen by what the AUTHOR wrote. A base that
+        # authors a speed is modulated around it; a base that authors none
+        # takes the absolute ramp. Asserting the ramp for both was the bug in
+        # the first version of this test.
+        if label == "self-propelled":
+            assert got == pytest.approx(1300.0 * plan.target_speed_mult), label
+        else:
+            assert got == pytest.approx(plan.target_max_speed), label
         assert plan.motion_applied is True, label
 
 
@@ -596,3 +606,59 @@ MaxSpeed=0.0
     assert _expand_added_bots(sce2) == ["A", "missing"]
     bots, chars = _target_profiles(sce2)
     assert chars == ["charA"], "a bot whose character does not exist was counted"
+
+
+def test_target_motion_is_four_valued_because_two_is_not_enough(tmp_path):
+    """A boolean motion test is wrong in BOTH directions on the real corpus.
+
+    `1wall 2targets small - valorant` and `1wall 6targets small Horizontalish`
+    author Acceleration=16000 against MaxSpeed=0 and stand still; Pressure
+    Aiming's balloons author both as 0 and cross the room on a movement
+    ability at MainVelocity 5000. Six of the eight ability-propelled units in
+    the corpus would pass a bare `Acceleration > 0` check.
+
+    The page has to say something TRUE about each, which is why kovadapt
+    distinguishes "does it move" from "can kovadapt drive it".
+    """
+    from kovadapt.scenario.capability import (GRAVITY, IMPULSE, SELF, STATIC,
+                                              UNKNOWN, can_express_motion,
+                                              drivable_motion, target_motion)
+
+    def sce(**over):
+        keys = {"MaxSpeed": "0.0", "Acceleration": "0.0", "Gravity": "0.0",
+                "AbilityProfileNames": ";;;"}
+        keys.update(over)
+        body = "Name=t\n\n[Character Profile]\nName=c\n" + "".join(
+            f"{k}={v}\n" for k, v in keys.items() if v is not None)
+        body += ("\n[Movement Ability Profile]\nName=Push\n"
+                 "MainVelocity=5000.0\nUpVelocity=0.0\n"
+                 "\n[Movement Ability Profile]\nName=Still\n"
+                 "MainVelocity=0.0\nUpVelocity=0.0\n")
+        p = tmp_path / "m.sce"
+        p.write_text(body, encoding="utf-8")
+        return SceFile.read(p)
+
+    assert target_motion(sce(MaxSpeed="1300.0", Acceleration="9000.0"), "c") == SELF
+    # each key alone is NOT motion
+    assert target_motion(sce(Acceleration="16000.0"), "c") == STATIC
+    assert target_motion(sce(MaxSpeed="1300.0"), "c") == STATIC
+    assert target_motion(sce(AbilityProfileNames="Push.abilmov"), "c") == IMPULSE
+    assert target_motion(sce(Gravity="1.875"), "c") == GRAVITY
+    assert target_motion(sce(), "c") == STATIC
+    # a missing key is not a claim of stillness
+    assert target_motion(sce(Acceleration=None), "c") == UNKNOWN
+
+    # an ability that is named but carries no velocity is not a movement source
+    assert target_motion(sce(AbilityProfileNames="Still.abilmov"), "c") == STATIC
+    # ...nor is a dangling reference to one that does not exist
+    assert target_motion(sce(AbilityProfileNames="Ghost.abilmov"), "c") == STATIC
+
+    # MOVES vs KOVADAPT CAN DRIVE IT are different questions
+    assert can_express_motion({IMPULSE}) and not drivable_motion({IMPULSE})
+    assert can_express_motion({GRAVITY}) and not drivable_motion({GRAVITY})
+    assert can_express_motion({SELF}) and drivable_motion({SELF})
+    assert not can_express_motion({STATIC}) and not drivable_motion({STATIC})
+    # nothing resolved is never "no motion"
+    assert not can_express_motion(set()) and not drivable_motion(set())
+    assert can_express_motion({UNKNOWN}) and drivable_motion({UNKNOWN})
+    assert not can_express_motion({UNKNOWN}, unknown_is_capable=False)

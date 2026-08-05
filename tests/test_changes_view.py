@@ -633,13 +633,17 @@ def test_the_page_owns_no_second_charting_stack(qapp, tmp_path):
     assert "import pyqtgraph" not in src
 
 
-def _static_wall(tmp_path, accel="0.0"):
-    """An install whose base .sce authors Acceleration — the key that decides
-    whether a KovaaK's bot can ever reach its MaxSpeed."""
+def _static_wall(tmp_path, accel="0.0", speed="0.0"):
+    """An install whose base .sce authors both motion keys.
+
+    BOTH matter: a bot needs a MaxSpeed to reach and the Acceleration to
+    reach it. Either alone leaves it standing still, which is why this helper
+    takes two arguments and not one.
+    """
     s = _install(tmp_path)
     p = s.scenarios_dir / "Wall Task.sce"
     txt = p.read_text(encoding="utf-8")
-    txt = txt.replace("MaxSpeed=1300.0", f"MaxSpeed=0.0\nAcceleration={accel}")
+    txt = txt.replace("MaxSpeed=1300.0", f"MaxSpeed={speed}\nAcceleration={accel}")
     p.write_text(txt, encoding="utf-8")
     return s
 
@@ -672,7 +676,9 @@ def test_a_scenario_whose_targets_cannot_move_says_so_instead_of_pretending():
         for key in ("target_speed", "dodge_bias", "movement"):
             k = knobs[key]
             assert k.flag == "no effect", key
-            assert "Acceleration=0" in k.note, key
+            # the note names WHY, and the why must be true of this file —
+            # it used to assert Acceleration=0 for every gated scenario
+            assert "authored to hold still" in k.note, key
             assert "still adapt" in k.note, "it must say what DOES work"
 
         # the two that were confirmed working are untouched by the gate
@@ -687,13 +693,34 @@ def test_a_scenario_that_does_move_keeps_all_five_criteria():
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
-        s = _static_wall(Path(td), accel="9000.0")
+        s = _static_wall(Path(td), accel="9000.0", speed="1300.0")
         prof = _trained()
         facts = read_sce_facts(s, "Wall Task", prof.last_focus)
         assert facts.can_move is True
         knobs = build_knobs(prof, s, facts,
                             read_report_evidence(s.profile_path, "Wall Task"))
         assert not any(k.flag == "no effect" for k in knobs)
+
+
+def test_acceleration_without_a_speed_to_reach_is_not_motion():
+    """The trap that a boolean Acceleration test walks straight into.
+
+    `1wall 2targets small - valorant` and `1wall 6targets small Horizontalish`
+    — both in the played library — author `Acceleration=16000` against
+    `MaxSpeed=0`. There is nothing to accelerate toward and the targets stand
+    still, but an Acceleration-only gate calls them movable and writes the
+    0-170 ramp into them.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        s = _static_wall(Path(td), accel="16000.0", speed="0.0")
+        facts = read_sce_facts(s, "Wall Task", "r2c1")
+        assert facts.can_move is False, \
+            "acceleration with no speed to reach was read as motion"
+        knobs = {k.key: k for k in build_knobs(
+            _trained(), s, facts, read_report_evidence(s.profile_path, "Wall Task"))}
+        assert knobs["target_speed"].flag == "no effect"
 
 
 def test_an_unreadable_acceleration_is_not_treated_as_a_limit():
@@ -703,9 +730,9 @@ def test_an_unreadable_acceleration_is_not_treated_as_a_limit():
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
-        s = _install(Path(td))            # no Acceleration key at all
+        s = _install(Path(td))            # authors MaxSpeed, no Acceleration key
         facts = read_sce_facts(s, "Wall Task", "r2c1")
-        assert facts.accel == {} or all(v == 0 for v in facts.accel.values()) or True
+        assert set(facts.motion.values()) == {"UNKNOWN"}, facts.motion
         assert facts.can_move is True, "absence of the key is not evidence of a limit"
 
 
@@ -736,4 +763,64 @@ def test_an_inert_value_already_in_the_file_is_still_reported_as_being_there():
         assert speed.now == pytest.approx(76.7), \
             "the page stopped reporting a number that is really in the file"
         assert speed.flag == "no effect"
-        assert "Acceleration=0" in speed.note
+        assert "authored to hold still" in speed.note
+
+
+def test_the_gate_says_something_true_about_each_kind_of_stillness():
+    """A gate can be right about the write and wrong about the reason, and the
+    reason is what is on screen.
+
+    The first version asserted "every target character authors
+    Acceleration=0" for every gated scenario. That is false twice over on the
+    real corpus: `1wall 6targets small Horizontalish` authors
+    Acceleration=16000 against MaxSpeed=0, and Pressure Aiming's balloons
+    cross the room on a movement ability while authoring both keys as 0.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        # authored to hold still
+        s = _static_wall(Path(td), accel="0.0", speed="0.0")
+        facts = read_sce_facts(s, "Wall Task", "r2c1")
+        note = {k.key: k for k in build_knobs(
+            _trained(), s, facts,
+            read_report_evidence(s.profile_path, "Wall Task"))}["target_speed"].note
+        assert "authored to hold still" in note
+        assert "Acceleration" not in note, "asserted a key value it did not read"
+
+    with tempfile.TemporaryDirectory() as td:
+        # accelerates, but has no speed to reach: still, and NOT because
+        # Acceleration is zero
+        s = _static_wall(Path(td), accel="16000.0", speed="0.0")
+        facts = read_sce_facts(s, "Wall Task", "r2c1")
+        assert facts.can_move is False and facts.moves_but_not_drivably is False
+        note = {k.key: k for k in build_knobs(
+            _trained(), s, facts,
+            read_report_evidence(s.profile_path, "Wall Task"))}["target_speed"].note
+        assert "Acceleration=0" not in note, \
+            "claimed Acceleration=0 about a file authoring 16000"
+
+
+def test_a_target_that_moves_by_a_route_kovadapt_cannot_write_is_named_as_such(tmp_path):
+    """Saying "these targets cannot move" about Pressure Aiming's balloons —
+    which visibly approach and depart — would be false. What is true is that
+    kovadapt drives a MaxSpeed and a strafe timer, and neither is what moves
+    them."""
+    s = _install(tmp_path)
+    p = s.scenarios_dir / "Wall Task.sce"
+    txt = p.read_text(encoding="utf-8").replace(
+        "MaxSpeed=1300.0",
+        "MaxSpeed=0.0\nAcceleration=0.0\nAbilityProfileNames=Push.abilmov")
+    p.write_text(txt + "\n[Movement Ability Profile]\nName=Push\n"
+                 "MainVelocity=5000.0\nUpVelocity=0.0\n", encoding="utf-8")
+
+    facts = read_sce_facts(s, "Wall Task", "r2c1")
+    assert set(facts.motion.values()) == {"IMPULSE"}
+    assert facts.can_move is False, "kovadapt cannot drive an impulse"
+    assert facts.moves_but_not_drivably is True
+
+    note = {k.key: k for k in build_knobs(
+        _trained(), s, facts,
+        read_report_evidence(s.profile_path, "Wall Task"))}["target_speed"].note
+    assert "move on a movement ability" in note
+    assert "hold still" not in note, "called a moving target still"

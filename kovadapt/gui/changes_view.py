@@ -79,6 +79,7 @@ from ..adapt.bandit import ThompsonRegionBandit
 from ..adapt.stochastic import movement_speed, speed_multiplier
 from ..analysis.insights import _region_words
 from ..analysis.movement import MIN_FLICK_DEG, YAW_DEG_PER_COUNT
+from ..scenario.capability import target_motion
 from ..analysis.report import input_degraded
 from ..config import ADAPTIVE_SUFFIX, Settings
 from ..profile.player import PlayerProfile, _slug
@@ -148,6 +149,19 @@ _BIAS_MIN_FLICKS = 8
 # What a report with no `flick_floor_deg` was measured at: 15 counts at the
 # sens-1.0 yaw. Named rather than inlined so the page can say the number.
 _LEGACY_FLOOR_DEG = round(15.0 * YAW_DEG_PER_COUNT, 2)
+
+
+def _motion_words(facts: SceFacts) -> str:
+    """How the targets move, named so the reader can check it in the file."""
+    from ..scenario.capability import GRAVITY, IMPULSE
+
+    kinds = set(facts.motion.values())
+    parts = []
+    if IMPULSE in kinds:
+        parts.append("a movement ability")
+    if GRAVITY in kinds:
+        parts.append("gravity")
+    return " and ".join(parts) or "a route kovadapt does not write"
 
 
 def _floor_phrase(floors: tuple[float, ...]) -> str:
@@ -403,16 +417,16 @@ class SceFacts:
     # arithmetic while the file never changes.
     authored: dict[str, float] = field(default_factory=dict)
     no_speed_key: tuple[str, ...] = ()
-    # ACCELERATION, per target character. A KovaaK's bot needs this above zero
-    # to ever reach its MaxSpeed, so a scenario authored `MaxSpeed=0,
-    # Acceleration=0` is a static wall and no speed, strafe or jump value
-    # written into it changes anything the game does.
+    # HOW each target character moves — scenario/capability.py's four-valued
+    # answer, keyed by character. Established by playing a generated variant:
+    # MaxSpeed 102.5, strafe skew 1.591/0.650 and JumpFrequency 0.211, and the
+    # targets did not move, strafe or jump.
     #
-    # Established by playing a generated variant: MaxSpeed 102.5, strafe skew
-    # 1.591/0.650 and JumpFrequency 0.211, and the targets did not move,
-    # strafe or jump. Across all 33 local scenarios every mover carries
-    # Acceleration 450-20000 and every static one carries 0.
-    accel: dict[str, float] = field(default_factory=dict)
+    # Four-valued rather than a boolean because the page has to say something
+    # TRUE. "These targets cannot move" is false about Pressure Aiming's
+    # balloons, which cross the room on a movement ability; what is true is
+    # that kovadapt cannot drive them.
+    motion: dict[str, str] = field(default_factory=dict)
     # The MaxSpeed those same characters carry in the VARIANT. The ladder plots
     # its speed reading from these rather than from the model, because the
     # emitted plan is what the game loads: `plan(fatigue=...)` eases the emitted
@@ -427,18 +441,31 @@ class SceFacts:
 
     @property
     def can_move(self) -> bool:
-        """Whether the targets in this scenario can move at all.
+        """Whether kovadapt's speed and dodge writes can drive these targets.
 
         False makes three of the five criteria on this page inexpressible —
         target speed, movement/pace and dodge skew all describe HOW something
         moves. The page says so instead of printing numbers the file will
         carry and the game will ignore.
 
-        Unknown (no Acceleration read at all) counts as movable: it is the
-        older-file case, and claiming a limit we have not measured would be
-        the same failure in the other direction.
+        Unknown counts as drivable: that is the older-file case, and claiming
+        a limit we have not measured would be the same failure in the other
+        direction.
         """
-        return (not self.accel) or any(v > 0 for v in self.accel.values())
+        from ..scenario.capability import drivable_motion
+        return drivable_motion(set(self.motion.values()) or {"UNKNOWN"})
+
+    @property
+    def moves_but_not_drivably(self) -> bool:
+        """Targets that move by a route kovadapt does not write.
+
+        Six scenarios here: the Pressure Aiming pair, Reactive Flick and Skeet
+        Tracking move on movement abilities; Piano Tiles and Valorant Small
+        Flicks fall. Saying "cannot move" about any of them would be false.
+        """
+        from ..scenario.capability import MOVING, SELF
+        kinds = set(self.motion.values())
+        return bool(kinds & set(MOVING)) and SELF not in kinds
 
     @property
     def speed_paths(self) -> dict[str, str]:
@@ -720,7 +747,7 @@ def read_sce_facts(settings: Settings, base: str,
     # collapsed to 0.0 here, which put such a scenario on the static-wall ramp
     # in this page's arithmetic while its file never moved.
     authored: dict[str, float] = {}
-    accel: dict[str, float] = {}
+    motion: dict[str, str] = {}
     no_key: list[str] = []
     written_speeds: dict[str, float] = {}
     for char in chars:
@@ -734,9 +761,7 @@ def read_sce_facts(settings: Settings, base: str,
         # it cannot move, and recording it as 0.0 would strip three criteria
         # off every older or hand-written file. Only a key that is really
         # there counts as evidence either way.
-        raw_accel = src.get_in_section("Character Profile", char, "Acceleration")
-        if raw_accel is not None:
-            accel[char] = _num(raw_accel) or 0.0
+        motion[char] = target_motion(src, char)
         # Only for characters the BASE authors a readable speed for: without the
         # author's own number there is nothing to read the written one against.
         wrote = _num(var.get_in_section("Character Profile", char, "MaxSpeed")) \
@@ -777,7 +802,7 @@ def read_sce_facts(settings: Settings, base: str,
     return SceFacts(
         base_path=base_path, variant_path=var_path, have_base=True,
         have_variant=var is not None, variant_on_disk=on_disk,
-        chars=tuple(chars), authored=authored, accel=accel,
+        chars=tuple(chars), authored=authored, motion=motion,
         no_speed_key=tuple(no_key), written_speeds=written_speeds,
         rows=tuple(rows), extra_sections=extra,
         spawns=spawns,
@@ -1536,10 +1561,21 @@ def build_knobs(profile: PlayerProfile, settings: Settings, facts: SceFacts,
         # the row must keep saying so. Once regenerated the file carries the
         # author's own value and the row reads baseline-to-baseline on its
         # own, with no special case.
-        why = ("no effect here: every target character authors "
-               "Acceleration=0, and a KovaaK's bot needs that above zero to "
-               "reach any MaxSpeed, so nothing written on this axis can move "
-               "anything. Size and spawn placement still adapt.")
+        # THE SENTENCE HAS TO MATCH THE FILE. The first version asserted
+        # "every target character authors Acceleration=0" for every gated
+        # scenario, which is false twice over: `1wall 6targets small
+        # Horizontalish` authors Acceleration=16000 against MaxSpeed=0, and
+        # Pressure Aiming's balloons cross the room on a movement ability
+        # while authoring both keys as 0. A gate can be right about the write
+        # and wrong about the reason, and the reason is what is on screen.
+        why = ("no effect here: these targets move on "
+               f"{_motion_words(facts)}, which is not something kovadapt "
+               "writes — it drives a MaxSpeed and a strafe timer, and neither "
+               "is what moves them. Size and spawn placement still adapt."
+               if facts.moves_but_not_drivably else
+               "no effect here: these targets are authored to hold still, so "
+               "nothing written on this axis can move anything. Size and "
+               "spawn placement still adapt.")
         knobs = [
             replace(k, flag="no effect",
                     note=(f"{k.note} — and {why}" if k.note else

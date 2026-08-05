@@ -17,6 +17,7 @@ import numpy as np
 
 from ..adapt.engine import AdaptationPlan
 from ..config import ADAPTIVE_SUFFIX, Settings
+from .capability import drivable_motion, scenario_motion
 from .sce import SceFile, SpawnPoint
 
 _SIZE_KEYS = ("MainBBRadius", "MainBBHeight", "MainBBHeadRadius",
@@ -139,27 +140,6 @@ def resample_spawns(sce: SceFile, weights: dict[str, float],
     return set(alloc)
 
 
-def _accel_of(sce: SceFile, char: str) -> float | None:
-    """Acceleration on one [Character Profile]; None when the key is ABSENT.
-
-    KovaaK's needs this above zero for a bot to ever reach its MaxSpeed — it
-    is the difference between a scenario whose targets strafe and one authored
-    as a static wall, and kovadapt had never read it.
-
-    Absent is not zero, the same distinction this module already draws for
-    MaxSpeed. A file with no Acceleration line has not said its targets are
-    static, and treating it as 0.0 would strip the speed and dodge changes off
-    every older or hand-written scenario.
-    """
-    raw = sce.get_in_section("Character Profile", char, "Acceleration")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 def _expand_added_bots(sce: SceFile) -> list[str]:
     """Every [Bot Profile] name the scenario adds, with rotations expanded.
 
@@ -239,12 +219,15 @@ def generate_adaptive_variant(
     bot_names, char_names = _target_profiles(sce)
 
     # --- target size + speed ---------------------------------------------
-    # CAN THESE BOTS MOVE? Acceleration gates it: a bot with a MaxSpeed and no
-    # acceleration never leaves a standstill, which is exactly how a static
-    # wall is authored. Checked before anything is written, because it decides
-    # whether two of the three knobs below mean anything at all.
-    _known = [a for a in (_accel_of(sce, c) for c in char_names) if a is not None]
-    can_move = (not _known) or any(a > 0 for a in _known)
+    # CAN KOVAAK'S DRIVE THESE BOTS? Not "do they move" — the narrower
+    # question of whether a MaxSpeed and a dodge timer are what moves them.
+    # An Acceleration test alone was wrong in BOTH directions on the real
+    # corpus: `1wall 2targets small - valorant` authors Acceleration=16000
+    # against MaxSpeed=0 and stands still, while Pressure Aiming's balloons
+    # author both as 0 and cross the room on a movement ability. See
+    # scenario/capability.py.
+    kinds = scenario_motion(sce, char_names)
+    can_move = drivable_motion(kinds)
 
     for char in char_names:
         span = sce.find_section("Character Profile", char)
