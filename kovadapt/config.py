@@ -145,6 +145,13 @@ class Settings:
     # — KovaaK's (Quake-lineage) yaw is 0.022 deg per mouse count at sens 1.0.
     # Defaults are the common 800 dpi / 1.0; set either to 0 to mark
     # sensitivity as not configured (disables the sensitivity card).
+    #: How far a dodge value may move from what the author wrote, either way.
+    #: 0.35 means the emitted value stays within +-35% of the authored one, so
+    #: kovadapt nudges a scenario rather than relocating it to an absolute
+    #: difficulty point — and its ceiling can never sit below an author's
+    #: floor, which is what made maximum difficulty reduce the jump rate on 13
+    #: of the 54 authored profiles in the corpus.
+    dodge_relative_span: float = 0.35
     mouse_dpi: float = 800.0
     game_sens: float = 1.0
     # --- App shell (v0.4+): theme, overlay, onboarding ---

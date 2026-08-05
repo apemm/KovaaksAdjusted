@@ -230,9 +230,21 @@ def test_generate_variant(mini_sce: Path, tmp_path: Path):
     r = float(sce.get_in_section("Character Profile", "target_char", "MainBBRadius"))
     assert abs(r - 0.5 * plan.target_scale) < 1e-6
     assert sce.get_in_section("Character Profile", "Player", "MainBBRadius") == "1.0"
-    # dodge params patched (Bot Profile located by the *bot* name)
-    got = float(sce.get_in_section("Dodge Profile", "Mimic", "JumpFrequency"))
-    assert abs(got - plan.dodge_params["JumpFrequency"]) < 1e-6
+    # dodge params patched (Bot Profile located by the *bot* name), and the
+    # hold window moved relative to the author's own numbers
+    base = SceFile.read(mini_sce)
+    for key in ("MinLRTimeChange", "MaxLRTimeChange"):
+        was = float(base.get_in_section("Dodge Profile", "Mimic", key))
+        now = float(sce.get_in_section("Dodge Profile", "Mimic", key))
+        assert now != was, f"{key} was not patched at all"
+        assert abs(now - was) <= was * (s.dodge_relative_span + 0.05)
+    # This fixture carries no JumpVelocity or Gravity at all, so the jump
+    # channel is UNKNOWN rather than NO — an old file, not a claim of
+    # stillness — and UNKNOWN attempts, matching what drivable_motion does
+    # with the same absence. The value still moves relative to the author's.
+    was = float(base.get_in_section("Dodge Profile", "Mimic", "JumpFrequency"))
+    now = float(sce.get_in_section("Dodge Profile", "Mimic", "JumpFrequency"))
+    assert abs(now - was) <= was * (s.dodge_relative_span + 0.05)
     # wall spawn count preserved (within rounding), all positions original
     pts = sce.spawn_points()
     wall = _wall_pts(pts)
@@ -399,9 +411,23 @@ def test_real_generate_variant_cata(kovaaks_root: Path, tmp_path: Path):
         assert base_speed > 0
         assert float(gen.get_in_section("Character Profile", "Quaker", "MaxSpeed")) == \
             pytest.approx(round(base_speed * plan.target_speed_mult, 1))
-    for key, val in plan.dodge_params.items():
+    # Dodge values are RELATIVE to what the author wrote, not the plan's
+    # absolute intent: within +-span of the authored number, so kovadapt
+    # nudges this scenario rather than relocating it to a fixed difficulty.
+    span = s.dodge_relative_span
+    for key in ("MinLRTimeChange", "MaxLRTimeChange", "LeftStrafeTimeMult"):
+        was = base.get_in_section("Dodge Profile", "Short Strafes", key)
         got = gen.get_in_section("Dodge Profile", "Short Strafes", key)
-        assert got is not None and float(got) == pytest.approx(val, abs=1e-6)
+        if was is None:
+            continue
+        assert got is not None, key
+        lo, hi = float(was) * (1 - span) * 0.95, float(was) * (1 + span) * 1.05
+        assert lo <= float(got) <= hi, f"{key}: {was} -> {got} left the band"
+    # and the hold window is still a window
+    assert float(gen.get_in_section("Dodge Profile", "Short Strafes",
+                                    "MinLRTimeChange")) <= \
+        float(gen.get_in_section("Dodge Profile", "Short Strafes",
+                                 "MaxLRTimeChange"))
 
 
 def test_generate_variant_authored_speed_is_scaled_not_replaced(tmp_path: Path):
@@ -816,3 +842,120 @@ def test_a_json_map_is_spawn_blind_not_spawn_free(tmp_path):
     cap = read_capability(SceFile.read(json_map))
     assert cap.spawn_field == "BLIND"
     assert cap.spawn_field != "NO", "asserted an absence it never read"
+
+
+def test_dodge_writes_stay_inside_the_authors_own_band(tmp_path):
+    """Arjun's decision: kovadapt nudges a scenario rather than relocating it
+    to an absolute difficulty point.
+
+    The absolute form failed two ways that a relative one cannot. Its ceiling
+    could sit BELOW an author's floor — JumpFrequency capped at 0.35 while 13
+    of the 54 authored values in the corpus exceed it, so maximum difficulty
+    made `1wall 6targets small` and `mccoyfrozentrack` (both 0.50) jump LESS
+    than intended. And it wrote one value to every profile, erasing deliberate
+    contrast like Surge Tags' 0.0 / 0.9 / 0.8 / 0.02 / 0.02.
+    """
+    from kovadapt.adapt.stochastic import relative_dodge_writes
+
+    authored = {"JumpFrequency": 0.5, "MinLRTimeChange": 0.2,
+                "MaxLRTimeChange": 0.5, "LeftStrafeTimeMult": 1.0}
+    rng = np.random.default_rng(4)
+
+    # maximum intensity makes it HARDER than the author wrote, never easier
+    hard = relative_dodge_writes(authored, 1.0, rng=np.random.default_rng(4))
+    assert hard["JumpFrequency"] > 0.5, "max difficulty jumped less than authored"
+    assert hard["MinLRTimeChange"] < 0.2, "max difficulty held longer than authored"
+
+    # minimum makes it easier, and the neutral point returns the author's own
+    easy = relative_dodge_writes(authored, 0.0, rng=np.random.default_rng(4))
+    assert easy["JumpFrequency"] < 0.5 and easy["MinLRTimeChange"] > 0.2
+    mid = relative_dodge_writes(authored, 0.5, rng=np.random.default_rng(4))
+    assert mid["JumpFrequency"] == pytest.approx(0.5, rel=0.06)
+
+    # NO INVERSION. One common factor per profile, so a profile the author
+    # wrote higher can never come out lower. Order can TIE at the top — 0.8
+    # and 0.9 both reach the probability ceiling of 1.0 — and a tie is a loss
+    # of resolution, not an inversion. Asserting an exact permutation would be
+    # asserting that the clamp does not exist.
+    surge = [0.0, 0.9, 0.8, 0.02, 0.02]
+    out = [relative_dodge_writes({"JumpFrequency": v}, 1.0,
+                                 rng=np.random.default_rng(9))["JumpFrequency"]
+           for v in surge]
+    for i, a in enumerate(surge):
+        for j, b in enumerate(surge):
+            if a < b:
+                assert out[i] <= out[j], (
+                    f"authored {a} < {b} but emitted {out[i]} > {out[j]}")
+
+    # a frequency used as a probability never exceeds 1
+    assert relative_dodge_writes({"JumpFrequency": 0.95}, 1.0,
+                                 rng=rng)["JumpFrequency"] <= 1.0
+    # a key the author never wrote is never invented: set_in_section only
+    # rewrites an existing line, so an invented value goes nowhere
+    assert "MinFBTimeChange" not in relative_dodge_writes(authored, 1.0, rng=rng)
+
+    # the hold window stays a window, however the jitter falls
+    for seed in range(300):
+        r = relative_dodge_writes({"MinLRTimeChange": 0.30, "MaxLRTimeChange": 0.31},
+                                  0.5, rng=np.random.default_rng(seed))
+        assert r["MinLRTimeChange"] <= r["MaxLRTimeChange"], seed
+
+
+def test_a_jump_frequency_is_not_written_where_nothing_can_jump(tmp_path):
+    """A frequency is inert without something to jump WITH. kovadapt wrote one
+    onto characters whose JumpVelocity is 0, where no value produces a jump —
+    a number in the file that the game reads and cannot act on.
+
+    NO suppresses; UNKNOWN does not. A file with no JumpVelocity line has not
+    said its targets are grounded, and suppressing there would contradict what
+    `drivable_motion` does with the same absence.
+    """
+    base = _cap_sce(tmp_path, target=("1300.0", "9000.0"),
+                    jump=("0.0", "0.0"), extra="JumpFrequency=0.5\n")
+    p = tmp_path / "nojump.sce"
+    p.write_text("\n".join(base.lines), encoding="utf-8")
+
+    s = Settings(kovaaks_root=str(tmp_path))
+    prof = PlayerProfile(scenario="cap [Adaptive]")
+    prof.movement = 0.9
+    plan = AdaptationEngine(s, rng=np.random.default_rng(5)).plan(prof, None)
+    out = SceFile.read(generate_adaptive_variant(p, plan, s, tmp_path / "o.sce"))
+
+    assert out.get_in_section("Dodge Profile", "D", "JumpFrequency") == "0.5", \
+        "wrote a jump frequency onto a target that cannot jump"
+    # ...while the strafe keys, which this target CAN act on, did move
+    assert out.get_in_section("Dodge Profile", "D", "ToggleLeftRight") == "true"
+
+    # and with a real jump channel it is written
+    jumper = _cap_sce(tmp_path, target=("1300.0", "9000.0"),
+                      jump=("800.0", "1.5"), extra="JumpFrequency=0.5\n")
+    p2 = tmp_path / "jump.sce"
+    p2.write_text("\n".join(jumper.lines), encoding="utf-8")
+    out2 = SceFile.read(generate_adaptive_variant(p2, plan, s, tmp_path / "o2.sce"))
+    assert out2.get_in_section("Dodge Profile", "D", "JumpFrequency") != "0.5"
+
+
+def test_strafe_timings_are_not_written_where_nothing_strafes(tmp_path):
+    """`MinLRTimeChange` and the strafe multipliers scale a left/right timer.
+    A dodge profile with `ToggleLeftRight=false` has no such timer, so those
+    keys are inert there however the target moves — `Revolving Tracking` is
+    self-propelled and carries exactly that shape."""
+    base = _cap_sce(tmp_path, target=("1300.0", "9000.0"), lr="false",
+                    extra="MinLRTimeChange=0.2\nMaxLRTimeChange=0.5\n"
+                          "LeftStrafeTimeMult=1.0\nRightStrafeTimeMult=1.0\n"
+                          "JumpFrequency=0.5\n", jump=("800.0", "1.5"))
+    p = tmp_path / "nostrafe.sce"
+    p.write_text("\n".join(base.lines), encoding="utf-8")
+
+    s = Settings(kovaaks_root=str(tmp_path))
+    prof = PlayerProfile(scenario="cap [Adaptive]")
+    prof.movement = 0.9
+    plan = AdaptationEngine(s, rng=np.random.default_rng(6)).plan(prof, None)
+    out = SceFile.read(generate_adaptive_variant(p, plan, s, tmp_path / "o.sce"))
+
+    for key, was in (("MinLRTimeChange", "0.2"), ("MaxLRTimeChange", "0.5"),
+                     ("LeftStrafeTimeMult", "1.0"), ("RightStrafeTimeMult", "1.0")):
+        assert out.get_in_section("Dodge Profile", "D", key) == was, \
+            f"{key} was written onto a profile that does not strafe"
+    # the jump channel is real here and still moves
+    assert out.get_in_section("Dodge Profile", "D", "JumpFrequency") != "0.5"

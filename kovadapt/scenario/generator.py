@@ -17,13 +17,27 @@ import numpy as np
 
 from ..adapt.engine import AdaptationPlan
 from ..config import ADAPTIVE_SUFFIX, Settings
-from .capability import drivable_motion, scenario_motion
+from ..adapt.stochastic import relative_dodge_writes
+from .capability import (drivable_motion, jump_channel,
+                         scenario_motion, strafe_channel)
 from .sce import SceFile, SpawnPoint
 
 _SIZE_KEYS = ("MainBBRadius", "MainBBHeight", "MainBBHeadRadius",
               "ProjBBRadius", "ProjBBHeight", "ProjBBHeadRadius")
 
 _TEAM_FLAG_RE = re.compile(r"^\s*Bool8 (team[AB]) ")
+
+#: Every [Dodge Profile] key kovadapt may touch. Read from the file first: a
+#: key the author did not write is never invented, because `set_in_section`
+#: only rewrites an existing line and a value that goes nowhere is worse than
+#: no value at all.
+_DODGE_KEYS = ("MinLRTimeChange", "MaxLRTimeChange", "MinFBTimeChange",
+               "MaxFBTimeChange", "StrafeSwapMinPause", "StrafeSwapMaxPause",
+               "JumpFrequency", "LeftStrafeTimeMult", "RightStrafeTimeMult")
+#: The subset that only means something when a strafe timer exists.
+_STRAFE_KEYS = ("MinLRTimeChange", "MaxLRTimeChange", "StrafeSwapMinPause",
+                "StrafeSwapMaxPause", "LeftStrafeTimeMult",
+                "RightStrafeTimeMult")
 
 # One grid axis: (index into (x, y, z), lo extent, hi extent).
 Axis = tuple[int, float, float]
@@ -261,14 +275,46 @@ def generate_adaptive_variant(
         for ln in sce.lines[span[0]: span[1]]:
             if ln.startswith("DodgeProfileNames="):
                 dodge_names.update(d for d in ln.partition("=")[2].split(";") if d)
-    # Dodge params are strafe-time multipliers and a jump frequency: every one
-    # of them modifies HOW something moves, so on a scenario that cannot move
-    # they are numbers written into a file that no longer describes anything.
-    # Left unwritten rather than written-and-ignored, so the .sce stays the
-    # author's on the axes kovadapt cannot actually drive.
+    # Dodge params modify HOW something moves, so on a scenario that cannot
+    # move they are numbers written into a file that no longer describes
+    # anything. Left unwritten rather than written-and-ignored.
+    #
+    # RELATIVE TO WHAT THE AUTHOR WROTE, per profile. The absolute form had a
+    # ceiling that could sit below an author's floor — JumpFrequency capped at
+    # 0.35 while 13 of 54 authored values in the corpus exceed it, so maximum
+    # difficulty made those scenarios jump LESS than intended — and it wrote
+    # one value to every profile, erasing deliberate contrast like Surge Tags'
+    # 0.0/0.9/0.8/0.02/0.02. Scaling each profile by a common factor keeps the
+    # rank order the author chose.
+    strafe, _fb = strafe_channel(sce, bot_names, char_names)
+    jump = jump_channel(sce, bot_names, char_names)
     if can_move:
         for dodge in sorted(dodge_names):
-            for key, val in plan.dodge_params.items():
+            authored: dict[str, float] = {}
+            for key in _DODGE_KEYS:
+                raw = sce.get_in_section("Dodge Profile", dodge, key)
+                if raw is None:
+                    continue          # never invent a key the author omitted
+                try:
+                    authored[key] = float(raw)
+                except ValueError:
+                    continue
+            writes = relative_dodge_writes(
+                authored, plan.movement, plan.dodge_bias,
+                span=settings.dodge_relative_span,
+                rng=np.random.default_rng(plan.seed or None))
+            for key, val in writes.items():
+                # A jump frequency is inert without something to jump WITH:
+                # kovadapt wrote one onto characters with JumpVelocity=0,
+                # where no frequency produces a jump.
+                # Suppress on a definite NO only. UNKNOWN means the keys that
+                # decide are missing — an older file, not a claim — and it has
+                # to answer the same way `drivable_motion` does, or two gates
+                # reach opposite conclusions about one scenario.
+                if key == "JumpFrequency" and jump == "NO":
+                    continue
+                if key in _STRAFE_KEYS and strafe == "NO":
+                    continue
                 sce.set_in_section("Dodge Profile", dodge, key, val)
 
     # --- spawn region reweighting ------------------------------------------

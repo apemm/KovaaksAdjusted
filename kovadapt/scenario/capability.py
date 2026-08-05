@@ -238,7 +238,12 @@ def strafe_channel(sce: SceFile, bots, chars) -> tuple[str, bool]:
         return NO, False
     if SELF in kinds:
         return (YES if lr else NO), fb
-    if IMPULSE in kinds:
+    if IMPULSE in kinds or UNKNOWN in kinds:
+        # IMPULSE: the dodge block may be steering the impulse rather than
+        # scaling a strafe timer, and nothing in the corpus separates those.
+        # UNKNOWN: the motion keys are missing, so this is an old file, not a
+        # claim of stillness — and it must answer the same way `drivable_motion`
+        # does or the two gates disagree about the same scenario.
         return UNKNOWN, fb
     return NO, fb
 
