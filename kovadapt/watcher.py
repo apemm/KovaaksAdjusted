@@ -57,6 +57,7 @@ class SessionWatcher:
         self._ml_scorer = None
         self._ml_tried = False
         self._shadow_warned = False
+        self._frame_warned = False
 
     # ----------------------------------------------------------- telemetry
     def _start_capture(self) -> None:
@@ -296,12 +297,36 @@ class SessionWatcher:
         # Shadow-policy schema: profile state is captured BEFORE observe()
         # folds this run in (ml/shadow.py:SHADOW_LOG_SCHEMA).
         shadow_state = self._profile_state(profile, rep)
+        cap = _capability_of(self.s, self.base)
+        rep.player_frame = getattr(cap, "player_frame", "") if cap else ""
         # Bias needs both sides sampled: directional_bias returns 0.0 for
         # "no evidence" too, and a vertical-heavy run must not decay a
         # learned skew toward balanced.
         both_sides = (rep.bias.get("left", {}).get("n", 0) >= 3
                       and rep.bias.get("right", {}).get("n", 0) >= 3)
         bias = rep.bias.get("bias_score") if rep.n_flicks >= 8 and both_sides else None
+        # AND THE FRAME HAS TO HOLD STILL. `directional_bias` splits flicks by
+        # the direction the CROSSHAIR travelled, and a strafing player must
+        # counter-move constantly just to hold a target — so on a scenario
+        # that lets the player move, left/right badness measures which way
+        # they were strafing as much as which way they aim.
+        #
+        # This is the flick floor one level up: a measurement taken by a
+        # method that does not apply, steering the strafe skew written into
+        # the .sce. It is suppressed rather than discounted because there is
+        # no calibrated weight to discount it BY — see
+        # adapt/channels.py:measurement_mask.
+        if bias is not None and cap is not None:
+            from .adapt.channels import measurement_mask
+
+            if not measurement_mask(cap)["directional_bias"]:
+                bias = None
+                if not self._frame_warned:
+                    self._frame_warned = True
+                    self.log("  directional bias: not measured here — this "
+                             "scenario lets the player move, so left/right "
+                             "flick cost reflects counter-strafing as much "
+                             "as aim")
         self.engine.observe(
             profile, run,
             region_deficits=rep.region_deficits or None,
@@ -309,9 +334,7 @@ class SessionWatcher:
             fitts_slope_ms=rep.fitts_slope_ms or None,
         )
         fatigue = rep.fatigue.get("score", 0.0) if self.s.fatigue_easing else 0.0
-        plan = self.engine.plan(
-            profile, run, fatigue=fatigue,
-            capability=_capability_of(self.s, self.base))
+        plan = self.engine.plan(profile, run, fatigue=fatigue, capability=cap)
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )

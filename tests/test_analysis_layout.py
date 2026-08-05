@@ -1196,3 +1196,47 @@ def test_levelling_the_captions_does_not_ratchet_them_taller(qapp, settings):
         "— the minimum from the narrow pass was never cleared")
     view.close()
     view.deleteLater()
+
+
+def test_no_directional_verdict_on_a_scenario_that_lets_you_move(qapp, settings):
+    """`directional_bias` splits flicks by which way the CROSSHAIR travelled,
+    and a strafing player counter-moves constantly just to hold a target. On a
+    scenario that lets the player move, a left/right verdict measures which way
+    they strafed as much as which way they aim.
+
+    This is the flick floor one level up: a measurement taken by a method that
+    does not apply. 16 of the 49 real scenarios are in that state, including
+    mccoyfrozentrack — one of the three kovadapt adapts here.
+    """
+    from PySide6.QtTest import QTest
+
+    lopsided = {"left": {"n": 30, "overshoot": 0.9, "corrections": 2.0},
+                "right": {"n": 30, "overshoot": 0.1, "corrections": 0.2},
+                "vertical": {"n": 10, "overshoot": 0.2, "corrections": 0.5},
+                "bias_score": 0.8}
+    view = AnalysisView(settings)
+
+    still = _report(n_flicks=70, bias=lopsided, player_frame="STATIC",
+                    input_health={"jitter_ms": 0.3, "polling_hz_est": 1000.0})
+    view.show_report(still, profile=_profile())
+    QTest.qWait(30)
+    assert "cost" in view.bias_bars._title.lower() or "x" in view.bias_bars._title
+
+    moving = _report(n_flicks=70, bias=lopsided, player_frame="MOBILE",
+                     input_health={"jitter_ms": 0.3, "polling_hz_est": 1000.0})
+    view.show_report(moving, profile=_profile())
+    QTest.qWait(30)
+    title = view.bias_bars._title
+    assert "lets you move" in title, title
+    assert "more than" not in title, "still called a side on a moving frame"
+    assert "measuring your strafing" in view.bias_caption.text()
+
+    # an unrecorded frame is NOT a claim of stillness, but it also cannot
+    # suppress — an older report simply predates the field
+    blank = _report(n_flicks=70, bias=lopsided, player_frame="",
+                    input_health={"jitter_ms": 0.3, "polling_hz_est": 1000.0})
+    view.show_report(blank, profile=_profile())
+    QTest.qWait(30)
+    assert "lets you move" not in view.bias_bars._title
+    view.close()
+    view.deleteLater()

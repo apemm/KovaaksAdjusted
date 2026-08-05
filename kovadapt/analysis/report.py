@@ -126,6 +126,15 @@ class RunReport:
     #: same mistake as pooling across flick floors.
     deg_per_count: float = 0.0
     mouse_dpi: float = 0.0
+    #: The scenario's PLAYER_FRAME (scenario/capability.py) for this run.
+    #: MOBILE means the player could strafe, and every flick statistic here
+    #: was integrated in a frame that was itself moving — overshoot becomes
+    #: compensation error and directional bias is confounded by strafe
+    #: direction. Recorded per run because it is a property of the scenario
+    #: the run was played on, and because a report read a year from now must
+    #: still know whether its own microstructure meant anything.
+    #: "" means nobody looked; it is not a claim of stillness.
+    player_frame: str = ""
     bias: dict = field(default_factory=dict)
     region_deficits: dict = field(default_factory=dict)
     notable: list[dict] = field(default_factory=list)

@@ -445,3 +445,29 @@ def test_an_actionable_focus_is_still_credited(env: Settings):
     plan.focus_region = sorted(used)[0]
     generate_adaptive_variant(w.base_sce_path(), plan, env, w.adaptive_sce_path())
     assert plan.focus_applied is True
+
+
+def test_a_moving_frame_does_not_feed_the_strafe_skew(tmp_path, monkeypatch):
+    """The bias verdict writes Left/RightStrafeTimeMult into the .sce. On a
+    scenario that lets the player move, that verdict measures counter-strafing
+    as much as aim — so it must not reach the profile at all.
+
+    Suppressed rather than discounted: there is no calibrated weight to
+    discount it by, and a made-up one would be a guess steering a real file.
+    """
+    from kovadapt.adapt.channels import measurement_mask
+    from kovadapt.scenario.capability import Capability
+
+    still = Capability(motion={"t": "SELF"}, player_frame="STATIC")
+    moving = Capability(motion={"t": "SELF"}, player_frame="MOBILE")
+    assert measurement_mask(still)["directional_bias"] is True
+    assert measurement_mask(moving)["directional_bias"] is False
+
+    # and the profile-facing effect: observe_bias is what banks it
+    from kovadapt.profile.player import PlayerProfile
+
+    prof = PlayerProfile(scenario="x [Adaptive]")
+    prof.observe_bias(0.42)
+    assert prof.bias_obs == 1, "sanity: a measurement does reach the profile"
+    # a suppressed one simply never gets here, which is why the watcher gate
+    # is the right place for it rather than a weight inside observe_bias

@@ -102,7 +102,8 @@ _BIAS_CAPTION_NO_FLICKS = (f"{_BIAS_CAPTION_BASE} No flicks were recorded for "
                            "this run, so there is nothing to rank.")
 
 
-def _bias_caption(vals: list[float], ns: list[int], degraded: bool) -> str:
+def _bias_caption(vals: list[float], ns: list[int], degraded: bool,
+                  moving_frame: bool = False) -> str:
     """How to read the bars — derived from the same numbers they draw.
 
     This was a constant ending "the red bar is this run's worst", which is a
@@ -111,6 +112,10 @@ def _bias_caption(vals: list[float], ns: list[int], degraded: bool) -> str:
     rounds to 0.00 — and on each of them the caption sent the reader looking
     for ink that is not there.
     """
+    if moving_frame:
+        return (f"{_BIAS_CAPTION_BASE} No direction is marked worst: this "
+                "scenario lets you move, so a side-by-side comparison would "
+                "be measuring your strafing.")
     if degraded:
         return _BIAS_CAPTION_DEGRADED
     if sum(ns) == 0:
@@ -266,7 +271,7 @@ class _KpiTile(QFrame):
 
 # ---------------------------------------------------------------- takeaways
 def _bias_title(vals: list[float], ns: list[int],
-                degraded: bool = False) -> str:
+                degraded: bool = False, moving_frame: bool = False) -> str:
     """Headline for the direction bars: which side actually costs more.
 
     `vals`/`ns` are the plotted [left, vertical, right] costs and flick
@@ -283,6 +288,13 @@ def _bias_title(vals: list[float], ns: list[int],
     n_left, n_vert, n_right = ns
     if sum(ns) == 0:
         return _BIAS_TITLE
+    if moving_frame:
+        # The costs are split by which way the CROSSHAIR travelled, and a
+        # strafing player counter-moves constantly just to hold a target. On
+        # a scenario that lets the player move, a left/right verdict measures
+        # which way they strafed as much as which way they aim — so there is
+        # no side to call, and the bars stay as data without a claim.
+        return "this scenario lets you move — sides are not comparable here"
     if degraded:
         return "input timing too noisy to compare directions this run"
     if n_left < _MIN_SIDE_FLICKS or n_right < _MIN_SIDE_FLICKS:
@@ -1044,7 +1056,8 @@ class AnalysisView(QWidget):
         ]
         ns = [(b.get(d) or {}).get("n", 0) for d in dirs]
         degraded = input_degraded(rep)
-        self.bias_bars.set_title(_bias_title(vals, ns, degraded))
+        moving = (rep.player_frame or "") == "MOBILE"
+        self.bias_bars.set_title(_bias_title(vals, ns, degraded, moving))
         # ratio_counts is the caller's explicit permission for the chart to
         # spell out a side-vs-side ratio, and only this layer can grant it:
         # viz.py cannot reach input_degraded (it would have to import analysis
@@ -1066,7 +1079,7 @@ class AnalysisView(QWidget):
                                     ratio_counts=None if degraded else ns,
                                     floor=_BIAS_COST_FLOOR,
                                     compare=compare, worst=worst)
-        self.bias_caption.setText(_bias_caption(vals, ns, degraded))
+        self.bias_caption.setText(_bias_caption(vals, ns, degraded, moving))
 
     def _draw_heat(self, rep: RunReport | None = None) -> None:
         """Zone heatmap on the Settings.region_cols x region_rows grid:
