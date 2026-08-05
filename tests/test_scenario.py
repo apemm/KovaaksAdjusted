@@ -493,3 +493,106 @@ def test_a_scenario_with_acceleration_still_gets_its_motion(mini_sce, tmp_path):
         got = float(out.get_in_section("Character Profile", "target_char", "MaxSpeed"))
         assert got == pytest.approx(plan.target_max_speed), label
         assert plan.motion_applied is True, label
+
+
+def test_a_rotation_entry_in_addedbots_resolves_to_its_bots(tmp_path):
+    """AddedBots takes "X.bot" and also "X.rot". Only `.bot` was ever stripped,
+    so a rotation entry matched no [Bot Profile], resolved to no character, and
+    the generator wrote nothing but Name and Description — while that
+    Description asserted a full plan.
+
+    Measured on a copy of the real Reactive Flick.sce: 2 of 1493 lines changed,
+    and the file still claimed `scale=1.18 movement=0.50 focus=r1c4 speed=86`.
+    Four of the 33 base scenarios here were in that state. The rotation
+    resolves entirely inside the .sce.
+    """
+    from kovadapt.scenario.generator import _expand_added_bots, _target_profiles
+
+    body = """Name=rot test
+AddedBots=pool.rot;solo.bot
+
+[Bot Rotation Profile]
+Name=pool
+ProfileNames=A;B;A
+ProfileWeights=1.0;1.0;1.0
+Randomized=true
+
+[Bot Profile]
+Name=A
+CharacterProfile=charA
+
+[Bot Profile]
+Name=B
+CharacterProfile=charB
+
+[Bot Profile]
+Name=solo
+CharacterProfile=charA
+
+[Character Profile]
+Name=charA
+MaxSpeed=0.0
+
+[Character Profile]
+Name=charB
+MaxSpeed=0.0
+"""
+    p = tmp_path / "rot.sce"
+    p.write_text(body, encoding="utf-8")
+    sce = SceFile.read(p)
+
+    # the repeat is collapsed: every downstream use rewrites a SECTION, which
+    # must not be applied twice to the same one
+    assert _expand_added_bots(sce) == ["A", "B", "solo"]
+    bots, chars = _target_profiles(sce)
+    assert bots == ["A", "B", "solo"]
+    assert chars == ["charA", "charB"]
+
+
+def test_an_unresolvable_rotation_yields_nothing_rather_than_a_bad_name(tmp_path):
+    """A .rot naming no rotation profile, or one listing bots that do not
+    exist, must resolve to nothing — never to the literal "pool.rot" or
+    "pool", which would then miss every section lookup silently."""
+    from kovadapt.scenario.generator import _expand_added_bots, _target_profiles
+
+    p = tmp_path / "bad.sce"
+    p.write_text("""Name=bad
+AddedBots=ghost.rot
+
+[Bot Profile]
+Name=real
+CharacterProfile=charA
+
+[Character Profile]
+Name=charA
+MaxSpeed=0.0
+""", encoding="utf-8")
+    sce = SceFile.read(p)
+    assert _expand_added_bots(sce) == []
+    assert _target_profiles(sce) == ([], [])
+
+    # a rotation that exists but lists a bot with no character profile
+    p2 = tmp_path / "partial.sce"
+    p2.write_text("""Name=partial
+AddedBots=pool.rot
+
+[Bot Rotation Profile]
+Name=pool
+ProfileNames=A;missing
+
+[Bot Profile]
+Name=A
+CharacterProfile=charA
+
+[Bot Profile]
+Name=missing
+CharacterProfile=nope
+
+[Character Profile]
+Name=charA
+MaxSpeed=0.0
+""", encoding="utf-8")
+    sce2 = SceFile.read(p2)
+    assert _expand_added_bots(sce2) == ["A", "missing"]
+    bots, chars = _target_profiles(sce2)
+    assert chars == ["charA"], "a bot whose character does not exist was counted"

@@ -160,15 +160,56 @@ def _accel_of(sce: SceFile, char: str) -> float | None:
         return None
 
 
+def _expand_added_bots(sce: SceFile) -> list[str]:
+    """Every [Bot Profile] name the scenario adds, with rotations expanded.
+
+    AddedBots entries come in two flavours:
+
+      "X.bot"  -> [Bot Profile] Name=X
+      "X.rot"  -> [Bot Rotation Profile] Name=X -> ProfileNames=A;B;C
+                  -> [Bot Profile] Name=A, =B, =C
+
+    Only `.bot` was ever stripped, so a `.rot` entry matched no Bot Profile,
+    resolved to no character, and the generator wrote NOTHING but the Name and
+    Description — while that Description asserted a full plan. Measured on a
+    copy of Reactive Flick.sce: 2 of 1493 lines changed, and the file still
+    claimed `scale=1.18 movement=0.50 focus=r1c4 speed=86`.
+
+    4 of the 33 base scenarios here are in that state: Fisher Simulator,
+    KovaaKs Sandbox Intro Scenario, Reactive Flick, lgc3 Reborn Varied Easy
+    Meso. The rotation resolves entirely inside the .sce — no second file
+    format, no external lookup.
+
+    ProfileNames may repeat (KovaaKs Sandbox lists `target` three times to
+    weight it); the return is deduplicated because every downstream use is a
+    section rewrite, which is idempotent per section and must not be applied
+    N times to the same one.
+    """
+    raw = sce.get_header("AddedBots") or ""
+    names: set[str] = set()
+    for entry in (e.strip() for e in raw.split(";")):
+        if not entry:
+            continue
+        if entry.lower().endswith(".rot"):
+            rot = entry[: -len(".rot")]
+            listed = sce.get_in_section("Bot Rotation Profile", rot, "ProfileNames")
+            for bot in (b.strip() for b in (listed or "").split(";")):
+                if bot:
+                    names.add(bot)
+            continue
+        names.add(re.sub(r"\.bot$", "", entry))
+    return sorted(names)
+
+
 def _target_profiles(sce: SceFile) -> tuple[list[str], list[str]]:
     """(bot names, character profile names) for the AddedBots targets.
 
     Real scenarios link AddedBots "X.bot" -> [Bot Profile] Name=X ->
-    CharacterProfile=<char> -> [Character Profile] Name=<char>. Files whose
-    Bot Profile lacks the CharacterProfile key (older/simple scenarios) fall
-    back to using the bot name as the character name directly."""
-    bots = sce.get_header("AddedBots") or ""
-    bot_names = sorted({re.sub(r"\.bot$", "", b) for b in bots.split(";") if b})
+    CharacterProfile=<char> -> [Character Profile] Name=<char>, and "X.rot"
+    through a [Bot Rotation Profile] first (see `_expand_added_bots`). Files
+    whose Bot Profile lacks the CharacterProfile key (older/simple scenarios)
+    fall back to using the bot name as the character name directly."""
+    bot_names = _expand_added_bots(sce)
     chars: set[str] = set()
     for bot in bot_names:
         char = sce.get_in_section("Bot Profile", bot, "CharacterProfile")
