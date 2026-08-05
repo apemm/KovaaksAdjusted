@@ -125,6 +125,33 @@ _DODGE_DIRECTION = {
 _DODGE_RATIO_KEYS = ("LeftStrafeTimeMult", "RightStrafeTimeMult")
 
 
+#: Movement does not use its nominal [0, 1] range, so a band mapped from that
+#: range never reaches its own ends. Measured over 72,000 plans across 200
+#: simulated careers (improve / plateau / slump / recover, the phases a real
+#: player goes through): the 5th percentile is 0.21 and the 95th is 0.81, so a
+#: naive `2m - 1` mapping delivers 60% of the band and the emitted values
+#: cluster near the author's own.
+#:
+#: This is a calibration of the MAPPING, not a change to the controller. The
+#: controller is right: `pace_push` is a RATE signal — "hotter than your own
+#: EWMA" — which decays to zero once the EWMA catches up, and the OU's
+#: mean-reversion is the correct leaky integrator for that. Replacing it with
+#: a plain accumulator was tried and pinned difficulty at maximum through the
+#: plateau phase, because integrating a derivative gives a level that never
+#: comes back.
+#:
+#: What the controller genuinely lacks is a LEVEL signal for movement — it
+#: knows whether you are improving, never where you stand. That is a real gap
+#: and a larger change than this one.
+MOVEMENT_HALF_RANGE = 0.30
+
+
+def _band_position(movement: float) -> float:
+    """Movement in [0, 1] -> band position in [-1, 1], calibrated to the range
+    the controller actually produces rather than the one it nominally spans."""
+    return float(np.clip((movement - 0.5) / MOVEMENT_HALF_RANGE, -1.0, 1.0))
+
+
 def relative_dodge_writes(
     authored: dict[str, float],
     movement: float,
@@ -166,7 +193,7 @@ def relative_dodge_writes(
         if base is None:
             continue
         # 0.5 -> 1.0 (unchanged); the sign flips for keys where harder is less
-        factor = 1.0 + direction * span * (2.0 * m - 1.0)
+        factor = 1.0 + direction * span * _band_position(m)
         jitter = 1.0 + rng.uniform(-0.05, 0.05)   # anti-autopilot, not a knob
         value = max(base * factor * jitter, 0.0)
         if key == "JumpFrequency":

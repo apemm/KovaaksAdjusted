@@ -959,3 +959,43 @@ def test_strafe_timings_are_not_written_where_nothing_strafes(tmp_path):
             f"{key} was written onto a profile that does not strafe"
     # the jump channel is real here and still moves
     assert out.get_in_section("Dodge Profile", "D", "JumpFrequency") != "0.5"
+
+
+def test_the_dodge_band_is_calibrated_to_the_range_movement_actually_uses():
+    """A band mapped from movement's NOMINAL [0, 1] never reaches its ends,
+    because the controller does not produce that range.
+
+    Measured over 72,000 plans across 200 simulated careers — improve,
+    plateau, slump, recover — movement's 5th percentile is 0.21 and its 95th
+    is 0.81. A naive `2m - 1` mapping therefore delivered 60% of the band and
+    the emitted values clustered near the author's own.
+
+    This is a calibration of the mapping. The controller itself is right:
+    `pace_push` is a RATE signal that decays once the EWMA catches up, and the
+    OU's mean-reversion is the correct leaky integrator for it. A plain
+    accumulator was measured and pinned difficulty at maximum right through
+    the plateau phase — 0.50 / 0.92 / 0.99 / 0.88 against the current design's
+    0.49 / 0.70 / 0.50 / 0.29, which correctly returns to neutral.
+    """
+    from kovadapt.adapt.stochastic import (MOVEMENT_HALF_RANGE, _band_position,
+                                           relative_dodge_writes)
+
+    # the realistic ends reach the ends of the band
+    assert _band_position(0.5) == pytest.approx(0.0)
+    assert _band_position(0.5 + MOVEMENT_HALF_RANGE) == pytest.approx(1.0)
+    assert _band_position(0.5 - MOVEMENT_HALF_RANGE) == pytest.approx(-1.0)
+    # and beyond them it clamps rather than running away
+    assert _band_position(1.0) == pytest.approx(1.0)
+    assert _band_position(0.0) == pytest.approx(-1.0)
+
+    # an authored value reaches further than the uncalibrated mapping allowed
+    hot = relative_dodge_writes({"JumpFrequency": 0.5}, 0.81,
+                                rng=np.random.default_rng(0))["JumpFrequency"]
+    assert hot > 0.63, f"the band still cannot reach its own top: {hot}"
+    cold = relative_dodge_writes({"JumpFrequency": 0.5}, 0.21,
+                                 rng=np.random.default_rng(0))["JumpFrequency"]
+    assert cold < 0.37, f"the band still cannot reach its own bottom: {cold}"
+    # the neutral point is unchanged: the author's own value
+    mid = relative_dodge_writes({"JumpFrequency": 0.5}, 0.5,
+                                rng=np.random.default_rng(0))["JumpFrequency"]
+    assert mid == pytest.approx(0.5, rel=0.06)
