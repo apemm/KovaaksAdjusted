@@ -662,3 +662,157 @@ def test_target_motion_is_four_valued_because_two_is_not_enough(tmp_path):
     assert not can_express_motion(set()) and not drivable_motion(set())
     assert can_express_motion({UNKNOWN}) and drivable_motion({UNKNOWN})
     assert not can_express_motion({UNKNOWN}, unknown_is_capable=False)
+
+
+def _cap_sce(tmp_path, *, player=("0.0", "0.0"), target=("0.0", "0.0"),
+             dodge=True, lr="true", fb="false", jump=("0.0", "0.0"),
+             score=("100.0", "0.0"), invincible="false", spawns=0, extra=""):
+    """A minimal .sce with every capability-bearing key under control."""
+    body = f"""Name=cap
+AddedBots=t.bot
+PlayerProfile=Me
+PlayerTeam=1
+ScorePerKill={score[0]}
+ScorePerDamage={score[1]}
+InvincibleBots={invincible}
+
+[Character Profile]
+Name=Me
+MaxSpeed={player[0]}
+Acceleration={player[1]}
+
+[Character Profile]
+Name=tc
+MaxSpeed={target[0]}
+Acceleration={target[1]}
+JumpVelocity={jump[0]}
+Gravity={jump[1]}
+MainBBRadius=50.0
+
+[Bot Profile]
+Name=t
+CharacterProfile=tc
+{'DodgeProfileNames=D' if dodge else 'DodgeProfileNames='}
+
+[Dodge Profile]
+Name=D
+ToggleLeftRight={lr}
+ToggleForwardBack={fb}
+{extra}
+[Map Data]
+reflex map version 8
+global
+\tentity
+\t\ttype PlayerSpawn
+\t\tVector3 position 0.000000 0.000000 -960.000000
+\t\tBool8 teamB 0
+"""
+    for i in range(spawns):
+        body += (f"\tentity\n\t\ttype PlayerSpawn\n\t\tVector3 position "
+                 f"{i * 30}.000000 {i * 20}.000000 960.000000\n\t\tBool8 teamA 0\n")
+    p = tmp_path / f"cap{abs(hash((player, target, dodge, lr, spawns)))}.sce"
+    p.write_text(body, encoding="utf-8")
+    return SceFile.read(p)
+
+
+def test_strafe_and_jump_are_separate_channels_from_motion(tmp_path):
+    """`Revolving Tracking` is SELF-propelled (MaxSpeed 1024, Acceleration
+    9000) and carries NO dodge channel — so motion does not imply a strafe
+    timer to scale. And `JumpFrequency` is meaningless without something to
+    jump with: kovadapt writes it today onto characters whose JumpVelocity is
+    0, where no frequency produces a jump.
+    """
+    from kovadapt.scenario.capability import jump_channel, strafe_channel
+    from kovadapt.scenario.generator import _target_profiles
+
+    def tags(**kw):
+        sce = _cap_sce(tmp_path, **kw)
+        bots, chars = _target_profiles(sce)
+        return strafe_channel(sce, bots, chars), jump_channel(sce, bots, chars)
+
+    mover = {"target": ("1300.0", "9000.0")}
+    (strafe, fb), jump = tags(**mover)
+    assert strafe == "YES" and fb is False and jump == "NO"
+
+    # self-propelled but no dodge profile at all
+    (strafe, _), jump = tags(**mover, dodge=False)
+    assert strafe == "NO" and jump == "NO"
+
+    # dodge profile that toggles nothing is not a strafe channel
+    (strafe, _), _ = tags(**mover, lr="false")
+    assert strafe == "NO"
+    (_, fb), _ = tags(**mover, lr="false", fb="true")
+    assert fb is True
+
+    # a static target has no strafe timer however many dodge blocks it has
+    (strafe, _), _ = tags(target=("0.0", "0.0"))
+    assert strafe == "NO"
+
+    # jump needs BOTH a rise and something to fall back down
+    _, jump = tags(**mover, jump=("800.0", "1.5"))
+    assert jump == "YES"
+    _, jump = tags(**mover, jump=("800.0", "0.0"))
+    assert jump == "UNKNOWN", "rise with no fall is not settled by the file"
+    _, jump = tags(**mover, jump=("0.0", "1.5"))
+    assert jump == "NO"
+
+
+def test_score_frame_and_the_player_frame_that_gates_measurement(tmp_path):
+    """SCORE_FRAME gates the size controller's INPUT: `Run.accuracy` means
+    "shots that connected" on a KILL scenario and "damage ticks that landed"
+    on a DAMAGE one, against the same band.
+
+    PLAYER_FRAME gates measurement itself. A strafing player must counter-move
+    to hold even a stationary target, so overshoot becomes compensation error.
+    Both keys are required for the same reason as target motion, and the
+    counterexamples are real: Revolving Tracking gives the player MaxSpeed
+    1024 with Acceleration 0, Narrow Strafe the reverse.
+    """
+    from kovadapt.scenario.capability import (player_frame, read_capability,
+                                              score_frame)
+    from kovadapt.scenario.generator import _target_profiles
+
+    def frame(**kw):
+        sce = _cap_sce(tmp_path, **kw)
+        return score_frame(sce, _target_profiles(sce)[1])
+
+    assert frame(score=("100.0", "0.0")) == ("KILL", False)
+    assert frame(score=("0.0", "1.0")) == ("DAMAGE", False)
+    assert frame(score=("10.0", "1.0")) == ("HYBRID", False)
+    assert frame(score=("0.0", "1.0"), invincible="true") == ("DAMAGE", True)
+
+    assert player_frame(_cap_sce(tmp_path, player=("0.0", "0.0"))) == "STATIC"
+    assert player_frame(_cap_sce(tmp_path, player=("1300.0", "9000.0"))) == "MOBILE"
+    # either key alone cannot produce motion, and must not read as MOBILE
+    assert player_frame(_cap_sce(tmp_path, player=("1024.0", "0.0"))) == "PARTIAL"
+    assert player_frame(_cap_sce(tmp_path, player=("0.0", "16000.0"))) == "PARTIAL"
+
+    cap = read_capability(_cap_sce(tmp_path, player=("1300.0", "9000.0")))
+    assert cap.player_frame == "MOBILE"
+    assert cap.measurement_frame_is_static is False, \
+        "flick microstructure was called trustworthy in a moving frame"
+    assert read_capability(
+        _cap_sce(tmp_path, player=("0.0", "16000.0"))).measurement_frame_is_static
+
+
+def test_a_json_map_is_spawn_blind_not_spawn_free(tmp_path):
+    """The reflex entity parser cannot see the JSON `[Map Data]` form at all,
+    so zero spawns there is a failure to read rather than a fact about the
+    layout. Ten files here are in that state; calling them "no spawn field"
+    would assert something never looked at, and the page would then say spawn
+    placement does not adapt when nobody checked."""
+    from kovadapt.scenario.capability import read_capability, spawn_field
+
+    enough = _cap_sce(tmp_path, spawns=30)
+    assert spawn_field(enough, 5, 5) == ("YES", 30)
+    # fewer target spawns than grid cells: resample_spawns refuses to reweight
+    assert spawn_field(_cap_sce(tmp_path, spawns=9), 5, 5) == ("NO", 9)
+    assert spawn_field(_cap_sce(tmp_path, spawns=9), 3, 3) == ("YES", 9)
+
+    json_map = tmp_path / "json.sce"
+    json_map.write_text(
+        "\n".join(_cap_sce(tmp_path, spawns=30).lines).replace(
+            "Name=cap", "Name=cap\nMapName=Sandbox.json", 1), encoding="utf-8")
+    cap = read_capability(SceFile.read(json_map))
+    assert cap.spawn_field == "BLIND"
+    assert cap.spawn_field != "NO", "asserted an absence it never read"
