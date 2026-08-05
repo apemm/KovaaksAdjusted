@@ -338,3 +338,69 @@ def test_the_watchdog_log_is_trimmed_not_deleted(env):
     assert len(lines) <= cli._LOG_LINES
     assert "watchdog started" in lines[-1] or "watchdog" in lines[-1]
     assert not any(ln == "line 0" for ln in lines), "trimmed from the wrong end"
+
+
+def test_a_base_sce_is_found_in_the_workshop_cache_and_never_written_there(tmp_path, monkeypatch):
+    """kovadapt read only <root>/Saved/SaveGames/Scenarios and so could see 4
+    of the 97 scenarios actually played on this machine. Steam keeps the rest
+    in <steamapps>/workshop/content/824270/<itemid>/<Name>.sce — 16 more of
+    the played library, including Whisphere and Centering II 180.
+
+    The cache is READ-ONLY: Steam rewrites it on sync, so a variant written
+    there would be silently reverted, and the game does not load user
+    scenarios from it anyway. Variants always go to the writable folder.
+    """
+    from kovadapt.config import Settings
+
+    root = tmp_path / "steamapps" / "common" / "FPSAimTrainer" / "FPSAimTrainer"
+    (root / "Saved" / "SaveGames" / "Scenarios").mkdir(parents=True)
+    (root / "stats").mkdir(parents=True)
+    ws = tmp_path / "steamapps" / "workshop" / "content" / "824270" / "12345"
+    ws.mkdir(parents=True)
+    (ws / "Subscribed Task.sce").write_text("Name=Subscribed Task\n", encoding="utf-8")
+
+    s = Settings(kovaaks_root=str(root), profile_dir=str(tmp_path / "state"))
+    assert s.workshop_dir == tmp_path / "steamapps" / "workshop" / "content" / "824270"
+    assert s.find_base_sce("Subscribed Task") == ws / "Subscribed Task.sce"
+    assert set(s.base_sce_paths()) == {"Subscribed Task"}
+
+    # THE LOCAL COPY WINS. A name in both is one the player has their own copy
+    # of, and that copy is what the game loads.
+    local = s.scenarios_dir / "Subscribed Task.sce"
+    local.write_text("Name=Subscribed Task\n", encoding="utf-8")
+    assert s.find_base_sce("Subscribed Task") == local
+    assert s.base_sce_paths()["Subscribed Task"] == local
+
+    assert s.find_base_sce("Nothing Like This") is None
+
+
+def test_no_workshop_cache_is_not_an_error(tmp_path):
+    """A non-Steam install, or a root with no steamapps component at all, must
+    degrade to the writable folder rather than raising."""
+    from kovadapt.config import Settings
+
+    root = tmp_path / "SomewhereElse" / "FPSAimTrainer"
+    (root / "Saved" / "SaveGames" / "Scenarios").mkdir(parents=True)
+    (root / "stats").mkdir(parents=True)
+    (root / "Saved" / "SaveGames" / "Scenarios" / "Local.sce").write_text(
+        "Name=Local\n", encoding="utf-8")
+
+    s = Settings(kovaaks_root=str(root), profile_dir=str(tmp_path / "state"))
+    assert s.workshop_dir is None
+    assert set(s.base_sce_paths()) == {"Local"}
+    assert s.find_base_sce("Local") is not None
+
+
+def test_a_steam_install_with_no_subscriptions_has_no_workshop_dir(tmp_path):
+    """The steamapps component exists but the Workshop cache does not — a
+    Steam install that has never subscribed to a scenario. Returning the path
+    anyway would hand every caller a directory that cannot be listed."""
+    from kovadapt.config import Settings
+
+    root = tmp_path / "steamapps" / "common" / "FPSAimTrainer" / "FPSAimTrainer"
+    (root / "Saved" / "SaveGames" / "Scenarios").mkdir(parents=True)
+    (root / "stats").mkdir(parents=True)
+    s = Settings(kovaaks_root=str(root), profile_dir=str(tmp_path / "state"))
+    assert (tmp_path / "steamapps").is_dir()
+    assert s.workshop_dir is None, "returned a path to a directory that is not there"
+    assert s.base_sce_paths() == {}

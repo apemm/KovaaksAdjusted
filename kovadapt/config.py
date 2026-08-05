@@ -182,6 +182,65 @@ class Settings:
     def scenarios_dir(self) -> Path:
         return self.root / "Saved" / "SaveGames" / "Scenarios"
 
+    #: Steam Workshop app id for KovaaK's — its scenario cache lives at
+    #: <steamapps>/workshop/content/<APPID>/<itemid>/<Name>.sce, one file per
+    #: subscribed item.
+    WORKSHOP_APPID = "824270"
+
+    @property
+    def workshop_dir(self) -> Path | None:
+        """Steam's Workshop scenario cache, or None when it cannot be located.
+
+        READ-ONLY. Steam owns this directory and rewrites it on sync, so a
+        variant written there would be silently reverted — and it is not the
+        directory the game loads user scenarios from anyway. Variants always
+        go to `scenarios_dir`.
+
+        Derived by walking up to the `steamapps` component rather than by
+        counting parents, because the root may be given at either
+        `.../common/FPSAimTrainer` or the nested `.../FPSAimTrainer/FPSAimTrainer`.
+        """
+        for i, part in enumerate(self.root.parts):
+            if part.lower() == "steamapps":
+                d = (Path(*self.root.parts[: i + 1]) / "workshop" / "content"
+                     / self.WORKSHOP_APPID)
+                return d if d.is_dir() else None
+        return None
+
+    def base_sce_paths(self) -> dict[str, Path]:
+        """{scenario name -> its base .sce}, across every place one can live.
+
+        The writable Scenarios directory WINS over the Workshop cache: a name
+        present in both is one the player has their own copy of, and that copy
+        is what the game loads.
+
+        This exists because kovadapt read only `scenarios_dir` and so could see
+        4 of the 97 scenarios actually played on this machine. The Workshop
+        cache holds 16 more of them — Whisphere, Centering II 180, SmoothBot
+        Invincible Goated — which is the difference between tagging a corpus
+        and tagging a sample of it.
+        """
+        found: dict[str, Path] = {}
+        ws = self.workshop_dir
+        if ws is not None:
+            for f in sorted(ws.rglob("*.sce")):
+                found.setdefault(f.stem, f)
+        if self.scenarios_dir.is_dir():
+            for f in sorted(self.scenarios_dir.glob("*.sce")):
+                found[f.stem] = f          # local copy overrides the cache
+        return found
+
+    def find_base_sce(self, name: str) -> Path | None:
+        """The base .sce for `name`, or None. Never returns a variant path.
+
+        Deliberately just a lookup into `base_sce_paths` rather than checking
+        the local folder first and falling back. The fast path was measurably
+        redundant — `base_sce_paths` already gives the local copy precedence —
+        and a second place that decides precedence is a second place for it to
+        drift from the first.
+        """
+        return self.base_sce_paths().get(name)
+
     @property
     def playlists_dir(self) -> Path:
         return self.root / "Saved" / "SaveGames" / "Playlists"

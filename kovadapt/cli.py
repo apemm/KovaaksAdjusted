@@ -51,7 +51,9 @@ def _base_scenario(name: str) -> str:
 
 def cmd_scenarios(args) -> None:
     s = _settings()
-    names = sorted(p.stem for p in s.scenarios_dir.glob("*.sce"))
+    # Both locations: the Workshop cache holds most of what is actually
+    # played, and listing only the writable dir showed 4 of 97 here.
+    names = sorted(s.base_sce_paths())
     for n in names:
         if not args.filter or args.filter.lower() in n.lower():
             print(n)
@@ -75,19 +77,25 @@ def cmd_generate(args) -> None:
 
     s = _settings()
     scenario = _base_scenario(args.scenario)
-    base_sce = s.scenarios_dir / f"{scenario}.sce"
+    base_sce = s.find_base_sce(scenario)
     # cmd_watch has always guarded this; cmd_generate did not, so a typo'd
     # or missing scenario surfaced as an 11-frame FileNotFoundError traceback
     # out of SceFile.read.
-    if not base_sce.is_file():
-        sys.exit(f"scenario file not found: {base_sce}")
+    if base_sce is None:
+        # Name the file AND where it was looked for: with two search roots,
+        # "not found" without the locations is an unactionable message.
+        sys.exit(f"scenario file not found: {scenario}.sce "
+                 f"(searched {s.scenarios_dir} and the Steam Workshop cache)")
     adaptive = scenario + ADAPTIVE_SUFFIX
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
     stamp_archetype(profile, scenario)
     plan = AdaptationEngine(s).plan(profile, None)
+    # Read from wherever the base lives; WRITE to the writable dir. Steam
+    # rewrites the Workshop cache on sync, and the game does not load user
+    # scenarios from there anyway.
     out = generate_adaptive_variant(
-        s.scenarios_dir / f"{scenario}.sce", plan, s,
+        base_sce, plan, s,
         s.scenarios_dir / f"{adaptive}.sce",
     )
     settle_focus(profile, plan)

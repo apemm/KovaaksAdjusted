@@ -673,10 +673,11 @@ def read_sce_facts(settings: Settings, base: str,
     compound), so the pair on disk IS the change. A missing variant is a
     normal state — never generated yet — and reported as such.
     """
-    base_path = settings.scenarios_dir / f"{base}.sce"
+    # The base may live in the Workshop cache; the VARIANT is always ours.
+    base_path = settings.find_base_sce(base)
     var_path = settings.scenarios_dir / f"{base}{ADAPTIVE_SUFFIX}.sce"
     on_disk = var_path.is_file()
-    if not base_path.is_file():
+    if base_path is None:
         # Short, because this string lands in four panels; the full path goes
         # in the provenance label's tooltip. `variant_on_disk` is still recorded:
         # without it the page claimed the variant had never been written, having

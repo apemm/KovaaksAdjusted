@@ -157,10 +157,11 @@ class ScenarioBrowser(QWidget):
         """Rescan scenarios + profiles. Cheap: name heuristics and a handful
         of small profile JSONs (only scenarios that have been trained)."""
         self._rows = []
-        if not self.s.scenarios_dir.is_dir():
+        found = self.s.base_sce_paths()
+        if not found:
             self._rebuild()
             return
-        stems = {p.stem for p in self.s.scenarios_dir.glob("*.sce")}
+        stems = set(found)
         bases = sorted(s for s in stems if not s.endswith(ADAPTIVE_SUFFIX))
         region_count = self.s.region_cols * self.s.region_rows
         for name in bases:
@@ -332,9 +333,17 @@ class ScenarioBrowser(QWidget):
         profile.scenario = adaptive
         stamp_archetype(profile, name)
         try:
+            # None means the base is in neither search root. It used to be a
+            # path that simply did not exist, so the OSError below caught it;
+            # now it must be named, or it reaches Path() as a TypeError that
+            # nothing here catches.
+            base = self.s.find_base_sce(name)
+            if base is None:
+                raise FileNotFoundError(f"{name}.sce is in neither the "
+                                        "Scenarios folder nor the Workshop cache")
             plan = AdaptationEngine(self.s).plan(profile, None)
             out = generate_adaptive_variant(
-                self.s.scenarios_dir / f"{name}.sce", plan, self.s,
+                base, plan, self.s,
                 self.s.scenarios_dir / f"{adaptive}.sce")
             settle_focus(profile, plan)
             profile.save(self.s.profile_path)
