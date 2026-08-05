@@ -49,6 +49,26 @@ def _base_scenario(name: str) -> str:
     return base
 
 
+
+def _capability_of(settings, base: str):
+    """The scenario's capability tags, or None when the file cannot be read.
+
+    None rather than a default: an empty Capability would report every
+    channel unavailable, and "we could not read it" is a different claim from
+    "it offers nothing". The planner treats None as the pre-v0.6 path.
+    """
+    from .scenario.capability import read_capability
+    from .scenario.sce import SceFile
+
+    path = settings.find_base_sce(base)
+    if path is None:
+        return None
+    try:
+        return read_capability(SceFile.read(path), settings.region_cols,
+                               settings.region_rows)
+    except (OSError, ValueError):
+        return None
+
 def cmd_scenarios(args) -> None:
     s = _settings()
     # Both locations: the Workshop cache holds most of what is actually
@@ -90,7 +110,8 @@ def cmd_generate(args) -> None:
     profile = PlayerProfile.load(adaptive, s.profile_path)
     profile.scenario = adaptive
     stamp_archetype(profile, scenario)
-    plan = AdaptationEngine(s).plan(profile, None)
+    plan = AdaptationEngine(s).plan(
+        profile, None, capability=_capability_of(s, scenario))
     # Read from wherever the base lives; WRITE to the writable dir. Steam
     # rewrites the Workshop cache on sync, and the game does not load user
     # scenarios from there anyway.

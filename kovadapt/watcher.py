@@ -19,6 +19,7 @@ from .adapt.engine import AdaptationEngine, settle_focus
 from .analysis.fatigue import SessionFatigueTracker
 from .analysis.report import RunReport, build_report, run_time_window
 from .analysis.movement import MIN_FLICK_DEG
+from .cli import _capability_of
 from .analysis.sens import min_flick_counts_for
 from .config import ADAPTIVE_SUFFIX, Settings
 from .profile.player import PlayerProfile
@@ -308,7 +309,9 @@ class SessionWatcher:
             fitts_slope_ms=rep.fitts_slope_ms or None,
         )
         fatigue = rep.fatigue.get("score", 0.0) if self.s.fatigue_easing else 0.0
-        plan = self.engine.plan(profile, run, fatigue=fatigue)
+        plan = self.engine.plan(
+            profile, run, fatigue=fatigue,
+            capability=_capability_of(self.s, self.base))
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )
@@ -335,7 +338,8 @@ class SessionWatcher:
         profile.scenario = self.adaptive_name
         if not profile.archetype:
             stamp_archetype(profile, self.base)
-        plan = self.engine.plan(profile, None)
+        plan = self.engine.plan(
+            profile, None, capability=_capability_of(self.s, self.base))
         out = generate_adaptive_variant(
             self.base_sce_path(), plan, self.s, self.adaptive_sce_path()
         )

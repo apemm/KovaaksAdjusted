@@ -341,7 +341,9 @@ class ScenarioBrowser(QWidget):
             if base is None:
                 raise FileNotFoundError(f"{name}.sce is in neither the "
                                         "Scenarios folder nor the Workshop cache")
-            plan = AdaptationEngine(self.s).plan(profile, None)
+            from ..cli import _capability_of
+            plan = AdaptationEngine(self.s).plan(
+                profile, None, capability=_capability_of(self.s, name))
             out = generate_adaptive_variant(
                 base, plan, self.s,
                 self.s.scenarios_dir / f"{adaptive}.sce")

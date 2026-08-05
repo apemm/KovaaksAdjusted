@@ -638,3 +638,91 @@ def test_decisive_stats_overturn_a_name_keyword_but_a_marginal_run_does_not():
     # an unnamed scenario still takes the stats answer outright, decisive or not
     assert classify_archetype("unnamed", run(10, 100, 50, "unnamed")) == \
         ("clicking", "stats")
+
+
+def test_a_plan_records_which_channels_the_scenario_actually_offered():
+    """kovadapt has five ways to make a task harder and a given scenario
+    offers some subset. Until now the engine computed all five regardless, the
+    generator dropped what could not land, and the page explained away the
+    difference afterwards — three places deriving the same fact.
+
+    Across the 49 real bases there are NINE distinct channel combinations, and
+    three scenarios offer only one channel. A plan that does not say which it
+    had leaves every consumer to work it out again, including the shadow log:
+    an action that was never available is not an action the policy declined.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from kovadapt.adapt.channels import ALL, Channel, available, channels_for
+    from kovadapt.adapt.engine import AdaptationEngine
+    from kovadapt.config import Settings
+    from kovadapt.profile.player import PlayerProfile
+    from kovadapt.scenario.capability import Capability
+
+    with tempfile.TemporaryDirectory() as td:
+        s = Settings(kovaaks_root=str(Path(td)), profile_dir=str(Path(td) / "p"))
+        prof = PlayerProfile(scenario="x [Adaptive]")
+        eng = AdaptationEngine(s)
+
+        # WITHOUT a capability the plan claims nothing — an empty dict, not
+        # five Trues. "We did not look" is not "all five are available".
+        assert eng.plan(prof).channels == {}
+
+        # a static wall: size and spawn only
+        wall = Capability(motion={"t": "STATIC"}, strafe="NO", jump="NO",
+                          spawn_field="YES", n_target_spawns=200,
+                          score_frame="KILL", player_frame="STATIC")
+        assert available(wall) == {"size", "spawn"}
+        got = eng.plan(prof, capability=wall).channels
+        assert got == {"size": True, "speed": False, "strafe": False,
+                       "jump": False, "spawn": True}
+        assert set(got) == set(ALL), "a channel vanished from the record"
+
+        # a fully-featured mover keeps all five
+        mover = Capability(motion={"t": "SELF"}, strafe="YES", jump="YES",
+                           spawn_field="YES", n_target_spawns=200,
+                           score_frame="DAMAGE", player_frame="MOBILE")
+        assert available(mover) == set(ALL)
+
+        # SIZE IS UNIVERSAL: it survives every combination, because every
+        # target has a hit volume whatever else it lacks
+        blind = Capability(motion={}, strafe="NO", jump="NO",
+                           spawn_field="BLIND", score_frame="UNKNOWN")
+        assert available(blind) == {"size"}
+
+        # ...and an unavailable channel carries a reason a player can read
+        chans = channels_for(blind)
+        assert isinstance(chans["spawn"], Channel)
+        assert "cannot read" in chans["spawn"].reason
+        assert "no target character could be resolved" in chans["speed"].reason
+        assert not chans["spawn"] and chans["size"], "Channel truthiness"
+
+
+def test_the_measurement_mask_is_gated_by_the_player_frame_not_the_targets():
+    """Tags gate what can be MEASURED as well as what can be written, and this
+    is the half that fails quietly: nothing changes a file, so a wrong answer
+    is a confident claim rather than a broken scenario.
+
+    `segment_flicks` integrates mouse displacement and assumes the view moves
+    only when the mouse does. A strafing player must counter-move to hold even
+    a stationary target, so overshoot becomes compensation error. Hit rate
+    survives — whether a shot connected does not depend on the frame it was
+    taken in.
+    """
+    from kovadapt.adapt.channels import measurement_mask
+    from kovadapt.scenario.capability import Capability
+
+    still = Capability(motion={"t": "SELF"}, player_frame="STATIC")
+    moving = Capability(motion={"t": "SELF"}, player_frame="MOBILE")
+
+    assert measurement_mask(still)["flick_microstructure"] is True
+    assert measurement_mask(moving)["flick_microstructure"] is False
+    assert measurement_mask(moving)["directional_bias"] is False
+    assert measurement_mask(moving)["hit_rate"] is True, \
+        "hit rate does not depend on the reference frame"
+
+    # PARTIAL cannot actually move — one key without the other — so the frame
+    # is static and the microstructure stands
+    partial = Capability(motion={"t": "SELF"}, player_frame="PARTIAL")
+    assert measurement_mask(partial)["flick_microstructure"] is True

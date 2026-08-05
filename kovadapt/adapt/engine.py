@@ -84,6 +84,18 @@ class AdaptationPlan:
     # the task trains rather than how hard it is. Motion adaptation is reserved
     # for scenarios that already move.
     motion_applied: bool = True
+    #: Which adaptation channels this scenario actually offered, by
+    #: `adapt/channels.py`. Recorded on the plan rather than recomputed by
+    #: each consumer, for the same reason `focus_applied` is: the answer
+    #: depends on the FILE, and a second derivation is a second thing to
+    #: drift. Empty means the planner was never given a capability — the
+    #: pre-v0.6 path, where every channel was computed and the generator
+    #: dropped what could not land.
+    #:
+    #: It also goes into the shadow log with the rest of the plan, which an
+    #: off-policy learner needs: an action that was never available is not
+    #: an action the policy declined to take.
+    channels: dict[str, bool] = field(default_factory=dict)
 
     def describe(self) -> str:
         out = (
@@ -159,10 +171,19 @@ class AdaptationEngine:
         profile: PlayerProfile,
         last_run: Run | None = None,
         fatigue: float = 0.0,
+        capability=None,
     ) -> AdaptationPlan:
         """fatigue in [0, 1] eases the EMITTED plan only (bigger targets,
         calmer movement); the persisted profile state stays un-eased so
-        recovery next session resumes from the true difficulty."""
+        recovery next session resumes from the true difficulty.
+
+        `capability` is the scenario's `scenario.capability.Capability`
+        when the caller has read the file. Given one, the plan records
+        which adaptation channels the scenario actually offers — a static
+        wall has two of the five, and a plan that does not say so leaves
+        every consumer to work it out again. Omitted, the plan is computed
+        exactly as before and `channels` stays empty rather than claiming
+        all five are available."""
         s = self._effective(profile)
         fatigue = float(np.clip(fatigue, 0.0, 1.0))
 
@@ -278,7 +299,15 @@ class AdaptationEngine:
                                   s.min_target_scale, s.max_target_scale))
 
         seed = int(self.rng.integers(0, 2**31 - 1))
+        # Availability, not magnitude: the controllers above have already
+        # decided how hard to push. This records which of those pushes the
+        # scenario can receive at all.
+        from .channels import channels_for
+        chans = ({k: ch.available for k, ch in channels_for(capability).items()}
+                 if capability is not None else {})
+
         return AdaptationPlan(
+            channels=chans,
             scenario=profile.scenario,
             target_scale=out_scale,
             movement=out_movement,
