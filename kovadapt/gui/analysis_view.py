@@ -19,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -471,6 +471,11 @@ class AnalysisView(QWidget):
         self._coach_cards: list[_InsightCard] = []
         self.coach_more: QPushButton | None = None
         self._coach_open = False
+        # Set before any showEvent can fire: the caption-levelling pass is
+        # scheduled from showEvent as well as resizeEvent, and a missing guard
+        # here is an AttributeError raised from inside a Qt event handler,
+        # which takes the process down rather than the widget.
+        self._levelling = False
 
         # header
         self.title = QLabel("No run analyzed yet")
@@ -656,6 +661,64 @@ class AnalysisView(QWidget):
     def set_trends(self, trends) -> None:
         """Cross-session SkillTrends from the boot worker."""
         self._trends = trends
+
+    def resizeEvent(self, event) -> None:      # noqa: N802  (Qt override)
+        super().resizeEvent(event)
+        # AFTER the layout pass, not during. resizeEvent arrives before the
+        # layout has resized the children, so measuring here reads the
+        # PREVIOUS width and levels to the wrong number — it happened to look
+        # right inside the shell, where an earlier pass had already settled
+        # the widths, and was wrong on a freshly shown view.
+        if not self._levelling:
+            self._levelling = True
+            # `self` as the context object: Qt cancels the callback if the
+            # widget is destroyed first. Without it, closing the page with a
+            # pass still queued calls a bound method on a freed C++ object —
+            # an access violation that kills the process, not an exception.
+            QTimer.singleShot(0, self, self._level_captions)
+
+    def showEvent(self, event) -> None:        # noqa: N802  (Qt override)
+        super().showEvent(event)
+        if not self._levelling:
+            self._levelling = True
+            # `self` as the context object: Qt cancels the callback if the
+            # widget is destroyed first. Without it, closing the page with a
+            # pass still queued calls a bound method on a freed C++ object —
+            # an access violation that kills the process, not an exception.
+            QTimer.singleShot(0, self, self._level_captions)
+
+    def _level_captions(self) -> None:
+        """Keep the two side-by-side chart captions the same height.
+
+        The charts sit in two independent columns of a splitter, each taking
+        the leftover space with stretch 1 and its caption underneath. The
+        captions are different lengths: below about 1490px the travel caption
+        wraps to a second line while the bias caption stays on one, so it
+        takes 17px more — and steals exactly that much from its own chart.
+        The two canvases then have their tops aligned and their bottoms 17px
+        apart, which is what makes the pair read as crooked.
+
+        Measured: caption delta and chart delta are the same number at every
+        width (17px at 1180 and 1360, 0 at 1490 and above). The audit filed
+        this as chart baselines being off and had the direction backwards —
+        nothing is wrong with the baselines, and a fix aimed at them would
+        have moved the one thing that was already right.
+
+        Reset before measuring, or the floor set on the last pass is what
+        gets measured on this one and the captions only ever grow.
+        """
+        self._levelling = False
+        caps = [c for c in (getattr(self, "bias_caption", None),
+                            getattr(self, "heat_caption", None)) if c is not None]
+        if len(caps) < 2:
+            return
+        for c in caps:
+            c.setMinimumHeight(0)
+        need = max(c.heightForWidth(c.width()) if c.width() > 0
+                   else c.sizeHint().height() for c in caps)
+        for c in caps:
+            if c.minimumHeight() != need:
+                c.setMinimumHeight(need)
 
     def show_report(self, rep: RunReport, trace: MouseTrace | None = None,
                     profile: PlayerProfile | None = None) -> None:

@@ -1135,3 +1135,64 @@ def test_a_saved_report_from_an_older_flick_floor_is_re_derived(qapp, settings):
     view.show_report(current, trace=trace, profile=_profile())
     assert view.report.n_flicks == 7 and view.report.mean_flick_ms == 321.0
     assert "re-derived" not in view.summary.text()
+
+
+@pytest.mark.parametrize("width", [1180, 1360, 1490, 1920])
+def test_the_two_chart_captions_never_leave_their_charts_ragged(qapp, settings, width):
+    """The two per-run charts sit in independent splitter columns, each taking
+    the leftover space with stretch 1 and its caption underneath. The captions
+    are different lengths, so below about 1490px the travel one wraps to a
+    second line while the bias one does not — and takes 17px more, stealing
+    exactly that much from its own chart. Tops aligned, bottoms 17px apart.
+
+    The audit filed this as chart BASELINES being off, with the direction
+    backwards: nothing was wrong with the baselines, and its proposed test
+    passed at the sizes it was written against. Measured properly, caption
+    delta and chart delta are the same number at every width — which is what
+    identifies the cause rather than the symptom.
+    """
+    from PySide6.QtTest import QTest
+
+    view = AnalysisView(settings)
+    view.resize(width, 900)
+    view.show()
+    QTest.qWait(80)
+
+    caps = (view.bias_caption.height(), view.heat_caption.height())
+    charts = (view.bias_bars.height(), view.heat_map.height())
+    assert caps[0] == caps[1], f"captions {caps} at width {width}"
+    assert charts[0] == charts[1], f"charts {charts} at width {width}"
+
+    # tops were always aligned; it is the bottoms that drifted
+    def bottom(w):
+        return w.mapTo(view, w.rect().bottomLeft()).y()
+
+    assert bottom(view.bias_bars) == bottom(view.heat_map)
+    view.close()
+    view.deleteLater()
+
+
+def test_levelling_the_captions_does_not_ratchet_them_taller(qapp, settings):
+    """The levelling sets a minimum height, so it has to clear the previous
+    one before measuring — otherwise each pass measures the floor the last
+    pass installed and the captions only ever grow. Widen after narrowing and
+    the two-line reservation would stay forever, pushing both charts down at
+    a width where neither caption wraps."""
+    from PySide6.QtTest import QTest
+
+    view = AnalysisView(settings)
+    view.show()
+    heights = {}
+    for width in (1920, 1180, 1920):
+        view.resize(width, 900)
+        QTest.qWait(80)
+        heights.setdefault(width, []).append(view.bias_caption.height())
+
+    wide_first, wide_again = heights[1920]
+    narrow = heights[1180][0]
+    assert narrow > wide_first, "the narrow width should wrap a caption at all"
+    assert wide_again == wide_first, (
+        f"caption stuck at {wide_again}px after narrowing (was {wide_first}px) "
+        "— the minimum from the narrow pass was never cleared")
+    view.close()
+    view.deleteLater()
